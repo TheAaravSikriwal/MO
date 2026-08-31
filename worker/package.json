@@ -1,0 +1,25 @@
+{
+  "name": "mo-moderation-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Drains MO's moderation queue. Runs anywhere with outbound HTTPS.",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "dotenv": "^17.4.2",
+    "obscenity": "^0.4.6"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
