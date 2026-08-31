@@ -4,6 +4,7 @@ import { CellLayer } from './components/map/CellLayer'
 import { ReportForm } from './components/report/ReportForm'
 import { ReportDetail } from './components/report/ReportDetail'
 import { SignInPanel } from './components/auth/SignInPanel'
+import { AdminQueue } from './components/admin/AdminQueue'
 import { resolutionForZoom, PIN_ZOOM_THRESHOLD } from './lib/grid/zoomResolution'
 import { weighCells } from './lib/severity/weight'
 import { normaliseWeights } from './lib/severity/percentile'
@@ -41,6 +42,7 @@ export default function App({ data: injected }: AppProps = {}) {
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [openReport, setOpenReport] = useState<ReportView | null>(null)
   const [adding, setAdding] = useState(false)
+  const [reviewing, setReviewing] = useState(false)
 
   const search = useMemo(() => createDebouncedSearch(), [])
 
@@ -63,6 +65,7 @@ export default function App({ data: injected }: AppProps = {}) {
     void data.getCurrentUser().then(setUser)
     return data.onAuthChange(setUser)
   }, [data])
+
 
   useEffect(() => {
     void refresh()
@@ -121,6 +124,16 @@ export default function App({ data: injected }: AppProps = {}) {
             <SignInPanel data={data} user={user} />
           </div>
 
+          {user?.isAdmin && !reviewing && (
+            <button
+              type="button"
+              onClick={() => setReviewing(true)}
+              className="w-full rounded-lg bg-white px-3 py-2 text-left text-sm font-medium text-slate-800 shadow-md"
+            >
+              Review queue
+            </button>
+          )}
+
           {chosen.demo && !injected && (
             <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
               Showing sample reports. Connect a database to see real ones.
@@ -129,6 +142,15 @@ export default function App({ data: injected }: AppProps = {}) {
         </div>
 
         <div className="pointer-events-auto mt-auto w-[min(26rem,calc(100vw-2rem))] space-y-3">
+          {reviewing && user?.isAdmin && (
+            <AdminQueue
+              data={data}
+              isAdmin={user.isAdmin}
+              onClose={() => setReviewing(false)}
+              onDecided={() => void refresh()}
+            />
+          )}
+
           {openReport && (
             <ReportDetail
               data={data}

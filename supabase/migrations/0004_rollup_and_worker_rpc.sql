@@ -13,8 +13,10 @@
 -- Only open, approved reports contribute. Cleaned reports drop out, which is
 -- what makes a cleanup visibly cool the map.
 --
--- SECURITY INVOKER (the default) is deliberate: RLS still applies, so this can
--- never return a row the caller could not have selected directly.
+-- SECURITY DEFINER, because browser roles no longer hold SELECT on reports --
+-- that grant was what leaked unreviewed notes and photo paths. The function is
+-- safe to run as definer because it returns only counts and sums over rows that
+-- are already public, never a note, a photo path, or a reporter's identity.
 create or replace function public.reports_rollup(
   min_lat    double precision,
   min_lng    double precision,
@@ -29,6 +31,7 @@ returns table (
 )
 language sql
 stable
+security definer
 set search_path = public
 as $$
   select
@@ -82,6 +85,7 @@ returns table (
 )
 language sql
 stable
+security definer
 set search_path = public
 as $$
   select
@@ -134,8 +138,15 @@ as $$
      select id from public.moderation_jobs
       where status = 'pending'
          or (status = 'failed' and attempts < 5)
-         -- Reclaim anything a dead worker left holding the lock.
-         or (status = 'in_progress' and locked_at < now() - interval '15 minutes')
+         -- Reclaim anything a dead worker left holding the lock -- but cap the
+         -- retries here too. Without the cap a job that always errors is
+         -- reclaimed every 15 minutes forever, never reaches a human, and its
+         -- photo stays withheld indefinitely with nobody able to see it.
+         or (
+           status = 'in_progress'
+           and locked_at < now() - interval '15 minutes'
+           and attempts < 5
+         )
       order by created_at
       limit least(greatest(batch_size, 1), 100)
       for update skip locked

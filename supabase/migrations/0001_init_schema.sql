@@ -69,12 +69,24 @@ create table reports (
   cleaned_by        uuid references profiles (id) on delete set null,
   cleaned_at        timestamptz,
 
-  moderation_status moderation_status not null default 'pending',
+  -- The PIN's own visibility. A location with litter on it is not itself
+  -- objectionable, so a report is visible the moment it is made; only an admin
+  -- ever rejects the row.
+  moderation_status moderation_status not null default 'approved',
+  -- The NOTE's visibility, judged separately. Free text somebody attached to a
+  -- place is exactly what needs review, and withholding it must not take the
+  -- pin down with it.
+  note_status       moderation_status not null default 'pending',
 
   -- Denormalised from votes by a trigger, so the rollup query never joins.
   vote_count        integer not null default 0 check (vote_count >= 0),
 
   created_at        timestamptz not null default now(),
+
+  -- A report with no note has nothing to review, so it is not left waiting.
+  constraint note_status_matches_note check (
+    note is not null or note_status = 'approved'
+  ),
 
   constraint cleaned_fields_agree check (
     (status = 'cleaned' and cleaned_at is not null) or

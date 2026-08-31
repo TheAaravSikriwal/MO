@@ -105,6 +105,26 @@ create trigger sync_report_geom
   before insert or update of lat, lng on public.reports
   for each row execute function public.sync_report_geom();
 
+-- A report with no note has nothing to review, so it must not sit pending
+-- forever waiting for a job that is never created.
+create or replace function public.default_note_status()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.note is null or char_length(trim(new.note)) = 0 then
+    new.note_status = 'approved';
+  else
+    new.note_status = 'pending';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger default_note_status
+  before insert on public.reports
+  for each row execute function public.default_note_status();
+
 -- ---------------------------------------------------------------------------
 -- Vote count denormalisation
 -- ---------------------------------------------------------------------------
@@ -224,7 +244,9 @@ begin
             else 'note'::subject_type
           end;
 
-  -- A report with no note has nothing for the text tiers to judge.
+  -- A report with no note has nothing for the text tiers to judge. Its
+  -- note_status is already 'approved' by the trigger below, so it is not left
+  -- waiting on a job that will never exist.
   if kind = 'note' and (new.note is null or char_length(trim(new.note)) = 0) then
     return null;
   end if;

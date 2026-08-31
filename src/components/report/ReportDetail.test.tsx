@@ -195,3 +195,44 @@ describe('ReportDetail — when things fail', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
+
+describe('ReportDetail — reporting a comment', () => {
+  it('lets a signed-in reader report a comment, and records it', async () => {
+    const { user, data } = setup()
+    await user.type(screen.getByLabelText(/add a comment/i), 'something unpleasant')
+    await user.click(screen.getByRole('button', { name: /post comment/i }))
+    await screen.findByText('something unpleasant')
+
+    await user.click(screen.getByRole('button', { name: /report this comment/i }))
+
+    await waitFor(() => expect(data.raisedFlags).toHaveLength(1))
+    expect(data.raisedFlags[0].subjectType).toBe('comment')
+  })
+
+  it('thanks them and stops offering it again', async () => {
+    const { user } = setup()
+    await user.type(screen.getByLabelText(/add a comment/i), 'something unpleasant')
+    await user.click(screen.getByRole('button', { name: /post comment/i }))
+    await screen.findByText('something unpleasant')
+
+    await user.click(screen.getByRole('button', { name: /report this comment/i }))
+
+    expect(await screen.findByText(/thanks\. someone will look at this/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /report this comment/i })).not.toBeInTheDocument()
+  })
+
+  it('offers nothing to report for a signed-out visitor', async () => {
+    const data = new FakeDataSource(null)
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    render(
+      <ReportDetail
+        data={data}
+        report={report}
+        signedIn={false}
+        onChanged={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /report this comment/i })).not.toBeInTheDocument()
+  })
+})

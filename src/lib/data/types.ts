@@ -38,6 +38,27 @@ export interface ReportView {
   viewerIsReporter: boolean
 }
 
+export type QueueSubject = 'photo' | 'comment' | 'note'
+
+/** One item a person has to judge, because no machine tier could. */
+export interface QueueItem {
+  jobId: string
+  subjectType: QueueSubject
+  subjectId: string
+  reportId: string | null
+  /** The comment body or report note. Null for photos. */
+  text: string | null
+  /** The actual image. Admins see it even while it is withheld from everyone else. */
+  photoUrl: string | null
+  /** Why the machine tiers could not settle it. */
+  reason: string
+  /** Raw per-tier scores, so a decision can be sanity-checked. */
+  tierResults: Record<string, unknown>
+  /** How many people complained about it. */
+  flagCount: number
+  createdAt: string
+}
+
 export interface NewReport {
   lat: number
   lng: number
@@ -76,5 +97,12 @@ export interface DataSource {
 
   markCleaned(reportId: string): Promise<void>
 
-  flag(subjectType: 'photo' | 'comment' | 'note', subjectId: string, reason: string): Promise<void>
+  flag(subjectType: QueueSubject, subjectId: string, reason: string): Promise<void>
+
+  // --- tier 4: admin only -------------------------------------------------
+
+  listModerationQueue(): Promise<QueueItem[]>
+  /** Total waiting, which can exceed the page listModerationQueue returns. */
+  getModerationQueueSize(): Promise<number>
+  decideModerationItem(jobId: string, verdict: 'approved' | 'rejected'): Promise<void>
 }

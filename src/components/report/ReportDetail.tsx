@@ -21,6 +21,7 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [justCleaned, setJustCleaned] = useState(false)
+  const [reported, setReported] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     let live = true
@@ -106,24 +107,43 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
       )}
 
       <div className="mt-3 grid grid-cols-3 gap-2">
-        {report.photos.map((photo) =>
-          photo.url ? (
-            <img
-              key={photo.id}
-              src={photo.url}
-              alt="Litter reported at this spot"
-              className="aspect-square w-full rounded-lg object-cover"
-            />
-          ) : (
-            <div
-              key={photo.id}
-              data-testid="photo-pending"
-              className="flex aspect-square w-full items-center justify-center rounded-lg bg-slate-100 p-2 text-center text-xs text-slate-500"
-            >
-              Photo is being checked
-            </div>
-          ),
-        )}
+        {report.photos.map((photo) => (
+          <div key={photo.id}>
+            {photo.url ? (
+              <img
+                src={photo.url}
+                alt="Litter reported at this spot"
+                className="aspect-square w-full rounded-lg object-cover"
+              />
+            ) : (
+              <div
+                data-testid="photo-pending"
+                className="flex aspect-square w-full items-center justify-center rounded-lg bg-slate-100 p-2 text-center text-xs text-slate-500"
+              >
+                Photo is being checked
+              </div>
+            )}
+            {signedIn &&
+              photo.url &&
+              (reported.has(photo.id) ? (
+                <p className="mt-1 text-xs text-slate-500">Thanks.</p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void run(async () => {
+                      await data.flag('photo', photo.id, 'reported by a reader')
+                      setReported((current) => new Set(current).add(photo.id))
+                    })
+                  }
+                  disabled={busy}
+                  className="mt-1 text-xs text-slate-500 underline hover:text-slate-800"
+                >
+                  Report this photo
+                </button>
+              ))}
+          </div>
+        ))}
       </div>
 
       {report.note ? (
@@ -176,6 +196,24 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
                 {comment.moderationStatus === 'pending' && (
                   <p className="mt-1 text-xs text-slate-500">Being checked before it appears.</p>
                 )}
+                {signedIn &&
+                  (reported.has(comment.id) ? (
+                    <p className="mt-1 text-xs text-slate-500">Thanks. Someone will look at this.</p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void run(async () => {
+                          await data.flag('comment', comment.id, 'reported by a reader')
+                          setReported((current) => new Set(current).add(comment.id))
+                        })
+                      }
+                      disabled={busy}
+                      className="mt-1 text-xs text-slate-500 underline hover:text-slate-800"
+                    >
+                      Report this comment
+                    </button>
+                  ))}
               </li>
             ))}
           </ul>

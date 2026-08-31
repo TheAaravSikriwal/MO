@@ -91,6 +91,22 @@ export class Queue {
     if (error) throw new Error(`could not record verdict for job ${job.id}: ${error.message}`)
   }
 
+  /**
+   * Record that this job could not be processed.
+   *
+   * Leaving it 'in_progress' would rely on the 15-minute lock expiry to retry
+   * it, with no record that anything went wrong -- and once its retries are
+   * exhausted it would sit claimed forever, invisible to the admin queue, with
+   * its content withheld and nobody able to release it.
+   */
+  async fail(job: ModerationJob, reason: string): Promise<void> {
+    const { error } = await this.client
+      .from('moderation_jobs')
+      .update({ status: 'failed', reason, locked_at: null, locked_by: null })
+      .eq('id', job.id)
+    if (error) throw new Error(`could not mark job ${job.id} failed: ${error.message}`)
+  }
+
   /** A job whose content vanished has nothing left to judge. */
   async discard(job: ModerationJob, reason: string): Promise<void> {
     const { error } = await this.client.rpc('escalate_moderation_job', {

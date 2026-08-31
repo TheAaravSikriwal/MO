@@ -67,9 +67,15 @@ async function main(): Promise<void> {
             `[mo-worker] ${job.subject_type} ${job.subject_id} -> ${decision.action} (${decision.decidedBy})`,
           )
         } catch (error) {
-          // One bad job must not stop the batch. Leaving it claimed means the
-          // 15-minute lock expiry in claim_moderation_jobs will retry it.
+          // One bad job must not stop the batch, but it must not vanish either.
+          // Marking it failed records why and lets the retry cap eventually
+          // push it to a human, instead of leaving it claimed and invisible.
           console.error(`[mo-worker] job ${job.id} failed:`, error)
+          try {
+            await queue.fail(job, error instanceof Error ? error.message : String(error))
+          } catch (markError) {
+            console.error(`[mo-worker] could not mark job ${job.id} failed:`, markError)
+          }
         }
       }
     } catch (error) {

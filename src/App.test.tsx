@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
+import { FakeDataSource } from './lib/data/fakeSource'
 
 const flyToSpy = vi.fn()
 const mapInstance = { flyTo: flyToSpy }
@@ -142,5 +143,46 @@ describe('App', () => {
     for (const jargon of JARGON) {
       expect(visibleText).not.toContain(jargon)
     }
+  })
+})
+
+describe('App — the admin gate', () => {
+  const adminSource = (isAdmin: boolean) => {
+    const data = new FakeDataSource({ id: 'u1', email: 'a@b.com', isAdmin })
+    data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    return data
+  }
+
+  it('offers no way in for a signed-out visitor', async () => {
+    render(<App data={new FakeDataSource(null)} />)
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /review queue/i })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('offers no way in for an ordinary signed-in person', async () => {
+    render(<App data={adminSource(false)} />)
+    await waitFor(() => expect(screen.getByRole('searchbox')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: /review queue/i })).not.toBeInTheDocument()
+  })
+
+  it('offers it to an admin', async () => {
+    render(<App data={adminSource(true)} />)
+    expect(await screen.findByRole('button', { name: /review queue/i })).toBeInTheDocument()
+  })
+
+  it('opens the queue for an admin', async () => {
+    const user = userEvent.setup()
+    render(<App data={adminSource(true)} />)
+    await user.click(await screen.findByRole('button', { name: /review queue/i }))
+    expect(await screen.findByRole('region', { name: /review queue/i })).toBeInTheDocument()
+  })
+
+  it('does not ask a non-admin backend for the queue at all', async () => {
+    const data = adminSource(false)
+    const spy = vi.spyOn(data, 'listModerationQueue')
+    render(<App data={data} />)
+    await waitFor(() => expect(screen.getByRole('searchbox')).toBeInTheDocument())
+    expect(spy).not.toHaveBeenCalled()
   })
 })

@@ -4,6 +4,8 @@ import type {
   CurrentUser,
   DataSource,
   NewReport,
+  QueueItem,
+  QueueSubject,
   ReportView,
 } from './types'
 
@@ -149,9 +151,165 @@ export class FakeDataSource implements DataSource {
     report.status = 'cleaned'
   }
 
-  async flag() {
-    // Accepted and ignored; flagging has no visible effect for the person who
-    // raised it, by design.
+  readonly raisedFlags: Array<{ subjectType: QueueSubject; subjectId: string; reason: string }> = []
+
+  async flag(subjectType: QueueSubject, subjectId: string, reason: string) {
+    if (!this.user) throw new Error('you must be signed in to report this')
+    if (
+      this.raisedFlags.some(
+        (f) => f.subjectType === subjectType && f.subjectId === subjectId,
+      )
+    ) {
+      // One person, one complaint -- matching the unique constraint on flags.
+      throw new Error('you have already reported this')
+    }
+    this.raisedFlags.push({ subjectType, subjectId, reason })
+
+    // Mirrors the flag_reopens_review and flag_withholds_content triggers: a
+    // complaint puts the item back in front of a person AND withholds it while
+    // it waits. Modelling both here is what stops a UI test passing against
+    // behaviour the database does not actually have.
+    const existing = this.queue.find(
+      (q) => q.subjectType === subjectType && q.subjectId === subjectId,
+    )
+    if (existing) {
+      existing.flagCount += 1
+      this.decided.delete(existing.jobId)
+      existing.reason = 'people reported this'
+    } else {
+      this.seedQueueItem({
+        jobId: `flag-job-${this.nextId++}`,
+        subjectType,
+        subjectId,
+        reportId: this.findReportIdFor(subjectType, subjectId),
+        text: this.findTextFor(subjectType, subjectId),
+        reason: 'people reported this',
+        flagCount: 1,
+      })
+    }
+
+    if (subjectType === 'comment') {
+      for (const list of this.comments.values()) {
+        const comment = list.find((c) => c.id === subjectId)
+        if (comment && comment.moderationStatus === 'approved') {
+          comment.moderationStatus = 'pending'
+        }
+      }
+    }
+    if (subjectType === 'photo') {
+      for (const report of this.reports.values()) {
+        const photo = report.photos.find((p) => p.id === subjectId)
+        if (photo && photo.moderationStatus === 'approved') {
+          photo.moderationStatus = 'pending'
+          photo.url = null
+        }
+      }
+    }
+    if (subjectType === 'note') {
+      const report = this.reports.get(subjectId)
+      if (report && report.noteStatus === 'approved') {
+        report.noteStatus = 'pending'
+        report.note = null
+      }
+    }
+  }
+
+  private findReportIdFor(subjectType: QueueSubject, subjectId: string): string | null {
+    if (subjectType === 'note') return subjectId
+    for (const [reportId, list] of this.comments) {
+      if (subjectType === 'comment' && list.some((c) => c.id === subjectId)) return reportId
+    }
+    for (const report of this.reports.values()) {
+      if (subjectType === 'photo' && report.photos.some((p) => p.id === subjectId)) {
+        return report.id
+      }
+    }
+    return null
+  }
+
+  private findTextFor(subjectType: QueueSubject, subjectId: string): string | null {
+    if (subjectType === 'note') return this.reports.get(subjectId)?.note ?? null
+    if (subjectType === 'comment') {
+      for (const list of this.comments.values()) {
+        const comment = list.find((c) => c.id === subjectId)
+        if (comment) return comment.body
+      }
+    }
+    return null
+  }
+
+  // --- tier 4 ---------------------------------------------------------------
+
+  private queue: QueueItem[] = []
+  private decided = new Set<string>()
+
+  async listModerationQueue(): Promise<QueueItem[]> {
+    if (!this.user?.isAdmin) throw new Error('only an admin may read the moderation queue')
+    // Flagged items first, then oldest, matching admin_moderation_queue.
+    return this.queue
+      .filter((item) => !this.decided.has(item.jobId))
+      .slice()
+      .sort((a, b) =>
+        b.flagCount - a.flagCount || a.createdAt.localeCompare(b.createdAt),
+      )
+  }
+
+  async getModerationQueueSize(): Promise<number> {
+    if (!this.user?.isAdmin) throw new Error('only an admin may read the moderation queue')
+    return this.queue.filter((item) => !this.decided.has(item.jobId)).length
+  }
+
+  async decideModerationItem(jobId: string, verdict: 'approved' | 'rejected') {
+    if (!this.user?.isAdmin) throw new Error('only an admin may decide moderation items')
+    const item = this.queue.find((q) => q.jobId === jobId)
+    if (!item) throw new Error(`no such moderation job: ${jobId}`)
+    if (this.decided.has(jobId)) throw new Error('this item has already been decided')
+    this.decided.add(jobId)
+
+    // Apply it the way admin_decide_moderation does, so the UI is tested
+    // against real effects rather than a decision that only marks the job.
+    if (item.subjectType === 'photo' && item.reportId) {
+      const report = this.reports.get(item.reportId)
+      const photo = report?.photos.find((p) => p.id === item.subjectId)
+      if (photo) {
+        photo.moderationStatus = verdict
+        photo.url = verdict === 'approved' ? `https://img.example/${photo.id}.jpg` : null
+      }
+    }
+
+    if (item.subjectType === 'comment' && item.reportId) {
+      const comment = (this.comments.get(item.reportId) ?? []).find(
+        (c) => c.id === item.subjectId,
+      )
+      if (comment) comment.moderationStatus = verdict
+    }
+
+    if (item.subjectType === 'note' && item.reportId) {
+      const report = this.reports.get(item.reportId)
+      if (report) {
+        report.noteStatus = verdict
+        // An approved note becomes readable; a rejected one is withheld.
+        report.note = verdict === 'approved' ? (item.text ?? report.note) : null
+      }
+    }
+  }
+
+  /** Seed a queue item directly. */
+  seedQueueItem(item: Partial<QueueItem> & { jobId: string }): QueueItem {
+    const full: QueueItem = {
+      subjectType: 'comment',
+      subjectId: `subject-${this.nextId++}`,
+      reportId: null,
+      text: 'something a person wrote',
+      photoUrl: null,
+      reason: 'the judge was not sure',
+      tierResults: {},
+      flagCount: 0,
+      createdAt: new Date().toISOString(),
+      ...item,
+    }
+    this.queue.push(full)
+    return full
   }
 
   // --- test helpers -------------------------------------------------------

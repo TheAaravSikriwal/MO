@@ -6,6 +6,8 @@ import type {
   DataSource,
   NewReport,
   PhotoView,
+  QueueItem,
+  QueueSubject,
   ReportView,
 } from './types'
 
@@ -197,7 +199,7 @@ export class SupabaseDataSource implements DataSource {
 
   async listComments(reportId: string): Promise<CommentView[]> {
     const { data, error } = await this.client
-      .from('comments')
+      .from('public_comments')
       .select('id, body, author_id, created_at, moderation_status')
       .eq('report_id', reportId)
       .order('created_at', { ascending: true })
@@ -227,11 +229,7 @@ export class SupabaseDataSource implements DataSource {
     if (error) throw new Error(error.message)
   }
 
-  async flag(
-    subjectType: 'photo' | 'comment' | 'note',
-    subjectId: string,
-    reason: string,
-  ): Promise<void> {
+  async flag(subjectType: QueueSubject, subjectId: string, reason: string): Promise<void> {
     const user = await this.getCurrentUser()
     if (!user) throw new Error('Please sign in to report this.')
     const { error } = await this.client.from('flags').insert({
@@ -239,6 +237,52 @@ export class SupabaseDataSource implements DataSource {
       subject_id: subjectId,
       flagger_id: user.id,
       reason,
+    })
+    if (error) throw new Error(error.message)
+  }
+
+  // --- tier 4: admin only ---------------------------------------------------
+
+  /**
+   * Read the review queue.
+   *
+   * Goes through an RPC rather than selecting the tables, because an admin has
+   * to see the actual photo path that the public view withholds. The RPC is
+   * SECURITY DEFINER and raises for non-admins, so a non-admin gets an error
+   * rather than an empty list that would read as "queue is clear".
+   */
+  async listModerationQueue(): Promise<QueueItem[]> {
+    const { data, error } = await this.client.rpc('admin_moderation_queue', {
+      max_results: 50,
+    })
+    if (error) throw new Error(error.message)
+
+    return (data ?? []).map((row: Record<string, unknown>) => ({
+      jobId: String(row.job_id),
+      subjectType: row.subject_type as QueueSubject,
+      subjectId: String(row.subject_id),
+      reportId: row.report_id ? String(row.report_id) : null,
+      text: (row.content_text as string | null) ?? null,
+      photoUrl: row.storage_path ? `${this.photoBaseUrl}/${String(row.storage_path)}` : null,
+      reason: (row.reason as string | null) ?? 'no reason recorded',
+      tierResults: (row.tier_results as Record<string, unknown>) ?? {},
+      flagCount: Number(row.flag_count ?? 0),
+      createdAt: String(row.created_at),
+    }))
+  }
+
+  async getModerationQueueSize(): Promise<number> {
+    const { data, error } = await this.client.rpc('admin_queue_size')
+    if (error) throw new Error(error.message)
+    return Number(data ?? 0)
+  }
+
+  async decideModerationItem(jobId: string, verdict: 'approved' | 'rejected'): Promise<void> {
+    // Deliberately NOT the worker's record_moderation_verdict, which stays
+    // revoked from browser roles. This one refuses non-admins outright.
+    const { error } = await this.client.rpc('admin_decide_moderation', {
+      job_id: jobId,
+      new_verdict: verdict,
     })
     if (error) throw new Error(error.message)
   }

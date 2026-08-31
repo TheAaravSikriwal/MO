@@ -8,15 +8,20 @@
 -- Public views
 -- ---------------------------------------------------------------------------
 
--- security_invoker keeps RLS on the underlying tables in force. Without it a
--- view would quietly become a way around every policy below.
+-- These views are the ONLY public read path for report content, and they are
+-- SECURITY DEFINER (the default) rather than security_invoker.
+--
+-- The earlier design granted plain SELECT on the base tables and relied on the
+-- views to mask columns. That masking was decorative: `select storage_path from
+-- report_photos where moderation_status = 'pending'` returned an unreviewed
+-- photo path to a signed-out visitor. The column was unlinked, not withheld.
+--
+-- So the base tables are no longer readable by anon or authenticated at all
+-- (see the grants at the bottom), and these views carry the full visibility
+-- rules themselves -- including the author's right to see their own rejected
+-- content, which RLS used to provide.
 
--- The note is withheld until approved, but the pin is not. A location with
--- litter reported on it is not itself objectionable; the free text somebody
--- attached to it might be.
-create view public.public_reports
-with (security_invoker = true)
-as
+create view public.public_reports as
 select
   r.id,
   r.reporter_id,
@@ -28,40 +33,63 @@ select
   r.cell_r7,
   r.cell_r9,
   r.cell_r12,
+  -- The pin is public immediately so the map stays alive. The note is not:
+  -- a location with litter on it is not objectionable, but the free text
+  -- somebody attached to it might be.
   case
-    when r.moderation_status = 'approved' then r.note
+    when r.note_status = 'approved'
+      or r.reporter_id = auth.uid()
+      or public.is_admin()
+    then r.note
     else null
   end as note,
-  r.moderation_status as note_status,
+  r.note_status,
+  r.moderation_status,
   r.status,
   r.cleaned_by,
   r.cleaned_at,
   r.vote_count,
   r.created_at
 from public.reports r
-where r.moderation_status <> 'rejected';
+where r.moderation_status <> 'rejected'
+   or r.reporter_id = auth.uid()
+   or public.is_admin();
 
--- The storage path is withheld until approved, deliberately.
---
--- The spec originally called for the client to blur a pending photo. That is
--- not privacy -- it is CSS, and anyone can strip it or read the URL straight
--- out of the network tab. Withholding the path means an unreviewed image is
--- genuinely unreachable, while `moderation_status` still tells the UI a photo
--- exists so it can render the "not reviewed yet" placeholder.
-create view public.public_report_photos
-with (security_invoker = true)
-as
+create view public.public_report_photos as
 select
   p.id,
   p.report_id,
+  -- Withheld, not merely hidden. A client-side blur is CSS: anyone can strip it
+  -- or read the URL out of the network tab. Returning null means an unreviewed
+  -- image is genuinely unreachable, while moderation_status still lets the UI
+  -- show a "being checked" placeholder.
   case
-    when p.moderation_status = 'approved' then p.storage_path
+    when p.moderation_status = 'approved' or public.is_admin()
+    then p.storage_path
     else null
   end as storage_path,
   p.moderation_status,
   p.created_at
 from public.report_photos p
-where p.moderation_status <> 'rejected';
+where p.moderation_status <> 'rejected'
+   or public.is_admin()
+   or exists (
+     select 1 from public.reports r
+     where r.id = p.report_id and r.reporter_id = auth.uid()
+   );
+
+create view public.public_comments as
+select
+  c.id,
+  c.report_id,
+  c.author_id,
+  c.body,
+  c.moderation_status,
+  c.created_at
+from public.comments c
+where c.moderation_status = 'approved'
+   or c.author_id = auth.uid()
+   or public.is_admin();
 
 -- ---------------------------------------------------------------------------
 -- Enable RLS everywhere
@@ -114,8 +142,8 @@ create policy reports_insert_own
   to authenticated
   with check (
     reporter_id = auth.uid()
-    -- A new report is never born approved or pre-cleaned.
-    and moderation_status = 'pending'
+    -- The pin is public on arrival; the note and photos are not, and their
+    -- status columns are set by triggers rather than by the client.
     and status = 'open'
     and cleaned_by is null
     and cleaned_at is null
@@ -271,18 +299,12 @@ create policy flags_delete_admin
 -- moderation_jobs
 -- ---------------------------------------------------------------------------
 
--- Admins read the queue through these policies. The worker uses the service
--- role key, which bypasses RLS entirely; that key must never reach the browser.
-create policy moderation_jobs_admin_select
-  on public.moderation_jobs for select
-  to authenticated
-  using (public.is_admin());
-
-create policy moderation_jobs_admin_update
-  on public.moderation_jobs for update
-  to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+-- No policies here on purpose.
+--
+-- moderation_jobs is not granted to any browser role at all. Admins reach it
+-- only through the SECURITY DEFINER functions in 0005, which check is_admin()
+-- themselves. Policies without a matching grant can never be reached, and
+-- leaving them here would imply an access path that does not exist.
 
 -- ---------------------------------------------------------------------------
 -- Grants
@@ -293,16 +315,24 @@ create policy moderation_jobs_admin_update
 
 grant usage on schema public to anon, authenticated;
 
-grant select on public.public_reports        to anon, authenticated;
-grant select on public.public_report_photos  to anon, authenticated;
-grant select on public.profiles              to anon, authenticated;
-grant select on public.reports               to anon, authenticated;
-grant select on public.report_photos         to anon, authenticated;
-grant select on public.comments              to anon, authenticated;
+-- Content is readable ONLY through the views above. Granting SELECT on the base
+-- tables would expose `note` and `storage_path` for rows that have not been
+-- reviewed, which is exactly what this design exists to prevent.
+grant select on public.public_reports       to anon, authenticated;
+grant select on public.public_report_photos to anon, authenticated;
+grant select on public.public_comments      to anon, authenticated;
 
-grant select                          on public.votes           to authenticated;
-grant select                          on public.flags           to authenticated;
-grant select, update                  on public.moderation_jobs to authenticated;
+-- Profiles carry no moderated content, so they stay directly readable.
+grant select on public.profiles to anon, authenticated;
+
+grant select on public.votes to authenticated;
+grant select on public.flags to authenticated;
+
+-- supabase-js sends `Prefer: return=representation` after an insert, which
+-- Postgres executes as INSERT ... RETURNING. That needs SELECT on the returned
+-- column, so without this every report submission fails with "permission
+-- denied for table reports". Exactly one column, and nothing readable.
+grant select (id) on public.reports to authenticated;
 
 grant insert (display_name, id)       on public.profiles      to authenticated;
 grant update (display_name)           on public.profiles      to authenticated;
@@ -326,7 +356,7 @@ grant insert (subject_type, subject_id, flagger_id, reason)
 
 -- Admin-only column writes. RLS still gates these to actual admins; the grant
 -- simply makes the column writable at all.
-grant update (moderation_status, status, cleaned_by, cleaned_at)
+grant update (moderation_status, note_status, status, cleaned_by, cleaned_at)
                                        on public.reports        to authenticated;
 grant update (moderation_status)       on public.report_photos  to authenticated;
 grant update (moderation_status)       on public.comments       to authenticated;

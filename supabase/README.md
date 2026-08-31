@@ -1,6 +1,6 @@
 # Database
 
-Schema, policies and RPCs for MO. Four migrations, applied in order.
+Schema, policies and RPCs for MO. Five migrations, applied in order.
 
 > **These migrations have never been run.** They were written against the design
 > spec without a live Postgres instance to test on. Everything else in this repo
@@ -16,6 +16,7 @@ Schema, policies and RPCs for MO. Four migrations, applied in order.
 | `0002_functions_triggers.sql` | Vote counts, moderation queueing, rate limits, role guard, cleaned RPC |
 | `0003_views_and_rls.sql` | Public views, row-level security, column grants |
 | `0004_rollup_and_worker_rpc.sql` | Map rollup, near-me, the worker's queue interface |
+| `0005_admin_queue.sql` | The admin review queue, and the triggers that make a complaint reach a person |
 
 ## Applying them
 
@@ -63,9 +64,30 @@ for `storage_path` until a photo is approved, so an unreviewed image is
 genuinely unreachable rather than merely hidden. `moderation_status` still comes
 through, so the UI knows to show a "not reviewed yet" placeholder.
 
-**Read through the views.** `public_reports` and `public_report_photos` apply the
-withholding above. Both use `security_invoker`, so table policies still apply —
-without it a view becomes a way around every policy in `0003`.
+**Read through the views, because there is no other way.** `public_reports`,
+`public_report_photos` and `public_comments` are the ONLY public read path.
+`anon` and `authenticated` hold no SELECT grant on `reports`, `report_photos` or
+`comments` at all — the single exception is `select (id) on reports`, which
+exists because supabase-js turns an insert into `INSERT ... RETURNING id`.
+
+An earlier version granted plain SELECT on those tables and relied on the views
+to mask columns. That masking was decorative: `select storage_path from
+report_photos where moderation_status = 'pending'` handed an unreviewed photo to
+a signed-out visitor. The column was unlinked, not withheld. The views are
+therefore SECURITY DEFINER and carry the visibility rules themselves, including
+the author's right to see their own rejected content.
+
+**A pin and its note are judged separately.** `reports.moderation_status` governs
+the pin, and defaults to `approved` — a location with litter on it is not itself
+objectionable, and the map has to stay alive. `reports.note_status` governs the
+free text, and defaults to `pending` unless there is no note. Rejecting an
+offensive sentence withholds the sentence; it does not erase the report.
+
+**A complaint puts something back in front of a person.** Inserting into `flags`
+fires two triggers: one clears the item's verdict so it re-enters the queue, and
+one withholds the content again while it waits. Without them, flagging changed
+nothing at all — already-approved content kept its verdict and stayed live no
+matter how many people reported it.
 
 ## Verifying the policies
 
@@ -86,3 +108,10 @@ And these should SUCCEED:
 - Can an author see their own rejected report?
 - Does `vote_count` match the row count in `votes` after inserts and deletes?
 - Does `reports_rollup` return nothing for a report once it is cleaned?
+- Does creating a report still work? (`INSERT ... RETURNING id` needs the
+  column grant above; without it every submission fails.)
+- Does a report with no note become visible immediately, rather than waiting
+  for a moderation job that is never created?
+- Does flagging an approved comment put it back in the admin queue and withhold
+  it in the meantime?
+- Does rejecting a note leave the pin on the map?
