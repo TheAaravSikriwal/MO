@@ -60,9 +60,38 @@ describe('App', () => {
     expect(screen.getByRole('searchbox', { name: /search for a place/i })).toBeInTheDocument()
   })
 
-  it('shows no suggestions before anyone types', () => {
+  it('shows no place suggestions before anyone types', () => {
     render(<App />)
-    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /hyde park/i })).not.toBeInTheDocument()
+  })
+
+  it('offers a way to add a report', () => {
+    render(<App />)
+    expect(screen.getByRole('button', { name: /add a report/i })).toBeInTheDocument()
+  })
+
+  it('says plainly when it is showing sample data rather than real reports', () => {
+    render(<App />)
+    expect(screen.getByText(/showing sample reports/i)).toBeInTheDocument()
+  })
+
+  it('asks people to sign in before they can add anything', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: /add a report/i }))
+    expect(await screen.findByText(/sign in to add a report/i)).toBeInTheDocument()
+  })
+
+  it('lists reports for people who cannot pick a pin out of the map', async () => {
+    render(<App />)
+    // Sample data is seeded, so there is something to reach by name.
+    const listed = await screen.findAllByRole('button', { name: /confirmed/i })
+    expect(listed.length).toBeGreaterThan(0)
+  })
+
+  it('shows a cleaned report as cleaned in that list', async () => {
+    render(<App />)
+    expect(await screen.findByRole('button', { name: /cleaned report/i })).toBeInTheDocument()
   })
 
   it('suggests places for a typed query and flies there when one is chosen', async () => {

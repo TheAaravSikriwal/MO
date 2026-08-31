@@ -12,9 +12,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "@tensorflow/tfjs": "^4.22.0",
     "culori": "^4.0.2",
     "h3-js": "^4.5.0",
     "leaflet": "^1.9.4",
+    "nsfwjs": "^4.3.0",
+    "obscenity": "^0.4.6",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-leaflet": "^5.0.0"
