@@ -14,6 +14,30 @@ vi.mock('react-leaflet', () => ({
   useMapEvents: () => null,
 }))
 
+const JARGON = [
+  'hexagon',
+  'h3',
+  'geohash',
+  'resolution',
+  'cell',
+  'aggregate',
+  'polygon',
+  'percentile',
+  'oklch',
+]
+
+/** Visible text plus the attribute text a user actually reads. */
+const collectVisibleText = (): string => {
+  const parts: string[] = [document.body.textContent ?? '']
+  for (const el of Array.from(document.querySelectorAll('*'))) {
+    for (const attr of ['placeholder', 'aria-label', 'title', 'alt']) {
+      const value = el.getAttribute(attr)
+      if (value) parts.push(value)
+    }
+  }
+  return parts.join(' ').toLowerCase()
+}
+
 const hydePark = [{ display_name: 'Hyde Park, London', lat: '51.5073', lon: '-0.1657' }]
 
 describe('App', () => {
@@ -68,9 +92,26 @@ describe('App', () => {
 
   it('uses plain language, with no jargon in the interface', () => {
     render(<App />)
-    const text = document.body.textContent ?? ''
-    for (const jargon of ['hexagon', 'H3', 'cell', 'resolution', 'geohash']) {
-      expect(text.toLowerCase()).not.toContain(jargon.toLowerCase())
+    // textContent alone is empty on first render, which would make this check
+    // vacuous. Gather visible attribute text too, and assert there is something
+    // to inspect before asserting what is absent from it.
+    const visibleText = collectVisibleText()
+    expect(visibleText.length).toBeGreaterThan(0)
+    for (const jargon of JARGON) {
+      expect(visibleText).not.toContain(jargon)
+    }
+  })
+
+  it('keeps jargon out of the suggestion list too', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.type(screen.getByRole('searchbox', { name: /search for a place/i }), 'hyde park')
+    await screen.findByRole('button', { name: /hyde park/i }, { timeout: 3000 })
+
+    const visibleText = collectVisibleText()
+    expect(visibleText).toContain('hyde park')
+    for (const jargon of JARGON) {
+      expect(visibleText).not.toContain(jargon)
     }
   })
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { CellLayer } from './CellLayer'
+import { CellLayer, MIN_FILL_OPACITY, MAX_FILL_OPACITY } from './CellLayer'
 import { cellsForPoint } from '../../lib/grid/cells'
 import { colorForT } from '../../lib/color/ramp'
 
@@ -20,6 +20,7 @@ const london = cellsForPoint(51.5007, -0.1246)
 const sydney = cellsForPoint(-33.8568, 151.2153)
 
 const cell = (id: string, t: number) => ({ cell: id, weight: 1, reportCount: 1, t })
+const opacityOf = (el: HTMLElement) => Number(el.getAttribute('data-opacity'))
 
 describe('CellLayer', () => {
   it('renders one polygon per cell', () => {
@@ -34,10 +35,37 @@ describe('CellLayer', () => {
 
   it('colours each cell from its position on the ramp', () => {
     render(<CellLayer cells={[cell(london.cell_r7, 0), cell(sydney.cell_r7, 1)]} />)
-    const [cold, warm] = screen.getAllByTestId('cell')
-    expect(cold).toHaveAttribute('data-fill', colorForT(0))
-    expect(warm).toHaveAttribute('data-fill', colorForT(1))
-    expect(cold.getAttribute('data-fill')).not.toBe(warm.getAttribute('data-fill'))
+    const [clean, busy] = screen.getAllByTestId('cell')
+    expect(clean).toHaveAttribute('data-fill', colorForT(0))
+    expect(busy).toHaveAttribute('data-fill', colorForT(1))
+  })
+
+  it('keeps the quietest areas almost clear, so the map shows through', () => {
+    render(<CellLayer cells={[cell(london.cell_r7, 0)]} />)
+    expect(opacityOf(screen.getByTestId('cell'))).toBe(MIN_FILL_OPACITY)
+  })
+
+  it('makes the busiest areas strongest, but never fully opaque', () => {
+    render(<CellLayer cells={[cell(london.cell_r7, 1)]} />)
+    const opacity = opacityOf(screen.getByTestId('cell'))
+    expect(opacity).toBe(MAX_FILL_OPACITY)
+    expect(opacity).toBeLessThan(1)
+  })
+
+  it('raises opacity with severity', () => {
+    render(
+      <CellLayer
+        cells={[cell(london.cell_r7, 0), cell(london.cell_r9, 0.5), cell(sydney.cell_r7, 1)]}
+      />,
+    )
+    const [low, mid, high] = screen.getAllByTestId('cell').map(opacityOf)
+    expect(low).toBeLessThan(mid)
+    expect(mid).toBeLessThan(high)
+  })
+
+  it('honours explicit opacity bounds', () => {
+    render(<CellLayer cells={[cell(london.cell_r7, 1)]} minFillOpacity={0} maxFillOpacity={0.2} />)
+    expect(opacityOf(screen.getByTestId('cell'))).toBe(0.2)
   })
 
   it('gives every cell a real boundary polygon', () => {
@@ -45,16 +73,6 @@ describe('CellLayer', () => {
     expect(Number(screen.getByTestId('cell').getAttribute('data-points'))).toBeGreaterThanOrEqual(
       6,
     )
-  })
-
-  it('keeps the basemap readable by not filling opaquely', () => {
-    render(<CellLayer cells={[cell(london.cell_r7, 1)]} />)
-    expect(Number(screen.getByTestId('cell').getAttribute('data-opacity'))).toBeLessThan(1)
-  })
-
-  it('honours an explicit fill opacity', () => {
-    render(<CellLayer cells={[cell(london.cell_r7, 1)]} fillOpacity={0.2} />)
-    expect(screen.getByTestId('cell')).toHaveAttribute('data-opacity', '0.2')
   })
 
   it('renders nothing for an empty cell list', () => {

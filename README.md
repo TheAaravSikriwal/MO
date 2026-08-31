@@ -60,11 +60,13 @@ total, so cleaning up an area visibly cools its colour. That is the whole point.
 currently on screen rather than against fixed thresholds, so a dense city does
 not saturate to one colour and a quiet area still shows its own variation.
 
-**The ramp runs teal to amber, never green to red.** Reports cluster in the
-places least equipped to deal with them, and a red "danger zone" ramp would paint
-those areas as the problem. Teal to amber reads as "needs attention", which is
-the honest message. Lightness rises along the ramp too, so it survives greyscale
-and colour-vision deficiency.
+**The ramp runs white to red, and builds slowly.** White is the resting state:
+an area with nothing reported reads as clean, and the map only gains colour as
+people flag it. The first third of the scale stays white through pale yellow
+before any orange appears, so red is reserved for places many people have
+confirmed. Opacity fades out at the clean end too, so quiet areas show the map
+underneath rather than washing it out. Lightness and saturation both change
+along the ramp, so it survives greyscale and colour-vision deficiency.
 
 ## Language
 

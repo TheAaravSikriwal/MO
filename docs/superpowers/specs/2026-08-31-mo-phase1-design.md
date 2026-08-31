@@ -38,7 +38,7 @@ Recorded with rationale so they aren't relitigated later.
 | D5 | Cell weight = sum over open reports in the cell of `(1 + vote_count)`. Colour assigned by percentile against what is currently on screen. | Reads correctly in a dense city *and* a quiet suburb. Cleaned reports drop out, so cleanups visibly cool the map. |
 | D6 | Store exact lat/lng plus six precomputed H3 columns (r1, r3, r5, r7, r9, r12). Rollup is `GROUP BY cell_rN`. | No Postgres H3 extension dependency. H3 parents never change, so precomputing is safe. Index-only aggregation. |
 | D7 | Reports may only be submitted at map zoom ≥ 15. | Forces a precise pin and keeps the data honest. |
-| D8 | Continuous OKLCH colour ramp, teal → amber. No discrete bins, no strokes. | Hues must transition cleanly. A green→red ramp reads as "danger zone" and would paint poorer areas blood-red, violating the tone rule. |
+| D8 | Continuous OKLCH colour ramp: **white → yellow → orange → red**. No discrete bins, no strokes. Fill opacity rises with severity. | Hues must transition cleanly. White is the resting state, so a clean area reads as clean and the map only gains colour as people flag it. Superseded an earlier teal→amber ramp: measurement showed it passed through a strong green midpoint (chroma 0.126), and green reads as "all clear" on an area that has reported litter. |
 | D9 | Moderation is four tiers behind a queue table, each tier swappable by env var. | The model host will move between laptop, PC and local server. The app must not care. |
 | D10 | Admin role ships in Phase 1, not "later". | Obscene photos and comments are the primary failure mode. |
 | D11 | Photo bytes live in **Cloudflare R2** behind a Cloudflare-proxied hostname. Metadata stays in Supabase. App stays on Vercel. | Supabase free storage (~1 GB) caps MO at roughly 2,000 photos. R2 free tier is ~10 GB with zero egress. R2 is on a Cloudflare zone by definition, so CSAM scanning comes free. |
@@ -126,10 +126,16 @@ percentile, giving each a `t` in `[0, 1]`, then interpolates a colour in **OKLCH
 
 - **OKLCH, not sRGB.** sRGB interpolation produces muddy, dark midpoints. OKLCH is
   perceptually uniform, so the ramp reads as evenly spaced.
-- **Teal → amber**, not green → red. Reads as "needs attention", not "bad place"
-  (D8, tone rule).
-- **Lightness varies along the ramp** as well as hue, so the map still reads in
-  greyscale and under colour-vision deficiency.
+- **Four stops: white → yellow → orange → red.** Four rather than two keeps the
+  build gradual — the first third of the range stays white through pale yellow
+  before any orange appears, so red is reserved for areas many people have
+  confirmed.
+- **Lightness falls and chroma rises monotonically** along the ramp, so the map
+  still reads in greyscale and under colour-vision deficiency.
+- **Fill opacity rises with severity too**, from 0.12 to 0.70. A flat white wash
+  over every quiet area would fog the whole basemap; fading the clean end out
+  means a clean area simply shows the map underneath — which is what clean should
+  look like.
 - **Fill only, no strokes.** Adjacent cells bleed into each other instead of
   tiling into a hard-edged mosaic.
 - **Cross-fade on resolution change.** When zoom crosses a boundary in the table

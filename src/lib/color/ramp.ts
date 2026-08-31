@@ -1,25 +1,29 @@
 import { interpolate, formatHex } from 'culori'
 
 /**
- * The ramp anchors.
+ * The severity ramp: clean white, building through yellow and orange to red.
  *
- * Teal to amber, deliberately not green to red. A red ramp reads as "danger
- * zone", and since pollution reports cluster in the places least able to fix
- * them, that would paint the poorest areas the most alarming colour on the map.
- * Teal to amber reads as "needs attention" instead, which is the honest message.
- *
- * Lightness rises along the ramp as well as hue, so the map stays legible in
- * greyscale and under colour-vision deficiency.
+ * White is the resting state — an area with nothing reported reads as clean, and
+ * the map only gains colour as people flag it. Red is reserved for the very top
+ * of the scale, so it takes real, repeated confirmation from multiple people to
+ * get there.
  */
-export const RAMP_COLD = '#1f7a6e'
-export const RAMP_WARM = '#f2b544'
+export const RAMP_CLEAN = '#ffffff'
+export const RAMP_LOW = '#ffd54a'
+export const RAMP_MEDIUM = '#f2801d'
+export const RAMP_HIGH = '#cc2b2b'
+
+export const RAMP_STOPS = [RAMP_CLEAN, RAMP_LOW, RAMP_MEDIUM, RAMP_HIGH] as const
 
 /**
  * Interpolation happens in OKLCH because it is perceptually uniform. The same
- * two anchors interpolated in sRGB dip through a muddy, darker midpoint, which
- * the eye reads as a band rather than a clean transition.
+ * stops interpolated in sRGB dip through muddy midpoints, which the eye reads as
+ * banding rather than a clean transition.
+ *
+ * Four stops rather than two keeps the build gradual: the first third of the
+ * range stays white through pale yellow before any orange appears.
  */
-const ramp = interpolate([RAMP_COLD, RAMP_WARM], 'oklch')
+const ramp = interpolate(RAMP_STOPS as unknown as string[], 'oklch')
 
 /**
  * Colour for a normalised position on the ramp.
