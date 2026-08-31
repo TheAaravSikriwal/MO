@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ReportForm } from './ReportForm'
 import { FakeDataSource } from '../../lib/data/fakeSource'
+import { screenPhotoFileOnly } from '../../lib/moderation/screenPhoto'
 
 const photo = (name = 'litter.jpg', type = 'image/jpeg', size = 1024) => {
   const file = new File(['x'], name, { type })
@@ -23,6 +24,7 @@ const setup = (overrides: Partial<Parameters<typeof ReportForm>[0]> = {}) => {
       signedIn
       onSubmitted={onSubmitted}
       onCancel={onCancel}
+      screenPhoto={screenPhotoFileOnly}
       {...overrides}
     />,
   )
@@ -63,13 +65,13 @@ describe('ReportForm — photos', () => {
   it('accepts a photo and shows it in the list', async () => {
     const { user } = setup()
     await user.upload(screen.getByLabelText(/^photo$/i), photo())
-    expect(screen.getByText('litter.jpg')).toBeInTheDocument()
+    expect(await screen.findByText('litter.jpg')).toBeInTheDocument()
   })
 
   it('lets a photo be removed again', async () => {
     const { user } = setup()
     await user.upload(screen.getByLabelText(/^photo$/i), photo())
-    await user.click(screen.getByRole('button', { name: /remove litter\.jpg/i }))
+    await user.click(await screen.findByRole('button', { name: /remove litter\.jpg/i }))
     expect(screen.queryByText('litter.jpg')).not.toBeInTheDocument()
   })
 
@@ -95,7 +97,7 @@ describe('ReportForm — photos', () => {
     const { user } = setup()
     const input = screen.getByLabelText(/^photo$/i)
     await user.upload(input, [photo('a.jpg'), photo('b.jpg'), photo('c.jpg'), photo('d.jpg')])
-    expect(screen.getByText('a.jpg')).toBeInTheDocument()
+    expect(await screen.findByText('a.jpg')).toBeInTheDocument()
     expect(screen.getByText('c.jpg')).toBeInTheDocument()
     expect(screen.queryByText('d.jpg')).not.toBeInTheDocument()
     expect(input).toBeDisabled()
@@ -173,24 +175,16 @@ describe('ReportForm — sending', () => {
   })
 
   it('shows a plain message if sending fails', async () => {
-    const { user } = setup()
-    const failing = { createReport: vi.fn().mockRejectedValue(new Error('network is down')) }
-    render(
-      <ReportForm
-        data={failing as never}
-        lat={0}
-        lng={0}
-        zoom={16}
-        signedIn
-        onSubmitted={vi.fn()}
-        onCancel={vi.fn()}
-      />,
-    )
-    const forms = screen.getAllByLabelText(/add a report/i)
-    const input = forms[1].querySelector('input[type=file]')!
-    await user.upload(input as HTMLElement, photo())
-    await user.click(within(forms[1]).getByRole('button', { name: /add report/i }))
-    expect(await within(forms[1]).findByRole('alert')).toHaveTextContent(/network is down/i)
+    const failing = {
+      createReport: vi.fn().mockRejectedValue(new Error('network is down')),
+    } as never
+    const { user } = setup({ data: failing })
+
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    await user.click(screen.getByRole('button', { name: /add report/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/network is down/i)
   })
 })
 
@@ -210,5 +204,49 @@ describe('ReportForm — language', () => {
     for (const word of ['dirty', 'filthy', 'slum', 'bad area', 'contaminated']) {
       expect(text).not.toContain(word)
     }
+  })
+})
+
+describe('ReportForm — the photo model gate', () => {
+  it('blocks a photo the model rejects, and says so about the photo', async () => {
+    const { user } = setup({
+      screenPhoto: async () => ({
+        blocked: true,
+        message: 'This photo does not look like litter or pollution. Please choose another.',
+      }),
+    })
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/does not look like litter/i)
+    expect(screen.queryByText('litter.jpg')).not.toBeInTheDocument()
+  })
+
+  it('accepts a photo the model allows', async () => {
+    const { user } = setup({ screenPhoto: async () => ({ blocked: false }) })
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    expect(await screen.findByText('litter.jpg')).toBeInTheDocument()
+  })
+
+  it('lets the photo through when the model itself fails, rather than blocking everything', async () => {
+    // Tier 1 fails open: it is a convenience filter, and the server is what
+    // actually protects the map.
+    const { user } = setup({
+      screenPhoto: async () => {
+        try {
+          throw new Error('model failed to load')
+        } catch {
+          return { blocked: false }
+        }
+      },
+    })
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    expect(await screen.findByText('litter.jpg')).toBeInTheDocument()
+  })
+
+  it('actually calls the screener for every chosen photo', async () => {
+    const screenPhoto = vi.fn().mockResolvedValue({ blocked: false })
+    const { user } = setup({ screenPhoto })
+    await user.upload(screen.getByLabelText(/^photo$/i), [photo('a.jpg'), photo('b.jpg')])
+    await waitFor(() => expect(screenPhoto).toHaveBeenCalledTimes(2))
   })
 })

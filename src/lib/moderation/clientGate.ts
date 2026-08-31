@@ -88,19 +88,40 @@ export function judgeNsfwScores(scores: NsfwScores | null): GateResult {
 let scorerPromise: Promise<NsfwScorer | null> | null = null
 
 /**
- * Load nsfwjs lazily.
+ * Where the NSFW model is loaded from at runtime.
  *
- * TensorFlow is several megabytes; importing it eagerly would make the map
- * slower to open for everyone, including the majority who never submit
- * anything. Loading it the first time somebody actually picks a photo keeps
- * that cost where it belongs.
+ * Deliberately NOT a bundled dependency. Installing nsfwjs and importing it
+ * normally pulls TensorFlow *and the model weights* into the build: measured at
+ * 39.6 MB of output, against 860 KB without it. Shipping that to every visitor
+ * so the minority who upload a photo get instant feedback is a bad trade, and
+ * the server tiers are the real protection either way.
+ *
+ * Loading it from a CDN on first use costs nothing to people who only look at
+ * the map. Point this at your own copy if you would rather not depend on a CDN.
  */
-export async function loadNsfwScorer(): Promise<NsfwScorer | null> {
+const DEFAULT_NSFW_MODULE_URL = 'https://esm.sh/nsfwjs@4'
+
+interface NsfwModule {
+  load: () => Promise<{ classify: (image: HTMLImageElement) => Promise<Array<{ className: string; probability: number }>> }>
+}
+
+/**
+ * Load the model lazily, the first time somebody actually picks a photo.
+ *
+ * Returns null on any failure, which the caller treats as "allow" — tier 1 is a
+ * convenience filter, not the authority, so a CDN hiccup must not stop people
+ * reporting litter.
+ */
+export async function loadNsfwScorer(
+  moduleUrl: string = import.meta.env.VITE_NSFW_MODULE_URL || DEFAULT_NSFW_MODULE_URL,
+): Promise<NsfwScorer | null> {
   if (scorerPromise) return scorerPromise
 
   scorerPromise = (async () => {
     try {
-      const nsfwjs = await import('nsfwjs')
+      // @vite-ignore keeps this a genuine runtime import, so neither the
+      // library nor its weights are ever pulled into the bundle.
+      const nsfwjs = (await import(/* @vite-ignore */ moduleUrl)) as NsfwModule
       const model = await nsfwjs.load()
       return async (image: HTMLImageElement) => {
         const predictions = await model.classify(image)

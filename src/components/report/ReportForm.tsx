@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { checkPhotoFile, checkText } from '../../lib/moderation/clientGate'
+import { checkText } from '../../lib/moderation/clientGate'
+import { screenPhotoWithModel, type PhotoScreener } from '../../lib/moderation/screenPhoto'
 import { PIN_ZOOM_THRESHOLD } from '../../lib/grid/zoomResolution'
 import type { DataSource } from '../../lib/data/types'
 
@@ -16,6 +17,13 @@ export interface ReportFormProps {
   signedIn: boolean
   onSubmitted: (reportId: string) => void
   onCancel: () => void
+  /**
+   * Injected in tests so nothing has to load TensorFlow. In the browser this
+   * lazy-loads the NSFW model the first time somebody actually picks a photo,
+   * which keeps several megabytes off the initial page load for the majority
+   * who only ever look at the map.
+   */
+  screenPhoto?: PhotoScreener
 }
 
 export function ReportForm({
@@ -26,28 +34,35 @@ export function ReportForm({
   signedIn,
   onSubmitted,
   onCancel,
+  screenPhoto = screenPhotoWithModel,
 }: ReportFormProps) {
   const [photos, setPhotos] = useState<File[]>([])
   const [note, setNote] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(false)
 
   const tooFarOut = zoom < PIN_ZOOM_THRESHOLD
 
-  const onChoosePhotos = (files: FileList | null) => {
+  const onChoosePhotos = async (files: FileList | null) => {
     setError(null)
     if (!files || files.length === 0) return
 
     const chosen = Array.from(files).slice(0, MAX_PHOTOS - photos.length)
-    for (const file of chosen) {
-      const result = checkPhotoFile(file)
-      if (result.blocked) {
-        setError(result.message ?? 'That photo cannot be used.')
-        return
+    setChecking(true)
+    try {
+      for (const file of chosen) {
+        const result = await screenPhoto(file)
+        if (result.blocked) {
+          setError(result.message ?? 'That photo cannot be used.')
+          return
+        }
       }
+      setPhotos((current) => [...current, ...chosen].slice(0, MAX_PHOTOS))
+    } finally {
+      setChecking(false)
     }
-    setPhotos((current) => [...current, ...chosen].slice(0, MAX_PHOTOS))
   }
 
   const onNoteChange = (value: string) => {
@@ -122,9 +137,14 @@ export function ReportForm({
           accept="image/jpeg,image/png,image/webp"
           multiple
           disabled={photos.length >= MAX_PHOTOS}
-          onChange={(event) => onChoosePhotos(event.target.files)}
+          onChange={(event) => void onChoosePhotos(event.target.files)}
           className="mt-2 block w-full text-sm"
         />
+        {checking && (
+          <p role="status" className="mt-2 text-xs text-slate-600">
+            Checking the photo…
+          </p>
+        )}
         {photos.length > 0 && (
           <ul className="mt-2 space-y-1">
             {photos.map((photo, index) => (
@@ -183,7 +203,7 @@ export function ReportForm({
       <div className="mt-4 flex gap-2">
         <button
           type="submit"
-          disabled={busy || tooFarOut}
+          disabled={busy || checking || tooFarOut}
           className="flex-1 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300"
         >
           {busy ? 'Sending…' : 'Add report'}
