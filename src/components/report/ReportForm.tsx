@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { checkText } from '../../lib/moderation/clientGate'
+import { plainError } from '../../lib/moderation/plainWords'
 import { screenPhotoWithModel, type PhotoScreener } from '../../lib/moderation/screenPhoto'
 import { PIN_ZOOM_THRESHOLD } from '../../lib/grid/zoomResolution'
 import type { DataSource } from '../../lib/data/types'
@@ -88,7 +89,10 @@ export function ReportForm({
       const { id } = await data.createReport({ lat, lng, note: note.trim(), photos })
       onSubmitted(id)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Something went wrong. Please try again.')
+      // Never the raw message: createReport can fail with an RLS violation, a
+      // check-constraint name, or the rate-limit trigger's wording, and this is
+      // the app's primary write path.
+      setError(plainError(cause instanceof Error ? cause.message : null))
     } finally {
       setBusy(false)
     }

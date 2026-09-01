@@ -65,7 +65,11 @@ export class SupabaseDataSource implements DataSource {
     return {
       id: data.user.id,
       email: data.user.email ?? undefined,
+      // Fail closed on the permission itself, but say so. Returning a bare
+      // false made a failed check identical to "not an admin", so a real admin
+      // silently lost the review queue.
       isAdmin: isAdmin === true,
+      adminUnknown: Boolean(error),
     }
   }
 

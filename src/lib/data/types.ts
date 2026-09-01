@@ -4,6 +4,15 @@ export interface CurrentUser {
   id: string
   email?: string
   isAdmin: boolean
+  /**
+   * True when the permission check itself failed.
+   *
+   * `isAdmin` is false in that case, which is safe but indistinguishable
+   * from genuinely not being an admin -- so a real admin would lose the
+   * review queue with nothing on screen to explain it. This lets the UI
+   * say so.
+   */
+  adminUnknown?: boolean
 }
 
 export interface PhotoView {

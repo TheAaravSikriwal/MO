@@ -85,9 +85,16 @@ const viewOf = (name: string) => {
 const bodyOf = (name: string) => {
   const at = allCode.indexOf('function public.' + name)
   expect(at, 'function not found: ' + name).toBeGreaterThan(-1)
-  const rest = allCode.slice(at + name.length)
-  const next = rest.search(/create\s+or\s+replace\s+function/i)
-  return next === -1 ? allCode.slice(at) : allCode.slice(at, at + name.length + next)
+
+  // Bounded at the function's OWN terminator, not at the next function.
+  //
+  // Stopping at the next `create or replace function` swallowed everything in
+  // between -- for profile_names, the whole remainder of 0003 including its
+  // GRANT statements -- so an assertion about one function's body was really
+  // reading a whole migration file.
+  const rest = allCode.slice(at)
+  const end = rest.indexOf('$$;')
+  return end === -1 ? rest : rest.slice(0, end + 3)
 }
 
 describe('migrations — structure', () => {
@@ -469,12 +476,16 @@ describe('migrations — the admin surface refuses non-admins', () => {
     expect(offenders).toEqual([])
   })
 
-  it('bounds each function body at the next definition', () => {
-    // Guards the guard: if bodyOf over-reads, the is_admin checks above pass on
-    // a neighbouring function's guard rather than the one they name.
+  it('bounds each function body at its own terminator', () => {
+    // Guards the guard: if bodyOf over-reads, an assertion about one function
+    // is really reading its neighbour, or an entire migration file.
     expect(bodyOf('admin_moderation_queue')).not.toContain('admin_decide_moderation')
     expect(bodyOf('admin_decide_moderation')).not.toContain('admin_queue_size')
     expect(bodyOf('admin_queue_size')).not.toContain('flag_reopens_review')
+    // profile_names is the last function in 0003, so an over-read runs all the
+    // way into 0004 and picks up 0003's grants on the way.
+    expect(bodyOf('profile_names')).not.toContain('grant ')
+    expect(bodyOf('profile_names').length).toBeLessThan(600)
   })
 
   it('closes the double-decide race', () => {
@@ -504,7 +515,7 @@ describe('migrations — nothing hands out unreviewed content', () => {
 
   it('keeps role out of the name lookup', () => {
     // Exposing it would let anyone enumerate every admin account.
-    expect(bodyOf('profile_names')).not.toMatch(/role/i)
+    expect(bodyOf('profile_names').toLowerCase()).not.toContain('role')
   })
 
   it('bounds the name lookup so it cannot be used to page through accounts', () => {
@@ -560,5 +571,33 @@ describe('migrations — a complaint reaches a person', () => {
 describe('migrations — rate limits exist for every table a person can write to', () => {
   it.each(['report', 'comment', 'flag'])('limits %s inserts', (kind) => {
     expect(allCode).toContain('enforce_' + kind + '_rate_limit')
+  })
+})
+
+describe('the test sources themselves', () => {
+  it('contain no stray control characters', () => {
+    // A `\b` written through a shell heredoc can land in the file as a literal
+    // backspace byte, turning a regex into one that matches nothing. That is
+    // exactly how the profile_names role check came to pass on a schema that
+    // leaked `role` -- silently, with a green suite.
+    const roots = [join(process.cwd(), 'src'), join(process.cwd(), 'worker', 'src')]
+    const offenders: string[] = []
+
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+        } else if (/\.(ts|tsx)$/.test(entry.name)) {
+          const text = readFileSync(full, 'utf8')
+          // Tab, CR and LF are fine; nothing else below 0x20 belongs in source.
+          const match = text.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/)
+          if (match) offenders.push(full)
+        }
+      }
+    }
+
+    for (const root of roots) walk(root)
+    expect(offenders).toEqual([])
   })
 })

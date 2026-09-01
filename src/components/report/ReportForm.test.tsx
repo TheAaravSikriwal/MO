@@ -184,7 +184,10 @@ describe('ReportForm — sending', () => {
     await screen.findByText('litter.jpg')
     await user.click(screen.getByRole('button', { name: /add report/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/network is down/i)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/could not reach the server/i)
+    // The raw backend wording must not reach a member of the public.
+    expect(alert.textContent).not.toContain('network is down')
   })
 })
 

@@ -102,6 +102,14 @@ export default function App({ data: injected }: AppProps = {}) {
       ])
       if (seq !== reportsSeq.current) return
       setReports(loaded)
+      // Re-point the open panel at the freshly loaded row. The real source
+      // builds new objects every load, so without this a vote or a cleanup
+      // leaves the panel rendering pre-change data -- still offering
+      // "Confirm this is here" on something you just confirmed. The fake
+      // mutates in place, so only production was affected.
+      setOpenReport((current) =>
+        current ? (loaded.find((r) => r.id === current.id) ?? current) : null,
+      )
       setMatchingInView(matching)
       setTotalInView(total)
       setReportsError(null)
@@ -157,7 +165,13 @@ export default function App({ data: injected }: AppProps = {}) {
         setUser(null)
         setAuthError('Could not check whether you are signed in.')
       })
-    return data.onAuthChange(setUser)
+    return data.onAuthChange((current) => {
+      setUser(current)
+      // Signing in successfully answers the question the banner was raising, so
+      // it must go. Otherwise a transient failure at startup leaves "Could not
+      // check whether you are signed in" on screen for the whole session.
+      setAuthError(null)
+    })
   }, [data])
 
 
@@ -289,7 +303,10 @@ export default function App({ data: injected }: AppProps = {}) {
               data={data}
               isAdmin={user.isAdmin}
               onClose={() => setReviewing(false)}
-              onDecided={() => void refresh()}
+              onDecided={() => {
+                void refresh()
+                void refreshCells()
+              }}
             />
           )}
 
@@ -298,7 +315,13 @@ export default function App({ data: injected }: AppProps = {}) {
               data={data}
               report={openReport}
               signedIn={user !== null}
-              onChanged={() => void refresh()}
+              onChanged={() => {
+                // Cells too. Marking a report cleaned from the aggregated view
+                // dropped it from the counts while its hexagon stayed exactly
+                // as hot -- the one thing the product exists to show.
+                void refresh()
+                void refreshCells()
+              }}
               onClose={() => setOpenReport(null)}
             />
           )}
