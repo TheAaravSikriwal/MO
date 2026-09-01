@@ -60,7 +60,8 @@ begin
       else j.subject_id
     end,
     (select count(*) from public.flags f
-      where f.subject_type = j.subject_type and f.subject_id = j.subject_id)
+      where f.subject_type = j.subject_type and f.subject_id = j.subject_id
+        and f.resolved_at is null)
   from public.moderation_jobs j
   -- Three ways an item ends up needing a person:
   --   * the machine tiers finished but could not decide (verdict is null)
@@ -79,7 +80,8 @@ begin
   order by
     -- Anything people have complained about goes first.
     (select count(*) from public.flags f
-      where f.subject_type = j.subject_type and f.subject_id = j.subject_id) desc,
+      where f.subject_type = j.subject_type and f.subject_id = j.subject_id
+        and f.resolved_at is null) desc,
     j.created_at asc
   limit least(greatest(max_results, 1), 200);
 end;
@@ -151,6 +153,14 @@ begin
   if not found then
     raise exception 'this item was decided by someone else a moment ago';
   end if;
+
+  -- Ruling on something settles the complaints about it, so they cannot
+  -- re-withhold it the moment somebody else objects.
+  update public.flags
+     set resolved_at = now()
+   where subject_type = job.subject_type
+     and subject_id = job.subject_id
+     and resolved_at is null;
 
   if job.subject_type = 'photo' then
     update public.report_photos set moderation_status = new_verdict where id = job.subject_id;
@@ -251,7 +261,12 @@ declare
 begin
   select count(*) into complaints
     from public.flags
-   where subject_type = new.subject_type and subject_id = new.subject_id;
+   where subject_type = new.subject_type
+     and subject_id = new.subject_id
+     -- Only complaints an admin has not already ruled on. Otherwise a decided
+     -- item with two old flags is un-published again by the very next flagger,
+     -- and no admin surface can ever make it stick.
+     and resolved_at is null;
 
   if complaints < 2 then
     return null;

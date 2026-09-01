@@ -100,10 +100,16 @@ export class Queue {
    * its content withheld and nobody able to release it.
    */
   async fail(job: ModerationJob, reason: string): Promise<void> {
+    // Guarded, like every other write to this table. Unconditionally stamping
+    // 'failed' could overwrite a job that someone flagged mid-processing, or one
+    // an admin had already ruled on -- and since a failed job is re-claimable,
+    // the retry would then let the machine silently reverse a human's decision.
     const { error } = await this.client
       .from('moderation_jobs')
       .update({ status: 'failed', reason, locked_at: null, locked_by: null })
       .eq('id', job.id)
+      .eq('status', 'in_progress')
+      .is('verdict', null)
     if (error) throw new Error(`could not mark job ${job.id} failed: ${error.message}`)
   }
 

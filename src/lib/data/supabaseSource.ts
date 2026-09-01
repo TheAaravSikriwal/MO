@@ -37,15 +37,21 @@ export class SupabaseDataSource implements DataSource {
   async getCurrentUser(): Promise<CurrentUser | null> {
     const { data } = await this.client.auth.getUser()
     if (!data.user) return null
-    const { data: profile } = await this.client
-      .from('profiles')
-      .select('role')
-      .eq('id', data.user.id)
-      .maybeSingle()
+
+    // Through the RPC, not the table. `profiles` is revoked from browser roles
+    // so nobody can enumerate admins by reading `role`; reading it directly
+    // returns "permission denied", and swallowing that error made isAdmin
+    // silently false for everyone -- including real admins, which left the
+    // review queue impossible to open.
+    const { data: isAdmin, error } = await this.client.rpc('is_admin')
+    if (error) {
+      console.error('[mo] could not determine admin status:', error.message)
+    }
+
     return {
       id: data.user.id,
       email: data.user.email ?? undefined,
-      isAdmin: profile?.role === 'admin',
+      isAdmin: isAdmin === true,
     }
   }
 
@@ -67,9 +73,18 @@ export class SupabaseDataSource implements DataSource {
 
   // --- reports ------------------------------------------------------------
 
+  /**
+   * With no photo host configured there is nowhere to serve images from, so the
+   * url stays null. Building `/{path}` instead produced a truthy relative URL
+   * against the app's own origin: a broken <img> that the UI treated as a real
+   * photo, and an admin asked to judge content they could not see.
+   */
   private toPhoto = (row: Record<string, unknown>): PhotoView => ({
     id: String(row.id),
-    url: row.storage_path ? `${this.photoBaseUrl}/${String(row.storage_path)}` : null,
+    url:
+      this.photoBaseUrl && row.storage_path
+        ? `${this.photoBaseUrl}/${String(row.storage_path)}`
+        : null,
     moderationStatus: row.moderation_status as PhotoView['moderationStatus'],
   })
 
@@ -293,7 +308,10 @@ export class SupabaseDataSource implements DataSource {
       subjectId: String(row.subject_id),
       reportId: row.report_id ? String(row.report_id) : null,
       text: (row.content_text as string | null) ?? null,
-      photoUrl: row.storage_path ? `${this.photoBaseUrl}/${String(row.storage_path)}` : null,
+      photoUrl:
+        this.photoBaseUrl && row.storage_path
+          ? `${this.photoBaseUrl}/${String(row.storage_path)}`
+          : null,
       reason: (row.reason as string | null) ?? 'no reason recorded',
       tierResults: (row.tier_results as Record<string, unknown>) ?? {},
       flagCount: Number(row.flag_count ?? 0),

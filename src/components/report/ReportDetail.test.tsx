@@ -70,9 +70,18 @@ describe('ReportDetail — photos under review', () => {
     expect(screen.getByRole('img')).toHaveAttribute('src', 'https://img/a.jpg')
   })
 
-  it('hides a note that is still being checked', () => {
-    setup({ note: null, noteStatus: 'pending' })
-    expect(screen.getByText(/the note is being checked/i)).toBeInTheDocument()
+  it('tells the author their own note is still being checked', () => {
+    setup({ note: null, noteStatus: 'pending', viewerIsReporter: true })
+    expect(screen.getByText(/your note is being checked/i)).toBeInTheDocument()
+  })
+
+  it('tells everyone else nothing about a note under review', () => {
+    // note_status is public, so announcing the outcome told passers-by that a
+    // note on this pin had been held or removed -- none of their business, and
+    // an invitation to wonder what it said.
+    setup({ note: null, noteStatus: 'pending', viewerIsReporter: false })
+    expect(screen.queryByText(/being checked/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/removed/i)).not.toBeInTheDocument()
   })
 })
 
@@ -252,8 +261,13 @@ describe('ReportDetail — reporting a note', () => {
   })
 
   it('tells the author when their note was removed', () => {
-    setup({ note: 'something unpleasant', noteStatus: 'rejected' })
-    expect(screen.getByText(/the note was removed/i)).toBeInTheDocument()
+    setup({ note: 'something unpleasant', noteStatus: 'rejected', viewerIsReporter: true })
+    expect(screen.getByText(/your note was removed/i)).toBeInTheDocument()
     expect(screen.queryByText('something unpleasant')).not.toBeInTheDocument()
+  })
+
+  it('does not tell other people that a note was removed', () => {
+    setup({ note: null, noteStatus: 'rejected', viewerIsReporter: false })
+    expect(screen.queryByText(/removed/i)).not.toBeInTheDocument()
   })
 })

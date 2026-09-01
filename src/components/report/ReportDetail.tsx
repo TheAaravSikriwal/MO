@@ -150,17 +150,20 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
         ))}
       </div>
 
-      {report.noteStatus === 'pending' ? (
+      {/*
+        A note's review outcome is the author's business, not everybody's.
+        note_status is public, so announcing it to every visitor told passers-by
+        that a note on this pin had been removed -- which is both none of their
+        concern and a nudge to wonder what it said.
+      */}
+      {report.viewerIsReporter && report.noteStatus === 'pending' ? (
         // The author receives their own note whatever its status, so checking
         // `report.note` first made this branch unreachable for the one person
-        // who can see an unpublished note -- and offered them a "report this"
-        // button on their own unpublished text.
-        <p className="mt-3 text-sm text-slate-500">The note is being checked.</p>
-      ) : report.noteStatus === 'rejected' ? (
-        // The author still receives the text, so without this it would look
-        // published to the one person who most needs to know it is not.
+        // who can see an unpublished note.
+        <p className="mt-3 text-sm text-slate-500">Your note is being checked.</p>
+      ) : report.viewerIsReporter && report.noteStatus === 'rejected' ? (
         <p className="mt-3 text-sm text-slate-500">
-          The note was removed and is not shown on the map.
+          Your note was removed and is not shown on the map.
         </p>
       ) : report.note ? (
         <div className="mt-3">

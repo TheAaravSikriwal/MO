@@ -165,11 +165,16 @@ create table flags (
   subject_id   uuid not null,
   flagger_id   uuid not null references profiles (id) on delete cascade,
   reason       text check (char_length(reason) <= 500),
+  -- Set when an admin rules on the subject. Counting LIFETIME flags meant that
+  -- once something had two, every new complaint immediately un-published it
+  -- again, undoing the decision forever.
+  resolved_at  timestamptz,
   created_at   timestamptz not null default now(),
   unique (subject_type, subject_id, flagger_id)
 );
 
-create index flags_subject_idx on flags (subject_type, subject_id);
+create index flags_subject_idx on flags (subject_type, subject_id)
+  where resolved_at is null;
 
 -- ---------------------------------------------------------------------------
 -- moderation_jobs  --  the swappable seam

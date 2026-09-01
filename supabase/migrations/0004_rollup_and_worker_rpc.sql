@@ -192,7 +192,11 @@ begin
          locked_at    = null,
          locked_by    = null
    where id = job_id
-     and status = 'in_progress';
+     and status = 'in_progress'
+     -- verdict too, not just status: a job that was flagged, decided by an
+     -- admin, then re-claimed after a worker error would otherwise have the
+     -- admin's rejection silently overwritten by the machine.
+     and verdict is null;
 
   if not found then
     -- Someone flagged it, or another worker finished it. Leave their state
@@ -236,7 +240,12 @@ as $$
          reason       = escalate_moderation_job.reason,
          locked_at    = null,
          locked_by    = null
-   where id = job_id;
+   -- Same guard as the verdict path. Without it, escalating or discarding wipes
+   -- a decision a person already made, leaving the job and the content
+   -- disagreeing about what was decided.
+   where id = job_id
+     and status = 'in_progress'
+     and verdict is null;
 $$;
 
 -- These are the worker's, and the worker authenticates with the service role

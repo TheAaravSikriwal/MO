@@ -36,6 +36,44 @@ const stripComments = (text: string) =>
 
 const allCode = stripComments(Object.values(sql).join('\n'))
 
+const TABLES = [
+  'profiles',
+  'reports',
+  'report_photos',
+  'votes',
+  'comments',
+  'flags',
+  'moderation_jobs',
+]
+
+/**
+ * The whole schema with runs of whitespace collapsed to single spaces.
+ *
+ * Checks below match against this with plain string containment rather than
+ * regexes assembled from templates. Escaping a backslash through a template
+ * into `new RegExp` silently produces a pattern that matches nothing, which is
+ * exactly how a test ends up guarding air.
+ */
+const flat = allCode.replace(/\s+/g, ' ')
+
+/** The `create trigger` statement for a name, so its table can be checked. */
+const triggerFor = (name: string) => {
+  const at = flat.indexOf('create trigger ' + name + ' ')
+  expect(at, 'trigger not found: ' + name).toBeGreaterThan(-1)
+  const rest = flat.slice(at)
+  const end = rest.indexOf(';')
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
+/** A view definition, bounded by the next statement rather than a fixed size. */
+const viewOf = (name: string) => {
+  const at = allCode.indexOf('create view public.' + name)
+  expect(at, 'view not found: ' + name).toBeGreaterThan(-1)
+  const rest = allCode.slice(at)
+  const end = rest.indexOf(';')
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
 /**
  * The body of one function, bounded by the start of the next one.
  *
@@ -118,6 +156,101 @@ describe('migrations — unreviewed content stays unreachable', () => {
     expect(allCode).not.toMatch(
       /grant\s+execute\s+on\s+function\s+public\.record_moderation_verdict[\s\S]{0,160}to\s+(anon|authenticated)/i,
     )
+  })
+})
+
+describe('migrations — row level security is actually on', () => {
+  it.each(TABLES)('enables RLS on %s', (table) => {
+    // Nothing else in this file would notice if every `enable row level
+    // security` line were deleted.
+    expect(flat).toContain('alter table public.' + table + ' enable row level security')
+  })
+
+  it('defines policies rather than relying on RLS alone', () => {
+    // RLS with no policies denies everything, which fails closed but silently
+    // breaks the app; RLS with policies deleted is the dangerous direction.
+    const policies = allCode.match(/create\s+policy/gi) ?? []
+    expect(policies.length).toBeGreaterThanOrEqual(10)
+  })
+
+  it.each(['comments', 'profiles'])(
+    'never grants whole-table select on %s to a browser role',
+    (table) => {
+      // A later grant beats an earlier revoke in Postgres, so the revoke
+      // assertions above are not enough on their own.
+      expect(flat).not.toContain('grant select on public.' + table + ' to anon')
+      expect(flat).not.toContain('grant select on public.' + table + ' to authenticated')
+    },
+  )
+
+  it.each(['votes', 'flags'])(
+    'scopes %s to your own rows, since it is readable',
+    (table) => {
+      // These two ARE granted, deliberately: neither holds content awaiting
+      // review, and the app needs them. What matters is that the policy stops
+      // you reading anybody else's.
+      expect(flat).toContain('grant select on public.' + table + ' to authenticated')
+      const policy = flat.slice(flat.indexOf('create policy ' + table.slice(0, -1) + 's_select_own'))
+      expect(policy.slice(0, 300)).toMatch(/auth\.uid\(\)/)
+    },
+  )
+
+  it('never exposes votes or flags to anonymous visitors', () => {
+    // Who voted for what, and who complained about whom, are not public.
+    expect(flat).not.toContain('grant select on public.votes to anon')
+    expect(flat).not.toContain('grant select on public.flags to anon')
+  })
+})
+
+describe('migrations — triggers are attached to the right tables', () => {
+  it.each([
+    ['flag_reopens_review', 'flags'],
+    ['flag_withholds_content', 'flags'],
+    ['validate_flag_subject', 'flags'],
+    ['enforce_flag_rate_limit', 'flags'],
+    ['default_note_status', 'reports'],
+    ['enforce_report_rate_limit', 'reports'],
+    ['enforce_comment_rate_limit', 'comments'],
+    ['sync_vote_count_on_insert', 'votes'],
+  ])('%s fires on %s', (trigger, table) => {
+    expect(triggerFor(trigger)).toContain('on public.' + table + ' ')
+  })
+})
+
+describe('migrations — the queue selects the right jobs', () => {
+  it('only surfaces jobs with no verdict', () => {
+    // `where true` would pass every other assertion in this file.
+    expect(bodyOf('admin_moderation_queue')).toMatch(/where\s+j\.verdict\s+is\s+null/i)
+  })
+
+  it('surfaces jobs the worker gave up on, not only cleanly escalated ones', () => {
+    const body = bodyOf('admin_moderation_queue')
+    expect(body).toMatch(/status\s*=\s*'failed'/i)
+    expect(body).toMatch(/status\s*=\s*'in_progress'/i)
+  })
+
+  it('counts the same set it lists', () => {
+    expect(bodyOf('admin_queue_size')).toMatch(/verdict\s+is\s+null/i)
+  })
+})
+
+describe('migrations — a decision cannot be undone by the machine', () => {
+  it('settles the complaints it ruled on', () => {
+    // Counting lifetime flags meant the next flagger re-withheld a decided item
+    // immediately, forever.
+    expect(bodyOf('admin_decide_moderation')).toMatch(/set\s+resolved_at\s*=\s*now\(\)/i)
+  })
+
+  it('only counts unresolved complaints when withholding', () => {
+    expect(bodyOf('flag_withholds_content')).toMatch(/resolved_at\s+is\s+null/i)
+  })
+
+  it('guards the escalate path like the verdict path', () => {
+    expect(bodyOf('escalate_moderation_job')).toMatch(/verdict\s+is\s+null/i)
+  })
+
+  it('requires a null verdict before the worker writes one', () => {
+    expect(bodyOf('record_moderation_verdict')).toMatch(/and\s+verdict\s+is\s+null/i)
   })
 })
 
@@ -215,8 +348,15 @@ describe('migrations — nothing hands out unreviewed content', () => {
   })
 
   it('keeps role out of the public profile view', () => {
-    const view = allCode.slice(allCode.indexOf('create view public.public_profiles'))
-    expect(view.slice(0, 300)).not.toMatch(/role/i)
+    // Bounded at the statement, not a fixed 300 chars -- that overran the view
+    // and would have passed or failed on whatever followed it.
+    expect(viewOf('public_profiles')).not.toMatch(/role/i)
+  })
+
+  it('still lets the app find out whether YOU are an admin', () => {
+    // Without this the review queue cannot be opened by anyone: the app has no
+    // other way to know, and the failure is silent.
+    expect(allCode).toMatch(/grant\s+execute\s+on\s+function\s+public\.is_admin\(\)\s+to\s+authenticated/i)
   })
 
   it('stops the worker overwriting a job a person flagged', () => {

@@ -162,6 +162,14 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProp
               <p className="mt-2 text-sm text-slate-500">This content is no longer available.</p>
             )}
 
+            {item.reportId && (
+              // Without this an admin judging a bare comment has no idea which
+              // report it sits on.
+              <p className="mt-2 text-xs text-slate-500">
+                On the report at <span className="font-mono">{item.reportId.slice(0, 8)}</span>
+              </p>
+            )}
+
             <p className="mt-2 text-xs text-slate-600">{plainReason(item.reason)}</p>
 
             {summariseScores(item.tierResults).length > 0 && (

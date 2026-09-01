@@ -23,6 +23,12 @@ as $$
   );
 $$;
 
+-- The app has to be able to ask this, and it cannot read profiles: 0003 revokes
+-- the table, and public_profiles deliberately omits `role` so nobody can
+-- enumerate admins. Exposing the answer about YOURSELF leaks nothing -- you
+-- already know -- while the column stays unreadable.
+grant execute on function public.is_admin() to authenticated;
+
 create or replace function public.touch_updated_at()
 returns trigger
 language plpgsql
