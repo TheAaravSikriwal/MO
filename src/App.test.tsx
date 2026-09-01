@@ -291,7 +291,6 @@ describe('App — filters', () => {
   })
 
   it('says how many are hidden, so a filtered map is not mistaken for an empty one', async () => {
-    const user = userEvent.setup()
     render(<App data={mixed()} />)
 
     // "1 of 2" rather than a bare "1": the difference between filtered and empty.
