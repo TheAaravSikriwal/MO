@@ -11,6 +11,9 @@ vi.mock('react-leaflet', () => ({
   MapContainer: ({ children }: any) => <div data-testid="map">{children}</div>,
   TileLayer: () => <div data-testid="tiles" />,
   Polygon: () => <div data-testid="cell" />,
+  CircleMarker: ({ eventHandlers }: any) => (
+    <button type="button" data-testid="pin" onClick={eventHandlers?.click} />
+  ),
   useMap: () => mapInstance,
   useMapEvents: () => null,
 }))
@@ -184,5 +187,88 @@ describe('App — the admin gate', () => {
     render(<App data={data} />)
     await waitFor(() => expect(screen.getByRole('searchbox')).toBeInTheDocument())
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+describe('App — pins and cells never draw together', () => {
+  const withReports = () => {
+    const data = new FakeDataSource(null)
+    data.seed({ id: 'r1', lat: 51.5074, lng: -0.1278, voteCount: 2 })
+    return data
+  }
+
+  it('aggregates into cells when zoomed out, with no pins', async () => {
+    render(<App data={withReports()} />)
+    // The map opens at the world view.
+    await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
+    expect(screen.queryByTestId('pin')).not.toBeInTheDocument()
+  })
+
+  it('leaves rejected reports off the map entirely', async () => {
+    const data = new FakeDataSource(null)
+    data.seed({ id: 'r1', lat: 51.5, lng: -0.12, moderationStatus: 'rejected' })
+    render(<App data={data} />)
+    await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
+    expect(screen.queryByTestId('pin')).not.toBeInTheDocument()
+  })
+})
+
+describe('App — filters', () => {
+  const mixed = () => {
+    const data = new FakeDataSource(null)
+    data.seed({ id: 'still-there', lat: 51.5074, lng: -0.1278, status: 'open', voteCount: 3 })
+    data.seed({ id: 'cleaned', lat: 51.5081, lng: -0.1265, status: 'cleaned', voteCount: 1 })
+    return data
+  }
+
+  it('shows everything to begin with', async () => {
+    render(<App data={mixed()} />)
+    expect(await screen.findByText('2 reports')).toBeInTheDocument()
+  })
+
+  it('narrows the map when a filter is chosen', async () => {
+    const user = userEvent.setup()
+    render(<App data={mixed()} />)
+    await screen.findByText('2 reports')
+
+    await user.click(screen.getByRole('button', { name: /cleaned up/i }))
+
+    expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
+  })
+
+  it('says how many are hidden, so a filtered map is not mistaken for an empty one', async () => {
+    const user = userEvent.setup()
+    render(<App data={mixed()} />)
+    await screen.findByText('2 reports')
+
+    await user.click(screen.getByRole('button', { name: /still there/i }))
+
+    // "1 of 2" rather than a bare "1": the difference between filtered and empty.
+    expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
+  })
+
+  it('keeps the filter applied when zoomed out to the aggregated view', async () => {
+    // Zooming out must not quietly bring back what was filtered away.
+    const user = userEvent.setup()
+    render(<App data={mixed()} />)
+    await screen.findByText('2 reports')
+
+    await user.click(screen.getByRole('button', { name: /cleaned up/i }))
+    await screen.findByText('1 of 2 reports')
+
+    const listed = screen.getAllByRole('button', { name: /confirmed/i })
+    expect(listed).toHaveLength(1)
+  })
+
+  it('restores everything when cleared', async () => {
+    const user = userEvent.setup()
+    render(<App data={mixed()} />)
+    await screen.findByText('2 reports')
+
+    await user.click(screen.getByRole('button', { name: /cleaned up/i }))
+    await screen.findByText('1 of 2 reports')
+    await user.click(screen.getByRole('button', { name: /^clear$/i }))
+
+    expect(await screen.findByText('2 reports')).toBeInTheDocument()
   })
 })

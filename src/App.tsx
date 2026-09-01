@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MapView, type MapPosition } from './components/map/MapView'
 import { CellLayer } from './components/map/CellLayer'
+import { ReportPinLayer } from './components/map/ReportPinLayer'
+import { FilterPanel } from './components/map/FilterPanel'
+import { applyFilters, DEFAULT_FILTERS, type ReportFilters } from './lib/filters/reportFilters'
+import { getCurrentPosition } from './lib/geo/nearMe'
 import { ReportForm } from './components/report/ReportForm'
 import { ReportDetail } from './components/report/ReportDetail'
 import { SignInPanel } from './components/auth/SignInPanel'
@@ -51,6 +55,8 @@ export default function App({ data: injected }: AppProps = {}) {
   const [adding, setAdding] = useState(false)
   const [reviewing, setReviewing] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [filters, setFilters] = useState<ReportFilters>(DEFAULT_FILTERS)
+  const [locatingMessage, setLocatingMessage] = useState<string | null>(null)
 
   const search = useMemo(() => createDebouncedSearch(), [])
 
@@ -86,11 +92,47 @@ export default function App({ data: injected }: AppProps = {}) {
     void refresh()
   }, [refresh])
 
+  // Below the threshold the map aggregates; at or above it, individual reports.
+  // Never both -- overlapping hexes and pins say the same thing twice and make
+  // the pins hard to hit.
+  const showPins = resolutionForZoom(view.zoom) === null
+
+  // Filters apply at every zoom: narrowing to "cleaned up" and then zooming
+  // out must not quietly bring everything back.
+  const visibleReportsForCells = useMemo(
+    () => applyFilters(reports.filter((r) => r.moderationStatus === 'approved'), filters),
+    [reports, filters],
+  )
+
   const cells = useMemo(() => {
     const resolution = resolutionForZoom(view.zoom)
     if (resolution === null) return []
-    return normaliseWeights(weighCells(reports.map(toWeighable), resolution))
-  }, [reports, view.zoom])
+    return normaliseWeights(weighCells(visibleReportsForCells.map(toWeighable), resolution))
+  }, [visibleReportsForCells, view.zoom])
+
+  const publishedReports = useMemo(
+    // A rejected pin is visible to its author and to admins, and must not be
+    // drawn on the map for them as though it were live.
+    () => reports.filter((report) => report.moderationStatus === 'approved'),
+    [reports],
+  )
+
+  const visibleReports = useMemo(
+    () => applyFilters(publishedReports, filters),
+    [publishedReports, filters],
+  )
+
+  const onUseMyLocation = async () => {
+    setLocatingMessage('Finding your location…')
+    const result = await getCurrentPosition()
+    if (result.ok) {
+      setLocatingMessage(null)
+      setFilters((current) => ({ ...current, origin: result.point }))
+      setFlyTo({ center: [result.point.lat, result.point.lng], zoom: PLACE_ZOOM })
+    } else {
+      setLocatingMessage(result.message)
+    }
+  }
 
   const closeEnoughToAdd = view.zoom >= PIN_ZOOM_THRESHOLD
 
@@ -138,6 +180,16 @@ export default function App({ data: injected }: AppProps = {}) {
           <div className="rounded-lg bg-white p-3 shadow-md">
             <SignInPanel data={data} user={user} />
           </div>
+
+          <FilterPanel
+            filters={filters}
+            onChange={setFilters}
+            showing={visibleReports.length}
+            total={publishedReports.length}
+            onUseMyLocation={() => void onUseMyLocation()}
+            locatingMessage={locatingMessage}
+            hasLocation={filters.origin !== null}
+          />
 
           {user?.isAdmin && !reviewing && (
             <button
@@ -213,13 +265,21 @@ export default function App({ data: injected }: AppProps = {}) {
         flyTo={flyTo}
         onViewChange={setView}
       >
-        <CellLayer cells={cells} />
+        {showPins ? (
+          <ReportPinLayer
+            reports={visibleReports}
+            selectedId={openReport?.id ?? null}
+            onSelect={setOpenReport}
+          />
+        ) : (
+          <CellLayer cells={cells} />
+        )}
       </MapView>
 
       {/* Reports are reachable by name as well as by eye, which matters for
           anyone who cannot pick a pin out of a busy map. */}
       <ul className="sr-only">
-        {reports.map((report) => (
+        {visibleReports.map((report) => (
           <li key={report.id}>
             <button type="button" onClick={() => setOpenReport(report)}>
               {report.status === 'cleaned' ? 'Cleaned report' : 'Litter reported here'} —{' '}
