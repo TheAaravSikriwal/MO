@@ -42,6 +42,7 @@ export default function App({ data: injected }: AppProps = {}) {
   const [results, setResults] = useState<Place[]>([])
   const [reports, setReports] = useState<ReportView[]>([])
   const [user, setUser] = useState<CurrentUser | null>(null)
+  const [openReportId, setOpenReportId] = useState<string | null>(null)
   const [openReport, setOpenReport] = useState<ReportView | null>(null)
   const [adding, setAdding] = useState(false)
   const [reviewing, setReviewing] = useState(false)
@@ -59,6 +60,43 @@ export default function App({ data: injected }: AppProps = {}) {
   const [locatingMessage, setLocatingMessage] = useState<string | null>(null)
 
   const search = useMemo(() => createDebouncedSearch(), [])
+
+  /**
+   * Keep the open panel showing live data.
+   *
+   * Holding the object selected at click time meant a vote or a cleanup left
+   * the panel rendering pre-change state -- still offering "Mark as cleaned" on
+   * something just cleaned. Falling back to that stale object when the report
+   * drops out of the filtered results has the same effect, and dropping out is
+   * exactly what a cleanup does under the default "still there" filter. So when
+   * it is not in the list, ask for it by id.
+   */
+  useEffect(() => {
+    if (!openReportId) {
+      setOpenReport(null)
+      return
+    }
+
+    const fromList = reports.find((r) => r.id === openReportId)
+    if (fromList) {
+      setOpenReport(fromList)
+      return
+    }
+
+    let live = true
+    void data
+      .getReport(openReportId)
+      .then((fresh) => {
+        if (live) setOpenReport(fresh)
+      })
+      .catch(() => {
+        if (live) setOpenReport(null)
+      })
+    return () => {
+      live = false
+    }
+  }, [data, openReportId, reports])
+
 
   const showPins = resolutionForZoom(view.zoom) === null
 
@@ -102,14 +140,6 @@ export default function App({ data: injected }: AppProps = {}) {
       ])
       if (seq !== reportsSeq.current) return
       setReports(loaded)
-      // Re-point the open panel at the freshly loaded row. The real source
-      // builds new objects every load, so without this a vote or a cleanup
-      // leaves the panel rendering pre-change data -- still offering
-      // "Confirm this is here" on something you just confirmed. The fake
-      // mutates in place, so only production was affected.
-      setOpenReport((current) =>
-        current ? (loaded.find((r) => r.id === current.id) ?? current) : null,
-      )
       setMatchingInView(matching)
       setTotalInView(total)
       setReportsError(null)
@@ -152,26 +182,34 @@ export default function App({ data: injected }: AppProps = {}) {
     }
   }, [data, view.bounds, view.zoom, serverFilters])
 
+  /**
+   * One place that decides both the user and the auth banner.
+   *
+   * Two handlers meant the mount-time path could raise a banner that the next
+   * auth event silently cleared, and that a failed permission check -- which
+   * resolves rather than rejects, so no catch runs -- was never surfaced at
+   * all. A real admin then lost the review queue with nothing to explain it.
+   */
+  const applyUser = useCallback((current: CurrentUser | null) => {
+    setUser(current)
+    setAuthError(
+      current?.adminUnknown
+        ? 'Could not check your permissions, so some options may be missing.'
+        : null,
+    )
+  }, [])
+
   useEffect(() => {
     void data
       .getCurrentUser()
-      .then((current) => {
-        setUser(current)
-        setAuthError(null)
-      })
+      .then(applyUser)
       .catch(() => {
         // A failure here is indistinguishable from being signed out, which
         // silently hides the review queue from an admin. Say so.
         setUser(null)
         setAuthError('Could not check whether you are signed in.')
       })
-    return data.onAuthChange((current) => {
-      setUser(current)
-      // Signing in successfully answers the question the banner was raising, so
-      // it must go. Otherwise a transient failure at startup leaves "Could not
-      // check whether you are signed in" on screen for the whole session.
-      setAuthError(null)
-    })
+    return data.onAuthChange(applyUser)
   }, [data])
 
 
@@ -322,7 +360,7 @@ export default function App({ data: injected }: AppProps = {}) {
                 void refresh()
                 void refreshCells()
               }}
-              onClose={() => setOpenReport(null)}
+              onClose={() => setOpenReportId(null)}
             />
           )}
 
@@ -361,7 +399,7 @@ export default function App({ data: injected }: AppProps = {}) {
           <ReportPinLayer
             reports={visibleReports}
             selectedId={openReport?.id ?? null}
-            onSelect={setOpenReport}
+            onSelect={(report) => setOpenReportId(report.id)}
           />
         ) : (
           <CellLayer cells={normaliseWeights(cells)} />
@@ -373,7 +411,7 @@ export default function App({ data: injected }: AppProps = {}) {
       <ul className="sr-only">
         {visibleReports.map((report) => (
           <li key={report.id}>
-            <button type="button" onClick={() => setOpenReport(report)}>
+            <button type="button" onClick={() => setOpenReportId(report.id)}>
               {report.status === 'cleaned' ? 'Cleaned report' : 'Litter reported here'} —{' '}
               {report.voteCount} confirmed
               {filters.origin

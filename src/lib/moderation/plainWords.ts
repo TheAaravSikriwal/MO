@@ -34,6 +34,20 @@ export function plainReason(reason: string | null | undefined): string {
 }
 
 const ERROR_RULES: Array<[RegExp, string]> = [
+  // Actionable causes come first. Collapsing these into "please try again"
+  // told someone to retry the one thing guaranteed to keep failing, and left
+  // every other cause with the same wording.
+  [/last minute/i, 'You are posting quickly. Please wait a moment.'],
+  [/last hour|slow down/i, 'You have added several recently. Please wait a while before adding more.'],
+  [/at most 3 photos|at most 3/i, 'A report can have at most 3 photos.'],
+  [/sign in|signed in/i, 'Please sign in first.'],
+  [/add a photo|needs at least one photo/i, 'Please add a photo.'],
+  [/photo upload is not connected/i, 'Photo upload is not set up yet, so reports cannot be sent.'],
+  [/already reported this/i, 'You have already reported this.'],
+  [/already confirmed|already been decided/i, 'You have already done that.'],
+  [/cannot confirm your own/i, 'You cannot confirm your own report.'],
+  [/already cleaned|not found, already cleaned/i, 'This report has already been marked cleaned.'],
+  [/comment cannot be empty/i, 'Please write something first.'],
   [/only an admin/i, 'You do not have permission to review items.'],
   [/permission denied|not authorized|unauthorized|jwt/i, 'You do not have permission to do that.'],
   [/already been decided|decided by someone else/i, 'Someone already dealt with this one.'],

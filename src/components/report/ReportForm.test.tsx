@@ -230,20 +230,32 @@ describe('ReportForm — the photo model gate', () => {
     expect(await screen.findByText('litter.jpg')).toBeInTheDocument()
   })
 
-  it('lets the photo through when the model itself fails, rather than blocking everything', async () => {
+  it('lets the photo through when the screener itself rejects', async () => {
     // Tier 1 fails open: it is a convenience filter, and the server is what
     // actually protects the map.
+    //
+    // The screener genuinely rejects here. The previous version caught its own
+    // exception and returned { blocked: false }, so the component never saw a
+    // failure and the test was identical to the happy path -- it passed with
+    // the fail-open handling deleted.
     const { user } = setup({
       screenPhoto: async () => {
-        try {
-          throw new Error('model failed to load')
-        } catch {
-          return { blocked: false }
-        }
+        throw new Error('model failed to load')
       },
     })
     await user.upload(screen.getByLabelText(/^photo$/i), photo())
     expect(await screen.findByText('litter.jpg')).toBeInTheDocument()
+  })
+
+  it('shows no error when the screener rejects, since nothing is wrong for the person', async () => {
+    const { user } = setup({
+      screenPhoto: async () => {
+        throw new Error('model failed to load')
+      },
+    })
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('actually calls the screener for every chosen photo', async () => {

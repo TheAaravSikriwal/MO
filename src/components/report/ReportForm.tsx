@@ -61,6 +61,13 @@ export function ReportForm({
         }
       }
       setPhotos((current) => [...current, ...chosen].slice(0, MAX_PHOTOS))
+    } catch {
+      // Tier 1 fails OPEN. Without this catch a screener that rejects escapes
+      // as an unhandled rejection: the photo is never added and no message is
+      // shown, so picking a photo appears to do nothing at all. That is
+      // fail-closed, the opposite of what this tier is for -- the server tiers
+      // are what actually protect the map.
+      setPhotos((current) => [...current, ...chosen].slice(0, MAX_PHOTOS))
     } finally {
       setChecking(false)
     }

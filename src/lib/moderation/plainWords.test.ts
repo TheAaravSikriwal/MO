@@ -138,3 +138,39 @@ describe('summariseScores', () => {
     expect(summariseScores({ wordlist: { matched: false, terms: [] } })).toEqual([])
   })
 })
+
+describe('plainError — actionable causes stay distinct', () => {
+  /** Verbatim from the migrations and the data sources. */
+  const cases: Array<[string, RegExp]> = [
+    ['too many reports in the last hour; please slow down', /wait a while/i],
+    ['too many comments in the last minute; please slow down', /wait a moment/i],
+    ['a report may have at most 3 photos', /at most 3 photos/i],
+    ['Please sign in to add a report.', /sign in/i],
+    ['a report needs at least one photo', /add a photo/i],
+    ['Photo upload is not connected yet. It needs the R2 signing endpoint', /not set up yet/i],
+    ['you have already reported this', /already reported/i],
+    ['you cannot confirm your own report', /own report/i],
+    ['report not found, already cleaned, or not yet approved', /already been marked cleaned/i],
+  ]
+
+  it.each(cases)('explains %s specifically', (raw, expected) => {
+    // Collapsing these into the generic fallback told someone to "try again"
+    // when retrying is the one thing guaranteed to keep failing.
+    const plain = plainError(raw)
+    expect(plain).toMatch(expected)
+    expect(plain).not.toBe(DEFAULT_ERROR)
+  })
+
+  it('still hides the machine wording behind every one of them', () => {
+    for (const [raw] of cases) {
+      const plain = plainError(raw).toLowerCase()
+      for (const word in { constraint: 1, postgres: 1, rls: 1, trigger: 1, rpc: 1 }) {
+        expect(plain).not.toContain(word)
+      }
+    }
+  })
+
+  it('still falls back for anything genuinely unrecognised', () => {
+    expect(plainError('ERR_8004: segmentation fault')).toBe(DEFAULT_ERROR)
+  })
+})
