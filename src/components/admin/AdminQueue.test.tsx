@@ -465,10 +465,12 @@ describe('AdminQueue — the header never lies about what is left', () => {
 
     await user_click_allow()
     const panel = screen.getByRole('region', { name: /review queue/i })
-    // The count itself comes from the server on reload; what must never happen
-    // is the panel claiming the queue is clear while items are still waiting.
+    // Asserting only "not nothing to review" passed even with the reload
+    // deleted, because the header prints "149 waiting, showing the first 0".
+    // The real requirement is that the next page actually arrives.
+    expect(await screen.findByText('the only one shown')).toBeInTheDocument()
     await waitFor(() => expect(panel).not.toHaveTextContent(/nothing to review/i))
-    expect(panel).toHaveTextContent(/waiting/i)
+    expect(panel).not.toHaveTextContent(/showing the first 0/i)
   })
 
   it('says nothing to review only when the queue is genuinely empty', async () => {

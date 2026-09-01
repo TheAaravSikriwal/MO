@@ -229,6 +229,7 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
           <ul className="mt-2 space-y-2">
             {comments.map((comment) => (
               <li key={comment.id} className="rounded-lg bg-slate-50 p-3 text-sm">
+                <p className="text-xs text-slate-500">{comment.authorName}</p>
                 <p className="text-slate-800">{comment.body}</p>
                 {comment.moderationStatus === 'pending' && (
                   <p className="mt-1 text-xs text-slate-500">Being checked before it appears.</p>

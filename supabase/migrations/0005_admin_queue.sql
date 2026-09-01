@@ -355,3 +355,59 @@ $$;
 create trigger enforce_flag_rate_limit
   before insert on public.flags
   for each row execute function public.enforce_flag_rate_limit();
+
+-- ---------------------------------------------------------------------------
+-- Deleted content leaves nothing behind
+-- ---------------------------------------------------------------------------
+
+-- moderation_jobs.subject_id is polymorphic, so it cannot carry a foreign key
+-- and nothing cascades. Reports, photos and comments are all user-deletable, so
+-- without this a deleted subject leaves its job behind: the worker claims it,
+-- finds nothing, escalates it, and it sits in the human queue forever reading
+-- "This content is no longer available" with buttons that update no rows.
+create or replace function public.cleanup_moderation_for_deleted()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  kind subject_type;
+begin
+  kind := case tg_table_name
+            when 'report_photos' then 'photo'::subject_type
+            when 'comments'      then 'comment'::subject_type
+            else 'note'::subject_type
+          end;
+
+  delete from public.moderation_jobs
+   where subject_type = kind and subject_id = old.id;
+  delete from public.flags
+   where subject_type = kind and subject_id = old.id;
+
+  -- A deleted report takes its photos' jobs with it, since ON DELETE CASCADE
+  -- removes the photo rows without firing a per-row cleanup for each.
+  if tg_table_name = 'reports' then
+    delete from public.moderation_jobs
+     where subject_type = 'photo'
+       and subject_id in (select id from public.report_photos where report_id = old.id);
+    delete from public.moderation_jobs
+     where subject_type = 'comment'
+       and subject_id in (select id from public.comments where report_id = old.id);
+  end if;
+
+  return old;
+end;
+$$;
+
+create trigger cleanup_moderation_on_report_delete
+  before delete on public.reports
+  for each row execute function public.cleanup_moderation_for_deleted();
+
+create trigger cleanup_moderation_on_photo_delete
+  after delete on public.report_photos
+  for each row execute function public.cleanup_moderation_for_deleted();
+
+create trigger cleanup_moderation_on_comment_delete
+  after delete on public.comments
+  for each row execute function public.cleanup_moderation_for_deleted();

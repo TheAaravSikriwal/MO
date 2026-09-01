@@ -5,6 +5,23 @@
 -- moderation worker has ruled on it.
 
 -- ---------------------------------------------------------------------------
+-- Stop Supabase handing out everything created below
+-- ---------------------------------------------------------------------------
+
+-- Supabase ships `alter default privileges in schema public grant all on tables
+-- to anon, authenticated`. That default covers VIEWS as well as tables, and
+-- ALTER DEFAULT PRIVILEGES is not retroactive -- so this has to run BEFORE
+-- anything below is created.
+--
+-- It was previously at the bottom of this file, which meant every view was
+-- created carrying GRANT ALL to anon. The views are auto-updatable and are
+-- deliberately not security_invoker, so their DML runs as the owner and is
+-- exempt from RLS: an unauthenticated PATCH could flip moderation_status to
+-- 'approved' and read back an unreviewed photo path, and an unauthenticated
+-- DELETE could empty the database.
+alter default privileges in schema public revoke all on tables from anon, authenticated;
+
+-- ---------------------------------------------------------------------------
 -- Public views
 -- ---------------------------------------------------------------------------
 
@@ -342,13 +359,19 @@ revoke all on public.flags           from anon, authenticated;
 revoke all on public.profiles        from anon, authenticated;
 revoke all on public.moderation_jobs from anon, authenticated;
 
--- Future tables in this schema must not be handed out either.
-alter default privileges in schema public revoke all on tables from anon, authenticated;
 
 
 -- Content is readable ONLY through the views above. Granting SELECT on the base
 -- tables would expose `note` and `storage_path` for rows that have not been
 -- reviewed, which is exactly what this design exists to prevent.
+-- Explicit, in case these views were created before the default-privileges
+-- change above ever ran (an already-provisioned project, or a re-run).
+revoke all on public.public_reports       from anon, authenticated;
+revoke all on public.public_report_photos from anon, authenticated;
+revoke all on public.public_comments      from anon, authenticated;
+revoke all on public.public_profiles      from anon, authenticated;
+
+-- SELECT only. These are read surfaces; nothing writes through them.
 grant select on public.public_reports       to anon, authenticated;
 grant select on public.public_report_photos to anon, authenticated;
 grant select on public.public_comments      to anon, authenticated;

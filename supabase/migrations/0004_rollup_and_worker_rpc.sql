@@ -138,7 +138,12 @@ as $$
          attempts  = j.attempts + 1
    where j.id in (
      select id from public.moderation_jobs
-      where status = 'pending'
+      -- Never re-claim something already decided. Nothing currently moves a
+      -- decided job back into these states, but this is the one link in the
+      -- chain that was relying on its neighbours rather than its own predicate.
+      where verdict is null
+        and (
+          status = 'pending'
          or (status = 'failed' and attempts < 5)
          -- Reclaim anything a dead worker left holding the lock -- but cap the
          -- retries here too. Without the cap a job that always errors is
@@ -149,6 +154,7 @@ as $$
            and locked_at < now() - interval '15 minutes'
            and attempts < 5
          )
+        )
       order by created_at
       limit least(greatest(batch_size, 1), 100)
       for update skip locked

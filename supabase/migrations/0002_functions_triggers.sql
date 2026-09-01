@@ -321,5 +321,5 @@ begin
 end;
 $$;
 
-revoke all on function public.mark_report_cleaned(uuid) from public;
+revoke all on function public.mark_report_cleaned(uuid) from public, anon;
 grant execute on function public.mark_report_cleaned(uuid) to authenticated;

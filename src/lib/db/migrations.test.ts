@@ -149,6 +149,48 @@ describe('migrations — unreviewed content stays unreachable', () => {
     expect(allCode).toMatch(/revoke\s+all\s+on\s+function\s+public\.escalate_moderation_job/i)
   })
 
+  it('never hands a browser role blanket privileges on anything', () => {
+    // `grant all` is how the worst leak got in: the views inherited it from
+    // Supabase's default privileges, and every check here matched only the
+    // literal `grant select ...` shape, so none of them noticed.
+    expect(flat).not.toContain('grant all on public.')
+    expect(flat).not.toContain('grant all on all tables');
+  })
+
+  it('revokes the default privileges BEFORE creating anything', () => {
+    // ALTER DEFAULT PRIVILEGES is not retroactive. Run after the views, it
+    // leaves every one of them carrying GRANT ALL to anon -- and because they
+    // are definer views, writing through them bypasses RLS entirely.
+    const revokeAt = flat.indexOf('alter default privileges in schema public revoke all on tables')
+    const firstView = flat.indexOf('create view public.')
+    expect(revokeAt).toBeGreaterThan(-1)
+    expect(firstView).toBeGreaterThan(-1)
+    expect(revokeAt).toBeLessThan(firstView)
+  })
+
+  it.each([
+    'public_reports',
+    'public_report_photos',
+    'public_comments',
+    'public_profiles',
+  ])('revokes %s explicitly before granting select on it', (view) => {
+    const revokeAt = flat.indexOf('revoke all on public.' + view + ' from anon')
+    const grantAt = flat.indexOf('grant select on public.' + view + ' to anon')
+    expect(revokeAt, view + ' is never revoked').toBeGreaterThan(-1)
+    expect(grantAt).toBeGreaterThan(revokeAt)
+  })
+
+  it('masks the photo path in the public view', () => {
+    // The single most load-bearing rule in the design, and nothing asserted it.
+    const view = viewOf('public_report_photos')
+    expect(view).toMatch(/case[\s\S]*moderation_status\s*=\s*'approved'[\s\S]*storage_path[\s\S]*else\s+null/i)
+  })
+
+  it('masks the note in the public view', () => {
+    const view = viewOf('public_reports')
+    expect(view).toMatch(/case[\s\S]*note_status\s*=\s*'approved'[\s\S]*else\s+null/i)
+  })
+
   it('never grants the worker RPCs to a browser role', () => {
     expect(allCode).not.toMatch(
       /grant\s+execute\s+on\s+function\s+public\.claim_moderation_jobs[\s\S]{0,120}to\s+(anon|authenticated)/i,
@@ -156,6 +198,23 @@ describe('migrations — unreviewed content stays unreachable', () => {
     expect(allCode).not.toMatch(
       /grant\s+execute\s+on\s+function\s+public\.record_moderation_verdict[\s\S]{0,160}to\s+(anon|authenticated)/i,
     )
+    expect(allCode).not.toMatch(
+      /grant\s+execute\s+on\s+function\s+public\.escalate_moderation_job[\s\S]{0,160}to\s+(anon|authenticated)/i,
+    )
+  })
+
+  it('revokes every non-admin function from anon, not just from public', () => {
+    // Revoking from PUBLIC does not remove Supabase's explicit default grant
+    // to anon, so `from public` alone leaves a signed-out caller with EXECUTE.
+    expect(flat).toContain('revoke all on function public.mark_report_cleaned(uuid) from public, anon')
+  })
+
+  it('cleans up moderation jobs when their subject is deleted', () => {
+    // subject_id is polymorphic so nothing cascades; an orphan is claimed,
+    // found missing, escalated, and sits in the human queue forever.
+    expect(flat).toContain('create trigger cleanup_moderation_on_report_delete')
+    expect(flat).toContain('create trigger cleanup_moderation_on_comment_delete')
+    expect(flat).toContain('create trigger cleanup_moderation_on_photo_delete')
   })
 })
 

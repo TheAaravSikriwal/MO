@@ -185,20 +185,42 @@ describe('ReportDetail — comments', () => {
 })
 
 describe('ReportDetail — when things fail', () => {
-  it('shows the reason plainly rather than failing silently', async () => {
-    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
-    const report = data.seed({ id: 'r1', lat: 0, lng: 0, viewerIsReporter: true })
-    render(
-      <ReportDetail
-        data={data}
-        report={report}
-        signedIn
-        onChanged={vi.fn()}
-        onClose={vi.fn()}
-      />,
+  it('explains a failed action in plain words rather than failing silently', async () => {
+    const { user, data } = setup({ status: 'open', viewerIsReporter: true })
+    vi.spyOn(data, 'markCleaned').mockRejectedValue(
+      new Error('permission denied for function mark_report_cleaned'),
     )
-    // Marking cleaned twice: the second attempt must explain itself.
-    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: /mark as cleaned/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/permission/i)
+    // The raw Postgres wording must not reach a member of the public.
+    expect(alert.textContent?.toLowerCase()).not.toContain('mark_report_cleaned')
+  })
+
+  it('does not claim the report was cleaned when the attempt failed', async () => {
+    const { user, data } = setup({ status: 'open', viewerIsReporter: true })
+    vi.spyOn(data, 'markCleaned').mockRejectedValue(new Error('network is down'))
+
+    await user.click(screen.getByRole('button', { name: /mark as cleaned/i }))
+
+    await screen.findByRole('alert')
+    expect(screen.queryByTestId('cleaned-mark')).not.toBeInTheDocument()
+  })
+
+  it('explains a failed confirmation too', async () => {
+    const { user, data } = setup({ viewerIsReporter: false })
+    vi.spyOn(data, 'addVote').mockRejectedValue(new Error('duplicate key value violates unique constraint'))
+
+    await user.click(screen.getByRole('button', { name: /confirm this is here/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent?.toLowerCase()).not.toContain('constraint')
+  })
+
+  it('stays quiet when nothing has gone wrong', async () => {
+    const { user } = setup({ status: 'open', viewerIsReporter: true })
     await user.click(screen.getByRole('button', { name: /mark as cleaned/i }))
     await screen.findByTestId('cleaned-mark')
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()

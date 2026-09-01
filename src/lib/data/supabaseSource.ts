@@ -213,6 +213,9 @@ export class SupabaseDataSource implements DataSource {
         if (photoError) throw new Error(photoError.message)
       }
     } catch (cause) {
+      // Deleting the report also clears its moderation job, via the
+      // cleanup_moderation_for_deleted trigger -- otherwise every failed
+      // submission would seed a permanent orphan into the human queue.
       await this.client.from('reports').delete().eq('id', reportId)
       throw cause
     }
@@ -249,10 +252,27 @@ export class SupabaseDataSource implements DataSource {
       .eq('report_id', reportId)
       .order('created_at', { ascending: true })
     if (error) throw new Error(error.message)
-    return (data ?? []).map((row) => ({
+    const rows = data ?? []
+    if (rows.length === 0) return []
+
+    // Names come from public_profiles, which carries id and display_name only.
+    // Reading `profiles` directly would expose `role` and let anyone enumerate
+    // admins, which is why that table is revoked.
+    const authorIds = [...new Set(rows.map((row) => String(row.author_id)))]
+    const { data: profiles } = await this.client
+      .from('public_profiles')
+      .select('id, display_name')
+      .in('id', authorIds)
+
+    const nameById = new Map(
+      (profiles ?? []).map((p) => [String(p.id), (p.display_name as string | null) ?? null]),
+    )
+
+    return rows.map((row) => ({
       id: String(row.id),
       body: String(row.body),
-      authorName: 'someone',
+      // Nobody is required to set a name, so "someone" is the honest fallback.
+      authorName: nameById.get(String(row.author_id)) ?? 'someone',
       createdAt: String(row.created_at),
       moderationStatus: row.moderation_status as CommentView['moderationStatus'],
     }))
