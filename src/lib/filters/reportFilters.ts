@@ -15,7 +15,13 @@ export interface ReportFilters {
 }
 
 export const DEFAULT_FILTERS: ReportFilters = {
-  status: 'all',
+  // Open by default, not everything.
+  //
+  // "Everything" genuinely means open AND cleaned, so that the pin view and the
+  // aggregated view agree about what exists. That makes it the wrong default:
+  // counting cleaned spots in the weights would stop a cleanup visibly cooling
+  // the map, which is the whole payoff. Seeing them is an explicit choice.
+  status: 'open',
   minConfirmations: 0,
   since: null,
   withinMetres: null,

@@ -111,14 +111,14 @@ describe('FilterPanel — clearing', () => {
   })
 
   it('offers to clear once something is set', () => {
-    setup({ filters: withFilters({ status: 'open' }) })
+    setup({ filters: withFilters({ status: 'cleaned' }) })
     expect(screen.getByRole('button', { name: /^clear$/i })).toBeInTheDocument()
   })
 
   it('keeps your location when clearing', async () => {
     // Clearing filters should not throw away permission you already granted.
     const origin = { lat: 51.5, lng: -0.12 }
-    const { user, onChange } = setup({ filters: withFilters({ status: 'open', origin }) })
+    const { user, onChange } = setup({ filters: withFilters({ status: 'cleaned', origin }) })
     await user.click(screen.getByRole('button', { name: /^clear$/i }))
     expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_FILTERS, origin })
   })

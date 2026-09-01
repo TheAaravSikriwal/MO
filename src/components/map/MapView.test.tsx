@@ -7,6 +7,7 @@ const flyToSpy = vi.fn()
 // react-leaflet returns a stable map instance from context; the mock must too,
 // otherwise effects keyed on map identity re-fire on every render.
 const mapInstance = { flyTo: flyToSpy }
+let capturedEvents: Record<string, (event: unknown) => void> = {}
 
 vi.mock('react-leaflet', () => ({
   MapContainer: ({ children, center, zoom }: any) => (
@@ -18,7 +19,10 @@ vi.mock('react-leaflet', () => ({
     <div data-testid="tiles" data-url={url} data-attribution={attribution} />
   ),
   useMap: () => mapInstance,
-  useMapEvents: () => null,
+  useMapEvents: (handlers: Record<string, (event: unknown) => void>) => {
+    capturedEvents = handlers
+    return null
+  },
 }))
 
 describe('MapView', () => {
@@ -110,5 +114,54 @@ describe('MapView', () => {
     )
     expect(flyToSpy).toHaveBeenCalledTimes(2)
     expect(flyToSpy).toHaveBeenLastCalledWith([1, 2], 10)
+  })
+})
+
+describe('MapView — the viewport it reports', () => {
+  const boundsFrom = (west: number, east: number) => {
+    let reported: unknown = null
+    render(
+      <MapView
+        initialCenter={[0, 0]}
+        initialZoom={2}
+        onViewChange={(view) => {
+          reported = view.bounds
+        }}
+      />,
+    )
+    capturedEvents.moveend?.({
+      target: {
+        getCenter: () => ({ lat: 0, lng: (west + east) / 2 }),
+        getZoom: () => 5,
+        getBounds: () => ({
+          getSouth: () => -1,
+          getWest: () => west,
+          getNorth: () => 1,
+          getEast: () => east,
+        }),
+      },
+    })
+    return reported as { minLng: number; maxLng: number }
+  }
+
+  it('passes an ordinary viewport through', () => {
+    const bounds = boundsFrom(-0.2, -0.05)
+    expect(bounds.minLng).toBeCloseTo(-0.2)
+    expect(bounds.maxLng).toBeCloseTo(-0.05)
+  })
+
+  it('wraps a viewport that crosses the dateline', () => {
+    // Leaflet reports 179.9 / 180.1 and never wraps. Raw, the query becomes
+    // `lng >= 179.9 and lng <= 180.1` and drops half the screen.
+    const bounds = boundsFrom(179.9, 180.1)
+    expect(bounds.minLng).toBeCloseTo(179.9)
+    expect(bounds.maxLng).toBeCloseTo(-179.9)
+  })
+
+  it('rescues a viewport panned a whole world east', () => {
+    // 340 / 380 matches nothing on Earth: a blank map over real ground.
+    const bounds = boundsFrom(340, 380)
+    expect(bounds.minLng).toBeCloseTo(-20)
+    expect(bounds.maxLng).toBeCloseTo(20)
   })
 })

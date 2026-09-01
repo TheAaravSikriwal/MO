@@ -73,8 +73,12 @@ describe('formatDistance', () => {
 describe('applyFilters — status', () => {
   const both = [report({ id: 'open' }), report({ id: 'cleaned', status: 'cleaned' })]
 
-  it('shows everything by default', () => {
-    expect(ids(applyFilters(both, filters()))).toEqual(['open', 'cleaned'])
+  it('shows what is still there by default, so cleanups cool the map', () => {
+    expect(ids(applyFilters(both, filters()))).toEqual(['open'])
+  })
+
+  it('shows both when everything is asked for', () => {
+    expect(ids(applyFilters(both, filters({ status: 'all' })))).toEqual(['open', 'cleaned'])
   })
 
   it('narrows to reported spots', () => {
@@ -191,6 +195,7 @@ describe('isDefault', () => {
 
   it('notices any change', () => {
     expect(isDefault(filters({ status: 'cleaned' }))).toBe(false)
+    expect(isDefault(filters({ status: 'all' }))).toBe(false)
     expect(isDefault(filters({ minConfirmations: 1 }))).toBe(false)
     expect(isDefault(filters({ since: '2026-01-01' }))).toBe(false)
     expect(isDefault(filters({ withinMetres: 1000 }))).toBe(false)

@@ -1,5 +1,16 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { cellsForPoint } from '../grid/cells'
+import { crossesAntimeridian } from '../geo/bounds'
+import { distanceMetres } from '../geo/distance'
+
+/**
+ * How many individual reports one viewport will return.
+ *
+ * The aggregated view does not use this — it is a real GROUP BY over every
+ * matching row — so a capped page only ever limits how many pins are drawn at
+ * street level, where far fewer than this are on screen anyway.
+ */
+export const REPORT_PAGE_LIMIT = 500
 import type {
   CommentView,
   CurrentUser,
@@ -193,31 +204,68 @@ export class SupabaseDataSource implements DataSource {
     })
   }
 
-  async listReportsInView(bounds: {
-    minLat: number
-    minLng: number
-    maxLat: number
-    maxLng: number
-  }): Promise<ReportView[]> {
+  async listReportsInView(bounds: ViewBounds, filters: RollupFilters): Promise<ReportView[]> {
     const user = await this.getCurrentUser()
-    // A viewport crossing the antimeridian arrives with minLng > maxLng, and a
-    // plain between returns nothing at all there. reports_rollup already
-    // handles this; the list query has to agree with it.
-    const crossesAntimeridian = bounds.minLng > bounds.maxLng
-
+    // Every filter is applied by the database. Applying them to a capped page
+    // afterwards meant "Cleaned up" could legitimately return nothing while
+    // cleaned reports sat right there -- the page just happened not to hold any.
     let query = this.client
       .from('public_reports')
       .select('*')
       .gte('lat', bounds.minLat)
       .lte('lat', bounds.maxLat)
 
-    query = crossesAntimeridian
+    // A viewport crossing the antimeridian arrives with minLng > maxLng, and a
+    // plain between returns nothing at all there.
+    query = crossesAntimeridian(bounds)
       ? query.or('lng.gte.' + bounds.minLng + ',lng.lte.' + bounds.maxLng)
       : query.gte('lng', bounds.minLng).lte('lng', bounds.maxLng)
 
-    const { data, error } = await query.limit(500)
+    if (filters.status !== 'all') query = query.eq('status', filters.status)
+    if (filters.minConfirmations > 0) query = query.gte('vote_count', filters.minConfirmations)
+    if (filters.since) query = query.gte('created_at', filters.since)
+
+    // Ordered, so the cap takes the most-confirmed rather than an arbitrary
+    // and non-deterministic slice.
+    const { data, error } = await query
+      .order('vote_count', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(REPORT_PAGE_LIMIT)
+
     if (error) throw new Error(error.message)
-    return this.toReports(data ?? [], user?.id ?? null)
+
+    // Distance is the one filter left to the client: PostgREST cannot express
+    // st_dwithin on a plain select. It is safe here because it only ever
+    // narrows what the viewport already bounded, and the viewport is always
+    // smaller than the radius by the time anybody is looking at pins.
+    const rows =
+      filters.origin && filters.withinMetres
+        ? (data ?? []).filter(
+            (row) =>
+              distanceMetres(filters.origin!, {
+                lat: Number(row.lat),
+                lng: Number(row.lng),
+              }) <= filters.withinMetres!,
+          )
+        : (data ?? [])
+
+    return this.toReports(rows, user?.id ?? null)
+  }
+
+  async countReportsInView(bounds: ViewBounds): Promise<number> {
+    let query = this.client
+      .from('public_reports')
+      .select('id', { count: 'exact', head: true })
+      .gte('lat', bounds.minLat)
+      .lte('lat', bounds.maxLat)
+
+    query = crossesAntimeridian(bounds)
+      ? query.or('lng.gte.' + bounds.minLng + ',lng.lte.' + bounds.maxLng)
+      : query.gte('lng', bounds.minLng).lte('lng', bounds.maxLng)
+
+    const { count, error } = await query
+    if (error) throw new Error(error.message)
+    return count ?? 0
   }
 
   /**
@@ -238,6 +286,9 @@ export class SupabaseDataSource implements DataSource {
       status_filter: filters.status,
       min_confirmations: filters.minConfirmations,
       since: filters.since,
+      origin_lat: filters.origin?.lat ?? null,
+      origin_lng: filters.origin?.lng ?? null,
+      within_metres: filters.withinMetres,
     })
     if (error) throw new Error(error.message)
 

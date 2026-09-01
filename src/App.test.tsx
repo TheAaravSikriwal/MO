@@ -124,7 +124,12 @@ describe('App', () => {
   })
 
   it('shows a cleaned report as cleaned in that list', async () => {
+    const user = userEvent.setup()
     render(<App />)
+    await screen.findByRole('searchbox')
+
+    // The default view shows what is still there, so ask for everything first.
+    await user.click(screen.getByRole('button', { name: /everything/i }))
     expect(await screen.findByRole('button', { name: /cleaned report/i })).toBeInTheDocument()
   })
 
@@ -261,32 +266,33 @@ describe('App — pins and cells never draw together', () => {
 describe('App — filters', () => {
   const mixed = () => {
     const data = new FakeDataSource(null)
+    // Far enough apart to land in different H3 cells at r7 and r9. The earlier
+    // pair shared a cell at both, so "exactly one cell" held whatever the
+    // filter did.
     data.seed({ id: 'still-there', lat: 51.5074, lng: -0.1278, status: 'open', voteCount: 3 })
-    data.seed({ id: 'cleaned', lat: 51.5081, lng: -0.1265, status: 'cleaned', voteCount: 1 })
+    data.seed({ id: 'cleaned', lat: 51.5274, lng: -0.1278, status: 'cleaned', voteCount: 1 })
     return data
   }
 
-  it('shows everything to begin with', async () => {
+  it('shows what is still there to begin with, out of everything in view', async () => {
     render(<App data={mixed()} />)
-    expect(await screen.findByText('2 reports')).toBeInTheDocument()
+    // One of the two is cleaned, so the default view shows one of two.
+    expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
   })
 
   it('narrows the map when a filter is chosen', async () => {
     const user = userEvent.setup()
     render(<App data={mixed()} />)
-    await screen.findByText('2 reports')
+    await screen.findByText('1 of 2 reports')
 
-    await user.click(screen.getByRole('button', { name: /cleaned up/i }))
+    await user.click(screen.getByRole('button', { name: /everything/i }))
 
-    expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
+    expect(await screen.findByText('2 reports')).toBeInTheDocument()
   })
 
   it('says how many are hidden, so a filtered map is not mistaken for an empty one', async () => {
     const user = userEvent.setup()
     render(<App data={mixed()} />)
-    await screen.findByText('2 reports')
-
-    await user.click(screen.getByRole('button', { name: /still there/i }))
 
     // "1 of 2" rather than a bare "1": the difference between filtered and empty.
     expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
@@ -297,12 +303,14 @@ describe('App — filters', () => {
     // on the screen-reader list alone proved nothing about the cells.
     const user = userEvent.setup()
     render(<App data={mixed()} />)
-    await screen.findByText('2 reports')
-    await moveMapTo(10)
-    await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
+    await screen.findByText('1 of 2 reports')
+    await moveMapTo(13)
 
-    // Only one report is still there, and only one is cleaned, so each filter
-    // must leave exactly one cell rather than both.
+    // Everything: both reports, and they sit in different cells at r9.
+    await user.click(screen.getByRole('button', { name: /everything/i }))
+    await waitFor(() => expect(screen.getAllByTestId('cell')).toHaveLength(2))
+
+    // Each narrower filter must leave exactly one.
     await user.click(screen.getByRole('button', { name: /still there/i }))
     await waitFor(() => expect(screen.getAllByTestId('cell')).toHaveLength(1))
 
@@ -315,22 +323,22 @@ describe('App — filters', () => {
     // completely empty at the zoom the app opens at.
     const user = userEvent.setup()
     render(<App data={mixed()} />)
-    await screen.findByText('2 reports')
-    await moveMapTo(10)
+    await screen.findByText('1 of 2 reports')
+    await moveMapTo(13)
 
     await user.click(screen.getByRole('button', { name: /cleaned up/i }))
     await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
   })
 
-  it('restores everything when cleared', async () => {
+  it('restores the default view when cleared', async () => {
     const user = userEvent.setup()
     render(<App data={mixed()} />)
+    await screen.findByText('1 of 2 reports')
+
+    await user.click(screen.getByRole('button', { name: /everything/i }))
     await screen.findByText('2 reports')
 
-    await user.click(screen.getByRole('button', { name: /cleaned up/i }))
-    await screen.findByText('1 of 2 reports')
     await user.click(screen.getByRole('button', { name: /^clear$/i }))
-
-    expect(await screen.findByText('2 reports')).toBeInTheDocument()
+    expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
   })
 })

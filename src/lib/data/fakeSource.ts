@@ -1,6 +1,7 @@
 import { cellsForPoint } from '../grid/cells'
 import { weighCells } from '../severity/weight'
 import { applyFilters, DEFAULT_FILTERS } from '../filters/reportFilters'
+import { containsPoint } from '../geo/bounds'
 import type {
   CommentView,
   CurrentUser,
@@ -60,19 +61,29 @@ export class FakeDataSource implements DataSource {
 
   // --- reports ------------------------------------------------------------
 
-  async listReportsInView(bounds: {
-    minLat: number
-    minLng: number
-    maxLat: number
-    maxLng: number
-  }) {
-    return [...this.reports.values()].filter(
-      (r) =>
-        r.lat >= bounds.minLat &&
-        r.lat <= bounds.maxLat &&
-        r.lng >= bounds.minLng &&
-        r.lng <= bounds.maxLng,
+  async listReportsInView(bounds: ViewBounds, filters?: RollupFilters) {
+    // containsPoint, not a plain between: a viewport straddling the dateline
+    // arrives as minLng > maxLng, and a range test returns nothing there. The
+    // fake has to match the real source or it hides that bug from every test.
+    const inView = [...this.reports.values()].filter((r) =>
+      containsPoint(bounds, r.lat, r.lng),
     )
+    if (!filters) return inView
+
+    return applyFilters(inView, {
+      ...DEFAULT_FILTERS,
+      status: filters.status,
+      minConfirmations: filters.minConfirmations,
+      since: filters.since,
+      origin: filters.origin,
+      withinMetres: filters.withinMetres,
+    })
+  }
+
+  async countReportsInView(bounds: ViewBounds): Promise<number> {
+    return [...this.reports.values()].filter(
+      (r) => r.moderationStatus === 'approved' && containsPoint(bounds, r.lat, r.lng),
+    ).length
   }
 
   async getRollup(
@@ -80,13 +91,7 @@ export class FakeDataSource implements DataSource {
     resolution: number,
     filters: RollupFilters,
   ): Promise<RollupCell[]> {
-    const inView = await this.listReportsInView(bounds)
-    const matching = applyFilters(inView, {
-      ...DEFAULT_FILTERS,
-      status: filters.status,
-      minConfirmations: filters.minConfirmations,
-      since: filters.since,
-    })
+    const matching = await this.listReportsInView(bounds, filters)
     return weighCells(
       matching.map((report) => ({
         id: report.id,
@@ -96,7 +101,14 @@ export class FakeDataSource implements DataSource {
         cells: report.cells,
       })),
       resolution,
-      { statuses: filters.status === 'cleaned' ? ['cleaned'] : ['open'] },
+      {
+        statuses:
+          filters.status === 'cleaned'
+            ? ['cleaned']
+            : filters.status === 'all'
+              ? ['open', 'cleaned']
+              : ['open'],
+      },
     )
   }
 

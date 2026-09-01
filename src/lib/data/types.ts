@@ -68,11 +68,19 @@ export interface ViewBounds {
   maxLng: number
 }
 
-/** The filters that can be pushed down to the server. */
+/**
+ * The filters, pushed down to wherever the data is.
+ *
+ * Applying any of these on the client instead means applying them to whatever
+ * page happened to come back, which both drops results that should have matched
+ * and makes the pin view and the aggregated view disagree.
+ */
 export interface RollupFilters {
   status: 'all' | 'open' | 'cleaned'
   minConfirmations: number
   since: string | null
+  origin: { lat: number; lng: number } | null
+  withinMetres: number | null
 }
 
 export interface RollupCell {
@@ -101,7 +109,7 @@ export interface DataSource {
   signInWithEmail(email: string): Promise<void>
   signOut(): Promise<void>
 
-  listReportsInView(bounds: ViewBounds): Promise<ReportView[]>
+  listReportsInView(bounds: ViewBounds, filters: RollupFilters): Promise<ReportView[]>
 
   /**
    * Aggregated cells for a viewport, computed where the data is.
@@ -109,6 +117,14 @@ export interface DataSource {
    * Rolling up on the client means rolling up whatever page happened to come
    * back, which silently drops the cells that should be hottest.
    */
+  /**
+   * How many approved reports are in this viewport, ignoring the filters.
+   *
+   * The panel needs it to say "2 of 5" rather than a bare "2" -- without the
+   * comparison a filtered map is indistinguishable from an empty one.
+   */
+  countReportsInView(bounds: ViewBounds): Promise<number>
+
   getRollup(
     bounds: ViewBounds,
     resolution: number,

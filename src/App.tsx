@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MapView, type FlyTarget, type MapView2 } from './components/map/MapView'
 import { CellLayer } from './components/map/CellLayer'
 import { ReportPinLayer } from './components/map/ReportPinLayer'
 import { FilterPanel } from './components/map/FilterPanel'
 import {
-  applyFilters,
   sortByDistance,
   DEFAULT_FILTERS,
   type ReportFilters,
 } from './lib/filters/reportFilters'
 import { distanceMetres, formatDistance } from './lib/geo/distance'
+import { WHOLE_WORLD } from './lib/geo/bounds'
 import { getCurrentPosition } from './lib/geo/nearMe'
 import { ReportForm } from './components/report/ReportForm'
 import { ReportDetail } from './components/report/ReportDetail'
@@ -23,7 +23,6 @@ import { plainError } from './lib/moderation/plainWords'
 import type { CurrentUser, DataSource, ReportView, RollupCell } from './lib/data/types'
 
 const WORLD_VIEW = { center: [20, 0] as [number, number], zoom: 3 }
-const WHOLE_WORLD = { minLat: -90, minLng: -180, maxLat: 90, maxLng: 180 }
 const PLACE_ZOOM = 16
 
 export interface AppProps {
@@ -38,6 +37,7 @@ export default function App({ data: injected }: AppProps = {}) {
   const [view, setView] = useState<MapView2>({ ...WORLD_VIEW, bounds: WHOLE_WORLD })
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null)
   const [cells, setCells] = useState<RollupCell[]>([])
+  const [totalInView, setTotalInView] = useState(0)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Place[]>([])
   const [reports, setReports] = useState<ReportView[]>([])
@@ -53,22 +53,43 @@ export default function App({ data: injected }: AppProps = {}) {
 
   const showPins = resolutionForZoom(view.zoom) === null
 
-  const rollupFilters = useMemo(
+  // One filter object for both queries. Two derivations could disagree, and
+  // the pin view and the aggregated view have to answer the same question the
+  // same way.
+  const serverFilters = useMemo(
     () => ({
       status: filters.status,
       minConfirmations: filters.minConfirmations,
       since: filters.since,
+      origin: filters.origin,
+      withinMetres: filters.withinMetres,
     }),
-    [filters.status, filters.minConfirmations, filters.since],
+    [filters.status, filters.minConfirmations, filters.since, filters.origin, filters.withinMetres],
   )
+
+  /**
+   * Only the newest request may write.
+   *
+   * Both fetches re-fire on every pan and zoom with no cancellation, so a slow
+   * world-level query issued first can resolve after a fast street-level one
+   * and repaint the map with the wrong viewport's data, where it stays until
+   * the next move.
+   */
+  const requestSeq = useRef(0)
 
   const refresh = useCallback(async () => {
     try {
       // Only what is on screen. Fetching the whole planet and capping at 500
       // rows meant the aggregated view was built from an arbitrary slice, and
       // pins were ranked against reports on other continents.
-      const loaded = await data.listReportsInView(view.bounds)
+      const seq = ++requestSeq.current
+      const [loaded, total] = await Promise.all([
+        data.listReportsInView(view.bounds, serverFilters),
+        data.countReportsInView(view.bounds),
+      ])
+      if (seq !== requestSeq.current) return
       setReports(loaded)
+      setTotalInView(total)
       setOpenReport((current) =>
         current ? (loaded.find((r) => r.id === current.id) ?? current) : null,
       )
@@ -78,7 +99,7 @@ export default function App({ data: injected }: AppProps = {}) {
       // an empty map -- indistinguishable from an area with nothing reported.
       setLoadError(plainError(cause instanceof Error ? cause.message : null))
     }
-  }, [data, view.bounds])
+  }, [data, view.bounds, serverFilters])
 
   const refreshCells = useCallback(async () => {
     const resolution = resolutionForZoom(view.zoom)
@@ -90,12 +111,12 @@ export default function App({ data: injected }: AppProps = {}) {
       // Aggregated where the data is, with the filters pushed down -- rolling
       // up a capped page on the client drops the very cells that should be
       // hottest.
-      setCells(await data.getRollup(view.bounds, resolution, rollupFilters))
+      setCells(await data.getRollup(view.bounds, resolution, serverFilters))
       setLoadError(null)
     } catch (cause) {
       setLoadError(plainError(cause instanceof Error ? cause.message : null))
     }
-  }, [data, view.bounds, view.zoom, rollupFilters])
+  }, [data, view.bounds, view.zoom, serverFilters])
 
   useEffect(() => {
     void data
@@ -127,11 +148,12 @@ export default function App({ data: injected }: AppProps = {}) {
   )
 
   const visibleReports = useMemo(
-    // Nearest first once a location is known. "Never force users to hunt
-    // visually" means the list has to be ordered by something useful, not by
-    // whatever order the database happened to return.
-    () => sortByDistance(applyFilters(publishedReports, filters), filters.origin),
-    [publishedReports, filters],
+    // No applyFilters here: the server already applied them. Filtering again
+    // over a page would narrow results that were already narrowed correctly.
+    // Nearest first once a location is known -- "never force users to hunt
+    // visually" means the list needs a useful order, not the database's.
+    () => sortByDistance(publishedReports, filters.origin),
+    [publishedReports, filters.origin],
   )
 
   const onUseMyLocation = async () => {
@@ -197,7 +219,7 @@ export default function App({ data: injected }: AppProps = {}) {
             filters={filters}
             onChange={setFilters}
             showing={visibleReports.length}
-            total={publishedReports.length}
+            total={totalInView}
             onUseMyLocation={() => void onUseMyLocation()}
             locatingMessage={locatingMessage}
             hasLocation={filters.origin !== null}

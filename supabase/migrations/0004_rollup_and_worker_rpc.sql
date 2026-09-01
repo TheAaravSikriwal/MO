@@ -26,9 +26,15 @@ create or replace function public.reports_rollup(
   -- The same filters the panel offers. They have to be applied HERE, not to
   -- whatever subset the client happened to fetch: a client-side rollup over a
   -- capped page silently drops the very cells that should be hottest.
-  status_filter      text        default 'all',
-  min_confirmations  integer     default 0,
-  since              timestamptz default null
+  status_filter      text             default 'all',
+  min_confirmations  integer          default 0,
+  since              timestamptz      default null,
+  -- Distance is a filter like any other and has to be applied here too.
+  -- Applying it only on the client meant the panel said "3 of 200" while all
+  -- 200 stayed coloured on the map.
+  origin_lat         double precision default null,
+  origin_lng         double precision default null,
+  within_metres      double precision default null
 )
 returns table (
   cell         text,
@@ -38,7 +44,9 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+-- PostGIS lives in `extensions` on a default Supabase project, and this now
+-- calls st_dwithin.
+set search_path = public, extensions
 as $$
   select
     case resolution
@@ -57,8 +65,11 @@ as $$
     -- Open only unless somebody explicitly asked to see cleaned spots. This is
     -- what makes a cleanup cool the map, and why asking for cleaned ones has to
     -- be an explicit choice rather than a silently empty result.
+    -- 'all' means both, so the aggregated view and the pins agree about what
+    -- exists. The default is 'open', which is what keeps a cleanup visibly
+    -- cooling the map.
     and (
-      (status_filter = 'all'     and r.status = 'open')
+      status_filter = 'all'
       or (status_filter = 'open'    and r.status = 'open')
       or (status_filter = 'cleaned' and r.status = 'cleaned')
     )
@@ -72,12 +83,22 @@ as $$
       or
       (min_lng >  max_lng and (r.lng >= min_lng or r.lng <= max_lng))
     )
+    and (
+      origin_lat is null
+      or origin_lng is null
+      or within_metres is null
+      or st_dwithin(
+           r.geom,
+           st_setsrid(st_makepoint(origin_lng, origin_lat), 4326)::geography,
+           within_metres
+         )
+    )
   group by 1;
 $$;
 
 grant execute on function public.reports_rollup(
   double precision, double precision, double precision, double precision, integer,
-  text, integer, timestamptz
+  text, integer, timestamptz, double precision, double precision, double precision
 ) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------

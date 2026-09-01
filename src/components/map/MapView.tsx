@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react'
 import { MapContainer, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import { OPEN_STREET_MAP } from './tileProvider'
+import { normaliseBounds } from '../../lib/geo/bounds'
 import 'leaflet/dist/leaflet.css'
 
 export interface MapPosition {
@@ -49,14 +50,17 @@ function ViewWatcher({ onViewChange }: Pick<MapViewProps, 'onViewChange'>) {
       onViewChange({
         center: [lat, lng],
         zoom: map.getZoom(),
-        // The viewport, so what is fetched and aggregated matches what is on
-        // screen rather than being an arbitrary slice of the whole planet.
-        bounds: {
+        // Normalised, because Leaflet never wraps longitude. Panning east past
+        // the dateline gives west=179.9 east=180.1; panning a whole world east
+        // gives west=340 east=380. Passed through raw, the first silently drops
+        // half the screen and the second matches nothing on Earth -- a blank
+        // map over populated ground.
+        bounds: normaliseBounds({
           minLat: bounds.getSouth(),
           minLng: bounds.getWest(),
           maxLat: bounds.getNorth(),
           maxLng: bounds.getEast(),
-        },
+        }),
       })
     },
   })
