@@ -89,7 +89,62 @@ export class SupabaseDataSource implements DataSource {
   })
 
   /**
-   * Build report views for a whole page in a fixed number of queries.
+   * postgrest-js sends `.in()` as a GET with every id in the query string, so
+   * 500 UUIDs is roughly 19 KB of URL -- past the gateway's limit, which then
+   * returns 414 before the query ever runs. Chunking keeps each request well
+   * inside it.
+   */
+  private static readonly ID_CHUNK = 100
+
+  private static chunk(ids: string[]): string[][] {
+    const out: string[][] = []
+    for (let i = 0; i < ids.length; i += SupabaseDataSource.ID_CHUNK) {
+      out.push(ids.slice(i, i + SupabaseDataSource.ID_CHUNK))
+    }
+    return out
+  }
+
+  /**
+   * Throws rather than returning what it managed to get.
+   *
+   * Swallowing the error made a failed fetch indistinguishable from a report
+   * that genuinely has no photos -- the map would render every pin photo-less
+   * with nothing to say anything had gone wrong.
+   */
+  private async fetchPhotosFor(ids: string[]): Promise<Array<Record<string, unknown>>> {
+    const results = await Promise.all(
+      SupabaseDataSource.chunk(ids).map(async (batch) => {
+        const { data, error } = await this.client
+          .from('public_report_photos')
+          .select('id, report_id, storage_path, moderation_status')
+          .in('report_id', batch)
+        if (error) throw new Error(error.message)
+        return data ?? []
+      }),
+    )
+    return results.flat()
+  }
+
+  /** Same: a swallowed error here shows "confirm this" on something you already confirmed. */
+  private async fetchVotedIdsFor(ids: string[], viewerId: string): Promise<Set<string>> {
+    const voted = new Set<string>()
+    const results = await Promise.all(
+      SupabaseDataSource.chunk(ids).map(async (batch) => {
+        const { data, error } = await this.client
+          .from('votes')
+          .select('report_id')
+          .eq('user_id', viewerId)
+          .in('report_id', batch)
+        if (error) throw new Error(error.message)
+        return data ?? []
+      }),
+    )
+    for (const vote of results.flat()) voted.add(String(vote.report_id))
+    return voted
+  }
+
+  /**
+   * Build report views for a whole page in a bounded number of queries.
    *
    * Doing this per report meant one photo query and one vote query EACH: a
    * signed-in load of 500 reports was over a thousand HTTP requests, and every
@@ -102,27 +157,17 @@ export class SupabaseDataSource implements DataSource {
     if (rows.length === 0) return []
     const ids = rows.map((row) => String(row.id))
 
-    const { data: photos } = await this.client
-      .from('public_report_photos')
-      .select('id, report_id, storage_path, moderation_status')
-      .in('report_id', ids)
+    const [photos, votedIds] = await Promise.all([
+      this.fetchPhotosFor(ids),
+      viewerId ? this.fetchVotedIdsFor(ids, viewerId) : Promise.resolve(new Set<string>()),
+    ])
 
     const photosByReport = new Map<string, PhotoView[]>()
-    for (const photo of photos ?? []) {
+    for (const photo of photos) {
       const key = String(photo.report_id)
       const list = photosByReport.get(key) ?? []
       list.push(this.toPhoto(photo))
       photosByReport.set(key, list)
-    }
-
-    const voted = new Set<string>()
-    if (viewerId) {
-      const { data: votes } = await this.client
-        .from('votes')
-        .select('report_id')
-        .eq('user_id', viewerId)
-        .in('report_id', ids)
-      for (const vote of votes ?? []) voted.add(String(vote.report_id))
     }
 
     return rows.map((row) => {
@@ -139,7 +184,7 @@ export class SupabaseDataSource implements DataSource {
         createdAt: String(row.created_at),
         cells: cellsForPoint(Number(row.lat), Number(row.lng)),
         photos: photosByReport.get(id) ?? [],
-        viewerHasVoted: voted.has(id),
+        viewerHasVoted: votedIds.has(id),
         viewerIsReporter: viewerId !== null && row.reporter_id === viewerId,
       }
     })
