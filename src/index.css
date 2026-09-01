@@ -36,3 +36,23 @@ body,
     animation: none;
   }
 }
+
+/* Cells fade rather than snap.
+   Crossing a zoom band swaps every hexagon for a differently-sized one; done
+   in a single frame that reads as a flicker. The outgoing set is held on
+   screen and faded out underneath the incoming one. */
+.mo-cell {
+  transition: fill-opacity 320ms ease-out;
+}
+
+.mo-cell--leaving {
+  transition: fill-opacity 320ms ease-in;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mo-cell,
+  .mo-cell--leaving {
+    transition: none;
+  }
+}

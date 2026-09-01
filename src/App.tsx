@@ -98,6 +98,12 @@ export default function App({ data: injected }: AppProps = {}) {
   }, [data, openReportId, reports])
 
 
+  // Memoised, not computed inline. CellLayer holds the outgoing cells while
+  // the new ones fade in, keyed on the identity of this prop -- recomputing it
+  // every render would start a fresh fade on every render and pile up
+  // generations without end.
+  const normalisedCells = useMemo(() => normaliseWeights(cells), [cells])
+
   const showPins = resolutionForZoom(view.zoom) === null
 
   // One filter object for both queries. Two derivations could disagree, and
@@ -402,7 +408,7 @@ export default function App({ data: injected }: AppProps = {}) {
             onSelect={(report) => setOpenReportId(report.id)}
           />
         ) : (
-          <CellLayer cells={normaliseWeights(cells)} />
+          <CellLayer cells={normalisedCells} />
         )}
       </MapView>
 
