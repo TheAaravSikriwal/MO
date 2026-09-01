@@ -236,3 +236,24 @@ describe('ReportDetail — reporting a comment', () => {
     expect(screen.queryByRole('button', { name: /report this comment/i })).not.toBeInTheDocument()
   })
 })
+
+describe('ReportDetail — reporting a note', () => {
+  it('lets a reader report the note, and records it against the report', async () => {
+    const { user, data } = setup({ note: 'something unpleasant', noteStatus: 'approved' })
+    await user.click(screen.getByRole('button', { name: /report this note/i }))
+    await waitFor(() => expect(data.raisedFlags).toHaveLength(1))
+    expect(data.raisedFlags[0].subjectType).toBe('note')
+    expect(data.raisedFlags[0].subjectId).toBe('r1')
+  })
+
+  it('offers nothing to report when there is no note', () => {
+    setup({ note: null, noteStatus: 'pending' })
+    expect(screen.queryByRole('button', { name: /report this note/i })).not.toBeInTheDocument()
+  })
+
+  it('tells the author when their note was removed', () => {
+    setup({ note: 'something unpleasant', noteStatus: 'rejected' })
+    expect(screen.getByText(/the note was removed/i)).toBeInTheDocument()
+    expect(screen.queryByText('something unpleasant')).not.toBeInTheDocument()
+  })
+})

@@ -315,6 +315,26 @@ create policy flags_delete_admin
 
 grant usage on schema public to anon, authenticated;
 
+-- REVOKE, not merely "do not grant".
+--
+-- Supabase ships `alter default privileges in schema public grant all on tables
+-- to anon, authenticated`, so every table gets SELECT the moment it is created.
+-- Simply omitting a grant leaves the base tables world-readable and makes the
+-- column masking in the views above decorative: `select storage_path from
+-- report_photos where moderation_status = 'pending'` would hand an unreviewed
+-- photo to a signed-out visitor. These lines are what actually close that.
+revoke all on public.reports         from anon, authenticated;
+revoke all on public.report_photos   from anon, authenticated;
+revoke all on public.comments        from anon, authenticated;
+revoke all on public.votes           from anon, authenticated;
+revoke all on public.flags           from anon, authenticated;
+revoke all on public.profiles        from anon, authenticated;
+revoke all on public.moderation_jobs from anon, authenticated;
+
+-- Future tables in this schema must not be handed out either.
+alter default privileges in schema public revoke all on tables from anon, authenticated;
+
+
 -- Content is readable ONLY through the views above. Granting SELECT on the base
 -- tables would expose `note` and `storage_path` for rows that have not been
 -- reviewed, which is exactly what this design exists to prevent.

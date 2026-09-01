@@ -234,16 +234,29 @@ create trigger flag_reopens_review
   after insert on public.flags
   for each row execute function public.flag_reopens_review();
 
--- Anything people complained about is withheld again while it waits, rather
--- than staying live until somebody gets to it. Fail-closed, consistent with
--- D13: the cost of being wrong here is a delay, not exposure.
+-- Anything enough people complain about is withheld again while it waits.
+--
+-- Deliberately NOT on the first flag. One account could otherwise walk the map
+-- and unpublish every approved photo one insert at a time. A single flag still
+-- puts the item in front of an admin (above); it takes a second, independent
+-- person to actually take the content down in the meantime.
 create or replace function public.flag_withholds_content()
 returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  complaints integer;
 begin
+  select count(*) into complaints
+    from public.flags
+   where subject_type = new.subject_type and subject_id = new.subject_id;
+
+  if complaints < 2 then
+    return null;
+  end if;
+
   if new.subject_type = 'comment' then
     update public.comments set moderation_status = 'pending'
      where id = new.subject_id and moderation_status = 'approved';
@@ -251,8 +264,11 @@ begin
     update public.report_photos set moderation_status = 'pending'
      where id = new.subject_id and moderation_status = 'approved';
   elsif new.subject_type = 'note' then
+    -- `and note is not null` matters: a report with no note has note_status
+    -- 'approved' to satisfy note_status_matches_note, and setting it back to
+    -- 'pending' would violate that constraint and roll the whole flag back.
     update public.reports set note_status = 'pending'
-     where id = new.subject_id and note_status = 'approved';
+     where id = new.subject_id and note_status = 'approved' and note is not null;
   end if;
   return null;
 end;
@@ -261,3 +277,66 @@ $$;
 create trigger flag_withholds_content
   after insert on public.flags
   for each row execute function public.flag_withholds_content();
+
+-- ---------------------------------------------------------------------------
+-- Flags cannot be used as a battering ram
+-- ---------------------------------------------------------------------------
+
+-- subject_id is polymorphic, so it cannot carry a foreign key. Without this
+-- check, any signed-in account could insert flags for invented ids and, through
+-- flag_reopens_review (SECURITY DEFINER), fill moderation_jobs -- a table no
+-- browser role is granted at all -- with unbounded junk.
+create or replace function public.validate_flag_subject()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.subject_type = 'comment' then
+    if not exists (select 1 from public.comments where id = new.subject_id) then
+      raise exception 'no such comment';
+    end if;
+  elsif new.subject_type = 'photo' then
+    if not exists (select 1 from public.report_photos where id = new.subject_id) then
+      raise exception 'no such photo';
+    end if;
+  elsif new.subject_type = 'note' then
+    if not exists (
+      select 1 from public.reports
+      where id = new.subject_id and note is not null
+    ) then
+      raise exception 'no such note';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger validate_flag_subject
+  before insert on public.flags
+  for each row execute function public.validate_flag_subject();
+
+-- The other tables are rate limited; without the same here, one account can
+-- still generate unlimited review work even if it cannot take content down.
+create or replace function public.enforce_flag_rate_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if (
+    select count(*) from public.flags
+    where flagger_id = new.flagger_id
+      and created_at > now() - interval '1 hour'
+  ) >= 20 then
+    raise exception 'too many reports in the last hour; please slow down';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger enforce_flag_rate_limit
+  before insert on public.flags
+  for each row execute function public.enforce_flag_rate_limit();

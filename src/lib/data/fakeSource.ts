@@ -87,6 +87,7 @@ export class FakeDataSource implements DataSource {
       // Nothing arrives approved. The note is withheld until the worker rules.
       note: null,
       noteStatus: 'pending',
+      moderationStatus: 'approved',
       status: 'open',
       voteCount: 0,
       createdAt: new Date().toISOString(),
@@ -151,19 +152,29 @@ export class FakeDataSource implements DataSource {
     report.status = 'cleaned'
   }
 
-  readonly raisedFlags: Array<{ subjectType: QueueSubject; subjectId: string; reason: string }> = []
+  readonly raisedFlags: Array<{
+    subjectType: QueueSubject
+    subjectId: string
+    reason: string
+    flaggerId: string
+  }> = []
 
   async flag(subjectType: QueueSubject, subjectId: string, reason: string) {
     if (!this.user) throw new Error('you must be signed in to report this')
+    // Matching the unique constraint on flags: one PERSON, one complaint --
+    // not one complaint in total, which would stop a second person reporting
+    // the same thing and make the two-person withholding rule unreachable.
     if (
       this.raisedFlags.some(
-        (f) => f.subjectType === subjectType && f.subjectId === subjectId,
+        (f) =>
+          f.subjectType === subjectType &&
+          f.subjectId === subjectId &&
+          f.flaggerId === this.user!.id,
       )
     ) {
-      // One person, one complaint -- matching the unique constraint on flags.
       throw new Error('you have already reported this')
     }
-    this.raisedFlags.push({ subjectType, subjectId, reason })
+    this.raisedFlags.push({ subjectType, subjectId, reason, flaggerId: this.user.id })
 
     // Mirrors the flag_reopens_review and flag_withholds_content triggers: a
     // complaint puts the item back in front of a person AND withholds it while
@@ -187,6 +198,13 @@ export class FakeDataSource implements DataSource {
         flagCount: 1,
       })
     }
+
+    // Mirrors flag_withholds_content: it takes two independent people to take
+    // content down, so one account cannot unpublish the map one flag at a time.
+    const complaints = this.raisedFlags.filter(
+      (f) => f.subjectType === subjectType && f.subjectId === subjectId,
+    ).length
+    if (complaints < 2) return
 
     if (subjectType === 'comment') {
       for (const list of this.comments.values()) {
@@ -212,6 +230,16 @@ export class FakeDataSource implements DataSource {
         report.note = null
       }
     }
+  }
+
+  /** A complaint from somebody else, for tests that need a second one. */
+  seedFlagFromAnotherPerson(subjectType: QueueSubject, subjectId: string): void {
+    this.raisedFlags.push({
+      subjectType,
+      subjectId,
+      reason: 'reported by a reader',
+      flaggerId: `someone-else-${this.nextId++}`,
+    })
   }
 
   private findReportIdFor(subjectType: QueueSubject, subjectId: string): string | null {
@@ -325,6 +353,7 @@ export class FakeDataSource implements DataSource {
     const full: ReportView = {
       note: 'Bags of rubbish by the bus stop',
       noteStatus: 'approved',
+      moderationStatus: 'approved',
       status: 'open',
       voteCount: 0,
       createdAt: new Date().toISOString(),

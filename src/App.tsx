@@ -16,11 +16,17 @@ import type { WeighableReport } from './types/report'
 const WORLD_VIEW: MapPosition = { center: [20, 0], zoom: 3 }
 const PLACE_ZOOM = 16
 
-/** Reports are already public data; only what they contain is moderated. */
+/**
+ * The pin's own status decides whether it heats the map.
+ *
+ * Hardcoding 'approved' here made the filter in weighCells unreachable, so an
+ * admin-rejected report kept contributing weight for the two audiences who can
+ * still see it -- its author and any admin.
+ */
 const toWeighable = (report: ReportView): WeighableReport => ({
   id: report.id,
   status: report.status,
-  moderationStatus: 'approved',
+  moderationStatus: report.moderationStatus,
   voteCount: report.voteCount,
   cells: report.cells,
 })

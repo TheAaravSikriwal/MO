@@ -361,8 +361,9 @@ describe('AdminQueue — a complaint reaches a person', () => {
     expect(queue[0].flagCount).toBe(1)
   })
 
-  it('withholds flagged content again while it waits', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+  it('does not let one person alone unpublish content', async () => {
+    // Otherwise a single account could walk the map and take down every photo.
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
     data.seed({
       id: 'r1',
       lat: 51.5,
@@ -370,6 +371,35 @@ describe('AdminQueue — a complaint reaches a person', () => {
       photos: [{ id: 'p1', url: 'https://img/p1.jpg', moderationStatus: 'approved' }],
     })
 
+    await data.flag('photo', 'p1', 'reported by a reader')
+
+    const updated = await data.getReport('r1')
+    expect(updated!.photos[0].moderationStatus).toBe('approved')
+    expect(updated!.photos[0].url).not.toBeNull()
+  })
+
+  it('refuses a second complaint from the same person', async () => {
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    data.seed({
+      id: 'r1',
+      lat: 51.5,
+      lng: -0.12,
+      photos: [{ id: 'p1', url: 'https://img/p1.jpg', moderationStatus: 'approved' }],
+    })
+    await data.flag('photo', 'p1', 'reported by a reader')
+    await expect(data.flag('photo', 'p1', 'again')).rejects.toThrow(/already/i)
+  })
+
+  it('withholds content once a second person complains', async () => {
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    data.seed({
+      id: 'r1',
+      lat: 51.5,
+      lng: -0.12,
+      photos: [{ id: 'p1', url: 'https://img/p1.jpg', moderationStatus: 'approved' }],
+    })
+
+    data.seedFlagFromAnotherPerson('photo', 'p1')
     await data.flag('photo', 'p1', 'reported by a reader')
 
     const updated = await data.getReport('r1')

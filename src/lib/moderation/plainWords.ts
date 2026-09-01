@@ -12,6 +12,10 @@
  */
 
 const REASON_RULES: Array<[RegExp, string]> = [
+  // Written by the flag triggers. It must not fall through to the default,
+  // which would tell an admin the automatic checks were unsure about something
+  // no automatic check ever looked at.
+  [/people reported this|reported by/i, 'People reported this.'],
   [/no judge configured/i, 'The automatic checks could not decide this one.'],
   [/unreachable|econnrefused|timed out|timeout/i, 'The automatic checks could not run.'],
   [/no longer exists|discarded/i, 'This has since been deleted.'],

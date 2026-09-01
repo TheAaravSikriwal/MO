@@ -28,6 +28,8 @@ export interface ReportView {
   /** Null while the note is still being reviewed. */
   note: string | null
   noteStatus: ModerationStatus
+  /** The PIN's own status, separate from the note's. */
+  moderationStatus: ModerationStatus
   status: ReportStatus
   voteCount: number
   createdAt: string

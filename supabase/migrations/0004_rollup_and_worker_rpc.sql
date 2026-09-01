@@ -86,7 +86,9 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+-- PostGIS lives in `extensions` on a default Supabase project, so a definer
+-- function with search_path pinned to `public` alone cannot resolve st_dwithin.
+set search_path = public, extensions
 as $$
   select
     r.id,
@@ -191,7 +193,13 @@ begin
   elsif job.subject_type = 'comment' then
     update public.comments set moderation_status = new_verdict where id = job.subject_id;
   elsif job.subject_type = 'note' then
-    update public.reports set moderation_status = new_verdict where id = job.subject_id;
+    -- note_status, NOT moderation_status. The pin and its note are judged
+    -- separately: approving here must release the text, and rejecting here must
+    -- withhold the text without erasing the report from the map. Writing
+    -- moderation_status would do neither -- it would leave an approved note
+    -- permanently hidden with no job left to release it, and drop a rejected
+    -- one's pin off the map entirely.
+    update public.reports set note_status = new_verdict where id = job.subject_id;
   end if;
 end;
 $$;

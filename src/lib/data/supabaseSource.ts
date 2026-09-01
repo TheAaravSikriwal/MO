@@ -100,6 +100,7 @@ export class SupabaseDataSource implements DataSource {
       lng: Number(row.lng),
       note: (row.note as string | null) ?? null,
       noteStatus: row.note_status as ReportView['noteStatus'],
+      moderationStatus: row.moderation_status as ReportView['moderationStatus'],
       status: row.status as ReportView['status'],
       voteCount: Number(row.vote_count ?? 0),
       createdAt: String(row.created_at),

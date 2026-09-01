@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { checkText } from '../../lib/moderation/clientGate'
+import { plainError } from '../../lib/moderation/plainWords'
 import type { CommentView, DataSource, ReportView } from '../../lib/data/types'
 
 export interface ReportDetailProps {
@@ -40,7 +41,10 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
       await action()
       onChanged()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Something went wrong. Please try again.')
+      // Never the raw message. run() wraps voting, commenting, marking cleaned
+      // and flagging, so without this a member of the public can be shown a
+      // Postgres constraint name.
+      setError(plainError(cause instanceof Error ? cause.message : null))
     } finally {
       setBusy(false)
     }
@@ -146,8 +150,34 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
         ))}
       </div>
 
-      {report.note ? (
-        <p className="mt-3 text-sm text-slate-800">{report.note}</p>
+      {report.noteStatus === 'rejected' ? (
+        // The author still receives the text, so without this it would look
+        // published to the one person who most needs to know it is not.
+        <p className="mt-3 text-sm text-slate-500">
+          The note was removed and is not shown on the map.
+        </p>
+      ) : report.note ? (
+        <div className="mt-3">
+          <p className="text-sm text-slate-800">{report.note}</p>
+          {signedIn &&
+            (reported.has(`note:${report.id}`) ? (
+              <p className="mt-1 text-xs text-slate-500">Thanks. Someone will look at this.</p>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  void run(async () => {
+                    await data.flag('note', report.id, 'reported by a reader')
+                    setReported((current) => new Set(current).add(`note:${report.id}`))
+                  })
+                }
+                disabled={busy}
+                className="mt-1 text-xs text-slate-500 underline hover:text-slate-800"
+              >
+                Report this note
+              </button>
+            ))}
+        </div>
       ) : report.noteStatus === 'pending' ? (
         <p className="mt-3 text-sm text-slate-500">The note is being checked.</p>
       ) : null}
