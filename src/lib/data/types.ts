@@ -123,7 +123,7 @@ export interface DataSource {
    * The panel needs it to say "2 of 5" rather than a bare "2" -- without the
    * comparison a filtered map is indistinguishable from an empty one.
    */
-  countReportsInView(bounds: ViewBounds): Promise<number>
+  countReportsInView(bounds: ViewBounds, filters?: RollupFilters): Promise<number>
 
   getRollup(
     bounds: ViewBounds,

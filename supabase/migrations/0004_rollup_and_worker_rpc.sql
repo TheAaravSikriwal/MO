@@ -10,8 +10,9 @@
 --
 -- weight = sum over contributing reports of (1 + vote_count)
 --
--- Only open, approved reports contribute. Cleaned reports drop out, which is
--- what makes a cleanup visibly cool the map.
+-- By default only open, approved reports contribute, so a cleanup visibly cools
+-- the map. Passing status_filter = 'cleaned' or 'all' is an explicit request to
+-- see cleaned spots as well.
 --
 -- SECURITY DEFINER, because browser roles no longer hold SELECT on reports --
 -- that grant was what leaked unreviewed notes and photo paths. The function is
@@ -26,7 +27,11 @@ create or replace function public.reports_rollup(
   -- The same filters the panel offers. They have to be applied HERE, not to
   -- whatever subset the client happened to fetch: a client-side rollup over a
   -- capped page silently drops the very cells that should be hottest.
-  status_filter      text             default 'all',
+  -- 'open', not 'all'. A five-argument call is the form documented in the
+  -- README, and it used to mean open-only; defaulting to 'all' would silently
+  -- change what that call returns and break "cleaned reports drop out" for
+  -- anyone using the function directly.
+  status_filter      text             default 'open',
   min_confirmations  integer          default 0,
   since              timestamptz      default null,
   -- Distance is a filter like any other and has to be applied here too.

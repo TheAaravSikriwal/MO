@@ -252,16 +252,30 @@ export class SupabaseDataSource implements DataSource {
     return this.toReports(rows, user?.id ?? null)
   }
 
-  async countReportsInView(bounds: ViewBounds): Promise<number> {
+  /**
+   * An exact count, so the panel never reports the page cap as if it were the
+   * filters. Pass filters to count what is shown; omit them for the total.
+   */
+  async countReportsInView(bounds: ViewBounds, filters?: RollupFilters): Promise<number> {
     let query = this.client
       .from('public_reports')
       .select('id', { count: 'exact', head: true })
+      // public_reports deliberately returns rejected rows to their author and
+      // to admins, and the map strips those. Counting them would tell those two
+      // people a filter was hiding something that has actually been removed.
+      .eq('moderation_status', 'approved')
       .gte('lat', bounds.minLat)
       .lte('lat', bounds.maxLat)
 
     query = crossesAntimeridian(bounds)
       ? query.or('lng.gte.' + bounds.minLng + ',lng.lte.' + bounds.maxLng)
       : query.gte('lng', bounds.minLng).lte('lng', bounds.maxLng)
+
+    if (filters) {
+      if (filters.status !== 'all') query = query.eq('status', filters.status)
+      if (filters.minConfirmations > 0) query = query.gte('vote_count', filters.minConfirmations)
+      if (filters.since) query = query.gte('created_at', filters.since)
+    }
 
     const { count, error } = await query
     if (error) throw new Error(error.message)

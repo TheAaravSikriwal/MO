@@ -80,10 +80,19 @@ export class FakeDataSource implements DataSource {
     })
   }
 
-  async countReportsInView(bounds: ViewBounds): Promise<number> {
-    return [...this.reports.values()].filter(
+  async countReportsInView(bounds: ViewBounds, filters?: RollupFilters): Promise<number> {
+    const inView = [...this.reports.values()].filter(
       (r) => r.moderationStatus === 'approved' && containsPoint(bounds, r.lat, r.lng),
-    ).length
+    )
+    if (!filters) return inView.length
+    return applyFilters(inView, {
+      ...DEFAULT_FILTERS,
+      status: filters.status,
+      minConfirmations: filters.minConfirmations,
+      since: filters.since,
+      origin: filters.origin,
+      withinMetres: filters.withinMetres,
+    }).length
   }
 
   async getRollup(

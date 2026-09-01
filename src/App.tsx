@@ -45,7 +45,12 @@ export default function App({ data: injected }: AppProps = {}) {
   const [openReport, setOpenReport] = useState<ReportView | null>(null)
   const [adding, setAdding] = useState(false)
   const [reviewing, setReviewing] = useState(false)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  // One slot per fetch. Sharing a single one meant a successful cell load wiped
+  // the banner from a failed report load, so half the map was missing with
+  // nothing on screen to say so.
+  const [reportsError, setReportsError] = useState<string | null>(null)
+  const [cellsError, setCellsError] = useState<string | null>(null)
+  const [matchingInView, setMatchingInView] = useState(0)
   const [filters, setFilters] = useState<ReportFilters>(DEFAULT_FILTERS)
   const [locatingMessage, setLocatingMessage] = useState<string | null>(null)
 
@@ -73,31 +78,36 @@ export default function App({ data: injected }: AppProps = {}) {
    * Both fetches re-fire on every pan and zoom with no cancellation, so a slow
    * world-level query issued first can resolve after a fast street-level one
    * and repaint the map with the wrong viewport's data, where it stays until
-   * the next move.
+   * the next move. Separate counters, because the two run independently and
+   * one must not invalidate the other's response.
    */
-  const requestSeq = useRef(0)
+  const reportsSeq = useRef(0)
+  const cellsSeq = useRef(0)
 
   const refresh = useCallback(async () => {
+    const seq = ++reportsSeq.current
     try {
-      // Only what is on screen. Fetching the whole planet and capping at 500
-      // rows meant the aggregated view was built from an arbitrary slice, and
-      // pins were ranked against reports on other continents.
-      const seq = ++requestSeq.current
-      const [loaded, total] = await Promise.all([
+      // Only what is on screen, and counted twice on purpose: `showing` has to
+      // be an exact count of what matches, not the length of a capped page, or
+      // a dense viewport reports "500 of 12000" with no filter applied and
+      // blames the filters for the cap.
+      const [loaded, matching, total] = await Promise.all([
         data.listReportsInView(view.bounds, serverFilters),
+        data.countReportsInView(view.bounds, serverFilters),
         data.countReportsInView(view.bounds),
       ])
-      if (seq !== requestSeq.current) return
+      if (seq !== reportsSeq.current) return
       setReports(loaded)
+      setMatchingInView(matching)
       setTotalInView(total)
-      setOpenReport((current) =>
-        current ? (loaded.find((r) => r.id === current.id) ?? current) : null,
-      )
-      setLoadError(null)
+      setReportsError(null)
     } catch (cause) {
+      // Guarded too: a superseded request that fails must not raise a banner
+      // for a viewport the person has already left.
+      if (seq !== reportsSeq.current) return
       // Without this the promise rejects unhandled and a failed load renders as
       // an empty map -- indistinguishable from an area with nothing reported.
-      setLoadError(plainError(cause instanceof Error ? cause.message : null))
+      setReportsError(plainError(cause instanceof Error ? cause.message : null))
     }
   }, [data, view.bounds, serverFilters])
 
@@ -107,14 +117,18 @@ export default function App({ data: injected }: AppProps = {}) {
       setCells([])
       return
     }
+    const seq = ++cellsSeq.current
     try {
       // Aggregated where the data is, with the filters pushed down -- rolling
       // up a capped page on the client drops the very cells that should be
       // hottest.
-      setCells(await data.getRollup(view.bounds, resolution, serverFilters))
-      setLoadError(null)
+      const rolled = await data.getRollup(view.bounds, resolution, serverFilters)
+      if (seq !== cellsSeq.current) return
+      setCells(rolled)
+      setCellsError(null)
     } catch (cause) {
-      setLoadError(plainError(cause instanceof Error ? cause.message : null))
+      if (seq !== cellsSeq.current) return
+      setCellsError(plainError(cause instanceof Error ? cause.message : null))
     }
   }, [data, view.bounds, view.zoom, serverFilters])
 
@@ -126,7 +140,7 @@ export default function App({ data: injected }: AppProps = {}) {
         // A failure here is indistinguishable from being signed out, which
         // silently hides the review queue from an admin. Say so.
         setUser(null)
-        setLoadError('Could not check whether you are signed in.')
+        setReportsError('Could not check whether you are signed in.')
       })
     return data.onAuthChange(setUser)
   }, [data])
@@ -218,7 +232,7 @@ export default function App({ data: injected }: AppProps = {}) {
           <FilterPanel
             filters={filters}
             onChange={setFilters}
-            showing={visibleReports.length}
+            showing={matchingInView}
             total={totalInView}
             onUseMyLocation={() => void onUseMyLocation()}
             locatingMessage={locatingMessage}
@@ -235,9 +249,9 @@ export default function App({ data: injected }: AppProps = {}) {
             </button>
           )}
 
-          {loadError && (
+          {(reportsError ?? cellsError) && (
             <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
-              {loadError} Reports may be missing.
+              {reportsError ?? cellsError} Reports may be missing.
             </p>
           )}
 

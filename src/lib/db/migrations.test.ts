@@ -383,6 +383,50 @@ describe('migrations — a pin and its note are judged separately', () => {
   })
 })
 
+describe('migrations — the map rollup', () => {
+  it('defaults to open only, so a cleanup cools the map', () => {
+    // A five-argument call is the form the README documents. Defaulting to
+    // 'all' would silently change what that call means and start returning
+    // cleaned reports with full weight.
+    expect(flat).toContain("status_filter text default 'open'")
+  })
+
+  it('handles all three status choices', () => {
+    const body = bodyOf('reports_rollup')
+    expect(body).toMatch(/status_filter\s*=\s*'all'/i)
+    expect(body).toMatch(/status_filter\s*=\s*'open'\s+and\s+r\.status\s*=\s*'open'/i)
+    expect(body).toMatch(/status_filter\s*=\s*'cleaned'\s+and\s+r\.status\s*=\s*'cleaned'/i)
+  })
+
+  it('applies the distance filter where the data is', () => {
+    // Applying it only on the client meant the panel said "3 of 200" while all
+    // 200 stayed coloured on the map.
+    expect(bodyOf('reports_rollup')).toMatch(/st_dwithin/i)
+  })
+
+  it('resolves postgis, which is not in the public schema on Supabase', () => {
+    const body = bodyOf('reports_rollup')
+    expect(body).toMatch(/set\s+search_path\s*=\s*public,\s*extensions/i)
+  })
+
+  it('handles a viewport that crosses the antimeridian', () => {
+    // Leaflet never wraps longitude, so this arrives as min_lng > max_lng.
+    expect(bodyOf('reports_rollup')).toMatch(/min_lng\s*>\s*max_lng/i)
+  })
+
+  it('only ever counts approved reports', () => {
+    expect(bodyOf('reports_rollup')).toMatch(/r\.moderation_status\s*=\s*'approved'/i)
+  })
+
+  it('grants exactly the signature it declares', () => {
+    // A mismatched arg list makes the grant apply to no function at all, and
+    // every call then fails on permissions.
+    const grant = flat.slice(flat.indexOf('grant execute on function public.reports_rollup'))
+    const args = grant.slice(0, grant.indexOf(')')).split(',').length
+    expect(args).toBe(11)
+  })
+})
+
 describe('migrations — the admin surface refuses non-admins', () => {
   it('checks is_admin in admin_moderation_queue', () => {
     expect(bodyOf('admin_moderation_queue')).toMatch(/if\s+not\s+public\.is_admin\(\)/i)
