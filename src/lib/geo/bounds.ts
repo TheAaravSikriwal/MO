@@ -61,3 +61,48 @@ export function containsPoint(bounds: ViewBounds, lat: number, lng: number): boo
     ? wrapped >= bounds.minLng || wrapped <= bounds.maxLng
     : wrapped >= bounds.minLng && wrapped <= bounds.maxLng
 }
+
+/**
+ * A box that contains everything within `metres` of a point.
+ *
+ * Used to narrow a query before its row cap applies. It is a box round a
+ * circle, so it includes a little more than the radius — the exact distance
+ * test still runs afterwards, and over-fetching slightly is the safe direction.
+ */
+export function boundsAround(
+  origin: { lat: number; lng: number },
+  metres: number,
+): ViewBounds {
+  const latDelta = (metres / 111_320) * 1.05
+  // Longitude degrees shrink towards the poles; guard the cosine near them.
+  const cos = Math.max(0.01, Math.cos((origin.lat * Math.PI) / 180))
+  const lngDelta = (metres / (111_320 * cos)) * 1.05
+
+  return {
+    minLat: Math.max(-90, origin.lat - latDelta),
+    maxLat: Math.min(90, origin.lat + latDelta),
+    minLng: wrapLongitude(origin.lng - lngDelta),
+    maxLng: wrapLongitude(origin.lng + lngDelta),
+  }
+}
+
+/**
+ * The overlap of two boxes.
+ *
+ * Falls back to the first when either crosses the dateline: intersecting two
+ * wrapped ranges correctly is fiddly, and returning the wider box only means
+ * fetching a few more rows, never missing one.
+ */
+export function intersectBounds(a: ViewBounds, b: ViewBounds): ViewBounds {
+  if (crossesAntimeridian(a) || crossesAntimeridian(b)) return a
+
+  const minLat = Math.max(a.minLat, b.minLat)
+  const maxLat = Math.min(a.maxLat, b.maxLat)
+  const minLng = Math.max(a.minLng, b.minLng)
+  const maxLng = Math.min(a.maxLng, b.maxLng)
+
+  // No overlap at all: keep the viewport rather than inventing an inverted box.
+  if (minLat > maxLat || minLng > maxLng) return a
+
+  return { minLat, maxLat, minLng, maxLng }
+}

@@ -418,6 +418,20 @@ describe('migrations — the map rollup', () => {
     expect(bodyOf('reports_rollup')).toMatch(/r\.moderation_status\s*=\s*'approved'/i)
   })
 
+  it('counts through a function, since PostgREST cannot express st_dwithin', () => {
+    // A count that skipped the distance filter said "60 reports" while twelve
+    // pins were drawn -- contradicting both the pins and the cells.
+    expect(flat).toContain('create or replace function public.count_reports_in_view')
+    expect(bodyOf('count_reports_in_view')).toMatch(/st_dwithin/i)
+  })
+
+  it('counts the same rows the rollup weighs', () => {
+    const count = bodyOf('count_reports_in_view')
+    expect(count).toMatch(/r\.moderation_status\s*=\s*'approved'/i)
+    expect(count).toMatch(/status_filter\s*=\s*'cleaned'\s+and\s+r\.status\s*=\s*'cleaned'/i)
+    expect(count).toMatch(/min_lng\s*>\s*max_lng/i)
+  })
+
   it('grants exactly the signature it declares', () => {
     // A mismatched arg list makes the grant apply to no function at all, and
     // every call then fails on permissions.

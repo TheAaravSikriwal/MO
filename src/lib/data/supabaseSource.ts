@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { cellsForPoint } from '../grid/cells'
-import { crossesAntimeridian } from '../geo/bounds'
+import { crossesAntimeridian, boundsAround, intersectBounds } from '../geo/bounds'
 import { distanceMetres } from '../geo/distance'
 
 /**
@@ -209,17 +209,26 @@ export class SupabaseDataSource implements DataSource {
     // Every filter is applied by the database. Applying them to a capped page
     // afterwards meant "Cleaned up" could legitimately return nothing while
     // cleaned reports sat right there -- the page just happened not to hold any.
+    // Narrow the box to the radius BEFORE the cap applies. Filtering by
+    // distance afterwards meant the pins were a distance-filtered slice of the
+    // 500 most-confirmed rows rather than the reports actually within range, so
+    // pins could be missing that the aggregated view included.
+    const searched =
+      filters.origin && filters.withinMetres
+        ? intersectBounds(bounds, boundsAround(filters.origin, filters.withinMetres))
+        : bounds
+
     let query = this.client
       .from('public_reports')
       .select('*')
-      .gte('lat', bounds.minLat)
-      .lte('lat', bounds.maxLat)
+      .gte('lat', searched.minLat)
+      .lte('lat', searched.maxLat)
 
     // A viewport crossing the antimeridian arrives with minLng > maxLng, and a
     // plain between returns nothing at all there.
-    query = crossesAntimeridian(bounds)
-      ? query.or('lng.gte.' + bounds.minLng + ',lng.lte.' + bounds.maxLng)
-      : query.gte('lng', bounds.minLng).lte('lng', bounds.maxLng)
+    query = crossesAntimeridian(searched)
+      ? query.or('lng.gte.' + searched.minLng + ',lng.lte.' + searched.maxLng)
+      : query.gte('lng', searched.minLng).lte('lng', searched.maxLng)
 
     if (filters.status !== 'all') query = query.eq('status', filters.status)
     if (filters.minConfirmations > 0) query = query.gte('vote_count', filters.minConfirmations)
@@ -255,31 +264,26 @@ export class SupabaseDataSource implements DataSource {
   /**
    * An exact count, so the panel never reports the page cap as if it were the
    * filters. Pass filters to count what is shown; omit them for the total.
+   *
+   * Through an RPC because PostgREST cannot express st_dwithin on a select, and
+   * a count that quietly skipped the distance filter said "60 reports" while
+   * twelve pins were drawn.
    */
   async countReportsInView(bounds: ViewBounds, filters?: RollupFilters): Promise<number> {
-    let query = this.client
-      .from('public_reports')
-      .select('id', { count: 'exact', head: true })
-      // public_reports deliberately returns rejected rows to their author and
-      // to admins, and the map strips those. Counting them would tell those two
-      // people a filter was hiding something that has actually been removed.
-      .eq('moderation_status', 'approved')
-      .gte('lat', bounds.minLat)
-      .lte('lat', bounds.maxLat)
-
-    query = crossesAntimeridian(bounds)
-      ? query.or('lng.gte.' + bounds.minLng + ',lng.lte.' + bounds.maxLng)
-      : query.gte('lng', bounds.minLng).lte('lng', bounds.maxLng)
-
-    if (filters) {
-      if (filters.status !== 'all') query = query.eq('status', filters.status)
-      if (filters.minConfirmations > 0) query = query.gte('vote_count', filters.minConfirmations)
-      if (filters.since) query = query.gte('created_at', filters.since)
-    }
-
-    const { count, error } = await query
+    const { data, error } = await this.client.rpc('count_reports_in_view', {
+      min_lat: bounds.minLat,
+      min_lng: bounds.minLng,
+      max_lat: bounds.maxLat,
+      max_lng: bounds.maxLng,
+      status_filter: filters?.status ?? 'all',
+      min_confirmations: filters?.minConfirmations ?? 0,
+      since: filters?.since ?? null,
+      origin_lat: filters?.origin?.lat ?? null,
+      origin_lng: filters?.origin?.lng ?? null,
+      within_metres: filters?.withinMetres ?? null,
+    })
     if (error) throw new Error(error.message)
-    return count ?? 0
+    return Number(data ?? 0)
   }
 
   /**

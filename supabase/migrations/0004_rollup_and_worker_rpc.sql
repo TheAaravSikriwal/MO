@@ -107,6 +107,69 @@ grant execute on function public.reports_rollup(
 ) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
+-- count_reports_in_view  --  what the panel counts
+-- ---------------------------------------------------------------------------
+
+-- An exact count of the reports matching a viewport and a set of filters.
+--
+-- Exists because PostgREST cannot express st_dwithin on a plain select, so the
+-- distance filter could not be applied to a counting query from the client.
+-- Counting without it made the panel read "60 reports" while twelve pins were
+-- drawn -- the count contradicting both the pins and the cells.
+--
+-- Pass no filters for the unfiltered total.
+create or replace function public.count_reports_in_view(
+  min_lat    double precision,
+  min_lng    double precision,
+  max_lat    double precision,
+  max_lng    double precision,
+  status_filter      text             default 'all',
+  min_confirmations  integer          default 0,
+  since              timestamptz      default null,
+  origin_lat         double precision default null,
+  origin_lng         double precision default null,
+  within_metres      double precision default null
+)
+returns bigint
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $$
+  select count(*)::bigint
+  from public.reports r
+  where r.moderation_status = 'approved'
+    and (
+      status_filter = 'all'
+      or (status_filter = 'open'    and r.status = 'open')
+      or (status_filter = 'cleaned' and r.status = 'cleaned')
+    )
+    and r.vote_count >= greatest(coalesce(min_confirmations, 0), 0)
+    and (since is null or r.created_at >= since)
+    and r.lat between min_lat and max_lat
+    and (
+      (min_lng <= max_lng and r.lng between min_lng and max_lng)
+      or
+      (min_lng >  max_lng and (r.lng >= min_lng or r.lng <= max_lng))
+    )
+    and (
+      origin_lat is null
+      or origin_lng is null
+      or within_metres is null
+      or st_dwithin(
+           r.geom,
+           st_setsrid(st_makepoint(origin_lng, origin_lat), 4326)::geography,
+           within_metres
+         )
+    );
+$$;
+
+grant execute on function public.count_reports_in_view(
+  double precision, double precision, double precision, double precision,
+  text, integer, timestamptz, double precision, double precision, double precision
+) to anon, authenticated;
+
+-- ---------------------------------------------------------------------------
 -- nearby_reports  --  powers "near me"
 -- ---------------------------------------------------------------------------
 

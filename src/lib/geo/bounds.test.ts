@@ -4,6 +4,8 @@ import {
   wrapLongitude,
   crossesAntimeridian,
   containsPoint,
+  boundsAround,
+  intersectBounds,
   WHOLE_WORLD,
 } from './bounds'
 
@@ -107,5 +109,56 @@ describe('containsPoint', () => {
   it('accepts anything at all in the whole world', () => {
     expect(containsPoint(WHOLE_WORLD, 51.5, -0.12)).toBe(true)
     expect(containsPoint(WHOLE_WORLD, -33.8, 151.2)).toBe(true)
+  })
+})
+
+describe('boundsAround', () => {
+  it('contains everything within the radius', () => {
+    const origin = { lat: 51.5074, lng: -0.1278 }
+    const box = boundsAround(origin, 500)
+    // A point 400 m north is inside; one 5 km north is not.
+    expect(containsPoint(box, origin.lat + 400 / 111_320, origin.lng)).toBe(true)
+    expect(containsPoint(box, origin.lat + 5000 / 111_320, origin.lng)).toBe(false)
+  })
+
+  it('widens in longitude towards the poles, where degrees are narrower', () => {
+    const equator = boundsAround({ lat: 0, lng: 0 }, 1000)
+    const arctic = boundsAround({ lat: 70, lng: 0 }, 1000)
+    expect(arctic.maxLng - arctic.minLng).toBeGreaterThan(equator.maxLng - equator.minLng)
+  })
+
+  it('does not blow up at the pole', () => {
+    const box = boundsAround({ lat: 90, lng: 0 }, 1000)
+    expect(Number.isFinite(box.minLng)).toBe(true)
+    expect(box.maxLat).toBeLessThanOrEqual(90)
+  })
+})
+
+describe('intersectBounds', () => {
+  it('returns the overlap', () => {
+    const a = { minLat: 0, minLng: 0, maxLat: 10, maxLng: 10 }
+    const b = { minLat: 5, minLng: 5, maxLat: 20, maxLng: 20 }
+    expect(intersectBounds(a, b)).toEqual({ minLat: 5, minLng: 5, maxLat: 10, maxLng: 10 })
+  })
+
+  it('keeps the viewport when the boxes do not overlap', () => {
+    // An inverted box would match nothing at all; the wider one only costs a
+    // few extra rows.
+    const a = { minLat: 0, minLng: 0, maxLat: 10, maxLng: 10 }
+    const b = { minLat: 50, minLng: 50, maxLat: 60, maxLng: 60 }
+    expect(intersectBounds(a, b)).toEqual(a)
+  })
+
+  it('keeps the viewport when either box crosses the dateline', () => {
+    const across = normaliseBounds({ minLat: -1, minLng: 179.9, maxLat: 1, maxLng: 180.1 })
+    const ordinary = { minLat: -1, minLng: -10, maxLat: 1, maxLng: 10 }
+    expect(intersectBounds(across, ordinary)).toEqual(across)
+  })
+
+  it('never returns a box that excludes something both boxes contained', () => {
+    const a = { minLat: 0, minLng: 0, maxLat: 10, maxLng: 10 }
+    const b = { minLat: 2, minLng: 2, maxLat: 8, maxLng: 8 }
+    const result = intersectBounds(a, b)
+    expect(containsPoint(result, 5, 5)).toBe(true)
   })
 })

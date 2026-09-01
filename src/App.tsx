@@ -50,6 +50,10 @@ export default function App({ data: injected }: AppProps = {}) {
   // nothing on screen to say so.
   const [reportsError, setReportsError] = useState<string | null>(null)
   const [cellsError, setCellsError] = useState<string | null>(null)
+  // Its own slot. Written into the reports slot, it was wiped by the very next
+  // successful load -- which fires on mount and on every pan -- leaving an
+  // admin with the review queue invisible and nothing on screen to explain it.
+  const [authError, setAuthError] = useState<string | null>(null)
   const [matchingInView, setMatchingInView] = useState(0)
   const [filters, setFilters] = useState<ReportFilters>(DEFAULT_FILTERS)
   const [locatingMessage, setLocatingMessage] = useState<string | null>(null)
@@ -112,12 +116,20 @@ export default function App({ data: injected }: AppProps = {}) {
   }, [data, view.bounds, serverFilters])
 
   const refreshCells = useCallback(async () => {
+    // Claimed BEFORE the early return, so leaving the aggregated view
+    // invalidates a rollup still in flight. Otherwise its response lands
+    // unopposed and paints the old viewport's cells the moment you zoom back
+    // out somewhere else.
+    const seq = ++cellsSeq.current
+
     const resolution = resolutionForZoom(view.zoom)
     if (resolution === null) {
       setCells([])
+      // The banner belongs to the aggregated view. Left set, it kept saying
+      // "Reports may be missing" over a pin view whose reports all loaded.
+      setCellsError(null)
       return
     }
-    const seq = ++cellsSeq.current
     try {
       // Aggregated where the data is, with the filters pushed down -- rolling
       // up a capped page on the client drops the very cells that should be
@@ -135,12 +147,15 @@ export default function App({ data: injected }: AppProps = {}) {
   useEffect(() => {
     void data
       .getCurrentUser()
-      .then(setUser)
+      .then((current) => {
+        setUser(current)
+        setAuthError(null)
+      })
       .catch(() => {
         // A failure here is indistinguishable from being signed out, which
         // silently hides the review queue from an admin. Say so.
         setUser(null)
-        setReportsError('Could not check whether you are signed in.')
+        setAuthError('Could not check whether you are signed in.')
       })
     return data.onAuthChange(setUser)
   }, [data])
@@ -247,6 +262,12 @@ export default function App({ data: injected }: AppProps = {}) {
             >
               Review queue
             </button>
+          )}
+
+          {authError && (
+            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
+              {authError}
+            </p>
           )}
 
           {(reportsError ?? cellsError) && (
