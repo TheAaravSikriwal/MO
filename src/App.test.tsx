@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { FakeDataSource } from './lib/data/fakeSource'
 
 const flyToSpy = vi.fn()
 const mapInstance = { flyTo: flyToSpy }
+
+/**
+ * Captured so tests can actually move the map.
+ *
+ * With useMapEvents stubbed to null the view was pinned at the world zoom for
+ * the whole file, so the pin layer never mounted and every assertion about pins
+ * passed no matter what the code did.
+ */
+let mapEvents: Record<string, (event: unknown) => void> = {}
 
 vi.mock('react-leaflet', () => ({
   MapContainer: ({ children }: any) => <div data-testid="map">{children}</div>,
@@ -15,8 +24,29 @@ vi.mock('react-leaflet', () => ({
     <button type="button" data-testid="pin" onClick={eventHandlers?.click} />
   ),
   useMap: () => mapInstance,
-  useMapEvents: () => null,
+  useMapEvents: (handlers: Record<string, (event: unknown) => void>) => {
+    mapEvents = handlers
+    return null
+  },
 }))
+
+/** Drive the map the way Leaflet would after a pan or zoom. */
+const moveMapTo = async (zoom: number, center: [number, number] = [51.5074, -0.1278]) => {
+  await act(async () => {
+    mapEvents.moveend?.({
+      target: {
+        getCenter: () => ({ lat: center[0], lng: center[1] }),
+        getZoom: () => zoom,
+        getBounds: () => ({
+          getSouth: () => center[0] - 0.05,
+          getWest: () => center[1] - 0.05,
+          getNorth: () => center[0] + 0.05,
+          getEast: () => center[1] + 0.05,
+        }),
+      },
+    })
+  })
+}
 
 const JARGON = [
   'hexagon',
@@ -204,12 +234,27 @@ describe('App — pins and cells never draw together', () => {
     expect(screen.queryByTestId('pin')).not.toBeInTheDocument()
   })
 
-  it('leaves rejected reports off the map entirely', async () => {
-    const data = new FakeDataSource(null)
-    data.seed({ id: 'r1', lat: 51.5, lng: -0.12, moderationStatus: 'rejected' })
-    render(<App data={data} />)
+  it('draws pins once you are close enough to tell reports apart', async () => {
+    render(<App data={withReports()} />)
     await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
     expect(screen.queryByTestId('pin')).not.toBeInTheDocument()
+
+    await moveMapTo(16)
+    await waitFor(() => expect(screen.getAllByTestId('pin').length).toBeGreaterThan(0))
+    // Never both: overlapping hexes and pins say the same thing twice.
+    expect(screen.queryByTestId('cell')).not.toBeInTheDocument()
+  })
+
+  it('leaves rejected reports off the map entirely', async () => {
+    const data = new FakeDataSource(null)
+    data.seed({ id: 'ok', lat: 51.5074, lng: -0.1278 })
+    data.seed({ id: 'gone', lat: 51.5075, lng: -0.1279, moderationStatus: 'rejected' })
+    render(<App data={data} />)
+    await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
+
+    // At pin zoom, so the assertion can actually fail.
+    await moveMapTo(16)
+    await waitFor(() => expect(screen.getAllByTestId('pin')).toHaveLength(1))
   })
 })
 
@@ -247,17 +292,34 @@ describe('App — filters', () => {
     expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
   })
 
-  it('keeps the filter applied when zoomed out to the aggregated view', async () => {
-    // Zooming out must not quietly bring back what was filtered away.
+  it('keeps the filter applied in the aggregated view, not just the list', async () => {
+    // Zooming out must not quietly bring back what was filtered away. Asserting
+    // on the screen-reader list alone proved nothing about the cells.
     const user = userEvent.setup()
     render(<App data={mixed()} />)
     await screen.findByText('2 reports')
+    await moveMapTo(10)
+    await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
+
+    // Only one report is still there, and only one is cleaned, so each filter
+    // must leave exactly one cell rather than both.
+    await user.click(screen.getByRole('button', { name: /still there/i }))
+    await waitFor(() => expect(screen.getAllByTestId('cell')).toHaveLength(1))
 
     await user.click(screen.getByRole('button', { name: /cleaned up/i }))
-    await screen.findByText('1 of 2 reports')
+    await waitFor(() => expect(screen.getAllByTestId('cell')).toHaveLength(1))
+  })
 
-    const listed = screen.getAllByRole('button', { name: /confirmed/i })
-    expect(listed).toHaveLength(1)
+  it('does not blank the map when asked to show cleaned spots', async () => {
+    // weighCells drops cleaned reports by default, so the aggregated view went
+    // completely empty at the zoom the app opens at.
+    const user = userEvent.setup()
+    render(<App data={mixed()} />)
+    await screen.findByText('2 reports')
+    await moveMapTo(10)
+
+    await user.click(screen.getByRole('button', { name: /cleaned up/i }))
+    await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
   })
 
   it('restores everything when cleared', async () => {

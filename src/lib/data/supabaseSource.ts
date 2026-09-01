@@ -9,6 +9,9 @@ import type {
   QueueItem,
   QueueSubject,
   ReportView,
+  RollupCell,
+  RollupFilters,
+  ViewBounds,
 } from './types'
 
 /**
@@ -215,6 +218,34 @@ export class SupabaseDataSource implements DataSource {
     const { data, error } = await query.limit(500)
     if (error) throw new Error(error.message)
     return this.toReports(data ?? [], user?.id ?? null)
+  }
+
+  /**
+   * The aggregated view, computed in Postgres over every matching report --
+   * not over the page the client happened to fetch.
+   */
+  async getRollup(
+    bounds: ViewBounds,
+    resolution: number,
+    filters: RollupFilters,
+  ): Promise<RollupCell[]> {
+    const { data, error } = await this.client.rpc('reports_rollup', {
+      min_lat: bounds.minLat,
+      min_lng: bounds.minLng,
+      max_lat: bounds.maxLat,
+      max_lng: bounds.maxLng,
+      resolution,
+      status_filter: filters.status,
+      min_confirmations: filters.minConfirmations,
+      since: filters.since,
+    })
+    if (error) throw new Error(error.message)
+
+    return (data ?? []).map((row: Record<string, unknown>) => ({
+      cell: String(row.cell),
+      weight: Number(row.weight ?? 0),
+      reportCount: Number(row.report_count ?? 0),
+    }))
   }
 
   async getReport(id: string): Promise<ReportView | null> {

@@ -67,16 +67,16 @@ describe('MapView', () => {
       <MapView
         initialCenter={[0, 0]}
         initialZoom={2}
-        flyTo={{ center: [51.5073, -0.1657], zoom: 15 }}
+        flyTo={{ center: [51.5073, -0.1657], zoom: 15, nonce: 1 }}
         onViewChange={noop}
       />,
     )
     expect(flyToSpy).toHaveBeenCalledWith([51.5073, -0.1657], 15)
   })
 
-  it('does not re-fly when the target is unchanged', () => {
+  it('does not re-fly on an unrelated re-render', () => {
     flyToSpy.mockClear()
-    const target = { center: [1, 2] as [number, number], zoom: 10 }
+    const target = { center: [1, 2] as [number, number], zoom: 10, nonce: 1 }
     const { rerender } = render(
       <MapView initialCenter={[0, 0]} initialZoom={2} flyTo={target} onViewChange={noop} />,
     )
@@ -84,5 +84,31 @@ describe('MapView', () => {
       <MapView initialCenter={[0, 0]} initialZoom={2} flyTo={target} onViewChange={noop} />,
     )
     expect(flyToSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('flies again when asked to go somewhere it is already pointed at', () => {
+    // "Update my location" after panning away returns the same cached fix, and
+    // picking the same search result twice gives identical numbers. Keying on
+    // the coordinates made both do nothing, which is precisely when a person
+    // expects to be moved.
+    flyToSpy.mockClear()
+    const { rerender } = render(
+      <MapView
+        initialCenter={[0, 0]}
+        initialZoom={2}
+        flyTo={{ center: [1, 2], zoom: 10, nonce: 1 }}
+        onViewChange={noop}
+      />,
+    )
+    rerender(
+      <MapView
+        initialCenter={[0, 0]}
+        initialZoom={2}
+        flyTo={{ center: [1, 2], zoom: 10, nonce: 2 }}
+        onViewChange={noop}
+      />,
+    )
+    expect(flyToSpy).toHaveBeenCalledTimes(2)
+    expect(flyToSpy).toHaveBeenLastCalledWith([1, 2], 10)
   })
 })

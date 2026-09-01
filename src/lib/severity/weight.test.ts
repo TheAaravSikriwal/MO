@@ -95,3 +95,31 @@ describe('weighCells', () => {
     expect(input).toEqual(snapshot)
   })
 })
+
+describe('weighCells — which statuses count', () => {
+  it('counts only open reports by default, so cleanups cool the map', () => {
+    const reports = [report({ id: '1' }), report({ id: '2', status: 'cleaned' })]
+    expect(weighCells(reports, 7)).toEqual([{ cell: 'A', weight: 1, reportCount: 1 }])
+  })
+
+  it('can weigh cleaned reports when somebody asks to see them', () => {
+    // Otherwise choosing "cleaned up" empties every cell and the map goes
+    // blank -- which reads as "nothing was ever cleaned here".
+    const reports = [report({ id: '1' }), report({ id: '2', status: 'cleaned', voteCount: 3 })]
+    expect(weighCells(reports, 7, { statuses: ['cleaned'] })).toEqual([
+      { cell: 'A', weight: 4, reportCount: 1 },
+    ])
+  })
+
+  it('can weigh both at once', () => {
+    const reports = [report({ id: '1' }), report({ id: '2', status: 'cleaned' })]
+    expect(weighCells(reports, 7, { statuses: ['open', 'cleaned'] })).toEqual([
+      { cell: 'A', weight: 2, reportCount: 2 },
+    ])
+  })
+
+  it('still excludes anything not approved, whatever the statuses asked for', () => {
+    const reports = [report({ id: '1', status: 'cleaned', moderationStatus: 'pending' })]
+    expect(weighCells(reports, 7, { statuses: ['open', 'cleaned'] })).toEqual([])
+  })
+})

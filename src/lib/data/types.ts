@@ -61,6 +61,26 @@ export interface QueueItem {
   createdAt: string
 }
 
+export interface ViewBounds {
+  minLat: number
+  minLng: number
+  maxLat: number
+  maxLng: number
+}
+
+/** The filters that can be pushed down to the server. */
+export interface RollupFilters {
+  status: 'all' | 'open' | 'cleaned'
+  minConfirmations: number
+  since: string | null
+}
+
+export interface RollupCell {
+  cell: string
+  weight: number
+  reportCount: number
+}
+
 export interface NewReport {
   lat: number
   lng: number
@@ -81,12 +101,19 @@ export interface DataSource {
   signInWithEmail(email: string): Promise<void>
   signOut(): Promise<void>
 
-  listReportsInView(bounds: {
-    minLat: number
-    minLng: number
-    maxLat: number
-    maxLng: number
-  }): Promise<ReportView[]>
+  listReportsInView(bounds: ViewBounds): Promise<ReportView[]>
+
+  /**
+   * Aggregated cells for a viewport, computed where the data is.
+   *
+   * Rolling up on the client means rolling up whatever page happened to come
+   * back, which silently drops the cells that should be hottest.
+   */
+  getRollup(
+    bounds: ViewBounds,
+    resolution: number,
+    filters: RollupFilters,
+  ): Promise<RollupCell[]>
 
   getReport(id: string): Promise<ReportView | null>
   createReport(report: NewReport): Promise<{ id: string }>

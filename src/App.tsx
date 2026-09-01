@@ -1,40 +1,30 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { MapView, type MapPosition } from './components/map/MapView'
+import { MapView, type FlyTarget, type MapView2 } from './components/map/MapView'
 import { CellLayer } from './components/map/CellLayer'
 import { ReportPinLayer } from './components/map/ReportPinLayer'
 import { FilterPanel } from './components/map/FilterPanel'
-import { applyFilters, DEFAULT_FILTERS, type ReportFilters } from './lib/filters/reportFilters'
+import {
+  applyFilters,
+  sortByDistance,
+  DEFAULT_FILTERS,
+  type ReportFilters,
+} from './lib/filters/reportFilters'
+import { distanceMetres, formatDistance } from './lib/geo/distance'
 import { getCurrentPosition } from './lib/geo/nearMe'
 import { ReportForm } from './components/report/ReportForm'
 import { ReportDetail } from './components/report/ReportDetail'
 import { SignInPanel } from './components/auth/SignInPanel'
 import { AdminQueue } from './components/admin/AdminQueue'
 import { resolutionForZoom, PIN_ZOOM_THRESHOLD } from './lib/grid/zoomResolution'
-import { weighCells } from './lib/severity/weight'
 import { normaliseWeights } from './lib/severity/percentile'
 import { createDebouncedSearch, type Place } from './lib/geo/nominatim'
 import { createDataSource } from './lib/data/createDataSource'
 import { plainError } from './lib/moderation/plainWords'
-import type { CurrentUser, DataSource, ReportView } from './lib/data/types'
-import type { WeighableReport } from './types/report'
+import type { CurrentUser, DataSource, ReportView, RollupCell } from './lib/data/types'
 
-const WORLD_VIEW: MapPosition = { center: [20, 0], zoom: 3 }
+const WORLD_VIEW = { center: [20, 0] as [number, number], zoom: 3 }
+const WHOLE_WORLD = { minLat: -90, minLng: -180, maxLat: 90, maxLng: 180 }
 const PLACE_ZOOM = 16
-
-/**
- * The pin's own status decides whether it heats the map.
- *
- * Hardcoding 'approved' here made the filter in weighCells unreachable, so an
- * admin-rejected report kept contributing weight for the two audiences who can
- * still see it -- its author and any admin.
- */
-const toWeighable = (report: ReportView): WeighableReport => ({
-  id: report.id,
-  status: report.status,
-  moderationStatus: report.moderationStatus,
-  voteCount: report.voteCount,
-  cells: report.cells,
-})
 
 export interface AppProps {
   /** Injected in tests; production picks a source from the environment. */
@@ -45,8 +35,9 @@ export default function App({ data: injected }: AppProps = {}) {
   const chosen = useMemo(() => createDataSource(import.meta.env), [])
   const data = injected ?? chosen.source
 
-  const [view, setView] = useState<MapPosition>(WORLD_VIEW)
-  const [flyTo, setFlyTo] = useState<MapPosition | null>(null)
+  const [view, setView] = useState<MapView2>({ ...WORLD_VIEW, bounds: WHOLE_WORLD })
+  const [flyTo, setFlyTo] = useState<FlyTarget | null>(null)
+  const [cells, setCells] = useState<RollupCell[]>([])
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Place[]>([])
   const [reports, setReports] = useState<ReportView[]>([])
@@ -60,16 +51,23 @@ export default function App({ data: injected }: AppProps = {}) {
 
   const search = useMemo(() => createDebouncedSearch(), [])
 
+  const showPins = resolutionForZoom(view.zoom) === null
+
+  const rollupFilters = useMemo(
+    () => ({
+      status: filters.status,
+      minConfirmations: filters.minConfirmations,
+      since: filters.since,
+    }),
+    [filters.status, filters.minConfirmations, filters.since],
+  )
+
   const refresh = useCallback(async () => {
-    // A generous window: the map is the homepage, so something should always
-    // be on it rather than only what is strictly in frame.
     try {
-      const loaded = await data.listReportsInView({
-        minLat: -90,
-        minLng: -180,
-        maxLat: 90,
-        maxLng: 180,
-      })
+      // Only what is on screen. Fetching the whole planet and capping at 500
+      // rows meant the aggregated view was built from an arbitrary slice, and
+      // pins were ranked against reports on other continents.
+      const loaded = await data.listReportsInView(view.bounds)
       setReports(loaded)
       setOpenReport((current) =>
         current ? (loaded.find((r) => r.id === current.id) ?? current) : null,
@@ -80,10 +78,35 @@ export default function App({ data: injected }: AppProps = {}) {
       // an empty map -- indistinguishable from an area with nothing reported.
       setLoadError(plainError(cause instanceof Error ? cause.message : null))
     }
-  }, [data])
+  }, [data, view.bounds])
+
+  const refreshCells = useCallback(async () => {
+    const resolution = resolutionForZoom(view.zoom)
+    if (resolution === null) {
+      setCells([])
+      return
+    }
+    try {
+      // Aggregated where the data is, with the filters pushed down -- rolling
+      // up a capped page on the client drops the very cells that should be
+      // hottest.
+      setCells(await data.getRollup(view.bounds, resolution, rollupFilters))
+      setLoadError(null)
+    } catch (cause) {
+      setLoadError(plainError(cause instanceof Error ? cause.message : null))
+    }
+  }, [data, view.bounds, view.zoom, rollupFilters])
 
   useEffect(() => {
-    void data.getCurrentUser().then(setUser)
+    void data
+      .getCurrentUser()
+      .then(setUser)
+      .catch(() => {
+        // A failure here is indistinguishable from being signed out, which
+        // silently hides the review queue from an admin. Say so.
+        setUser(null)
+        setLoadError('Could not check whether you are signed in.')
+      })
     return data.onAuthChange(setUser)
   }, [data])
 
@@ -92,23 +115,9 @@ export default function App({ data: injected }: AppProps = {}) {
     void refresh()
   }, [refresh])
 
-  // Below the threshold the map aggregates; at or above it, individual reports.
-  // Never both -- overlapping hexes and pins say the same thing twice and make
-  // the pins hard to hit.
-  const showPins = resolutionForZoom(view.zoom) === null
-
-  // Filters apply at every zoom: narrowing to "cleaned up" and then zooming
-  // out must not quietly bring everything back.
-  const visibleReportsForCells = useMemo(
-    () => applyFilters(reports.filter((r) => r.moderationStatus === 'approved'), filters),
-    [reports, filters],
-  )
-
-  const cells = useMemo(() => {
-    const resolution = resolutionForZoom(view.zoom)
-    if (resolution === null) return []
-    return normaliseWeights(weighCells(visibleReportsForCells.map(toWeighable), resolution))
-  }, [visibleReportsForCells, view.zoom])
+  useEffect(() => {
+    void refreshCells()
+  }, [refreshCells])
 
   const publishedReports = useMemo(
     // A rejected pin is visible to its author and to admins, and must not be
@@ -118,7 +127,10 @@ export default function App({ data: injected }: AppProps = {}) {
   )
 
   const visibleReports = useMemo(
-    () => applyFilters(publishedReports, filters),
+    // Nearest first once a location is known. "Never force users to hunt
+    // visually" means the list has to be ordered by something useful, not by
+    // whatever order the database happened to return.
+    () => sortByDistance(applyFilters(publishedReports, filters), filters.origin),
     [publishedReports, filters],
   )
 
@@ -128,7 +140,7 @@ export default function App({ data: injected }: AppProps = {}) {
     if (result.ok) {
       setLocatingMessage(null)
       setFilters((current) => ({ ...current, origin: result.point }))
-      setFlyTo({ center: [result.point.lat, result.point.lng], zoom: PLACE_ZOOM })
+      setFlyTo({ center: [result.point.lat, result.point.lng], zoom: PLACE_ZOOM, nonce: Date.now() })
     } else {
       setLocatingMessage(result.message)
     }
@@ -164,7 +176,7 @@ export default function App({ data: injected }: AppProps = {}) {
                   <button
                     type="button"
                     onClick={() => {
-                      setFlyTo({ center: [place.lat, place.lng], zoom: PLACE_ZOOM })
+                      setFlyTo({ center: [place.lat, place.lng], zoom: PLACE_ZOOM, nonce: Date.now() })
                       setResults([])
                       setQuery(place.name)
                     }}
@@ -272,7 +284,7 @@ export default function App({ data: injected }: AppProps = {}) {
             onSelect={setOpenReport}
           />
         ) : (
-          <CellLayer cells={cells} />
+          <CellLayer cells={normaliseWeights(cells)} />
         )}
       </MapView>
 
@@ -284,6 +296,11 @@ export default function App({ data: injected }: AppProps = {}) {
             <button type="button" onClick={() => setOpenReport(report)}>
               {report.status === 'cleaned' ? 'Cleaned report' : 'Litter reported here'} —{' '}
               {report.voteCount} confirmed
+              {filters.origin
+                ? `, ${formatDistance(
+                    distanceMetres(filters.origin, { lat: report.lat, lng: report.lng }),
+                  )}`
+                : ''}
             </button>
           </li>
         ))}

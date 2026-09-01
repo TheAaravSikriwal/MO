@@ -1,4 +1,6 @@
 import { cellsForPoint } from '../grid/cells'
+import { weighCells } from '../severity/weight'
+import { applyFilters, DEFAULT_FILTERS } from '../filters/reportFilters'
 import type {
   CommentView,
   CurrentUser,
@@ -7,6 +9,9 @@ import type {
   QueueItem,
   QueueSubject,
   ReportView,
+  RollupCell,
+  RollupFilters,
+  ViewBounds,
 } from './types'
 
 /**
@@ -67,6 +72,31 @@ export class FakeDataSource implements DataSource {
         r.lat <= bounds.maxLat &&
         r.lng >= bounds.minLng &&
         r.lng <= bounds.maxLng,
+    )
+  }
+
+  async getRollup(
+    bounds: ViewBounds,
+    resolution: number,
+    filters: RollupFilters,
+  ): Promise<RollupCell[]> {
+    const inView = await this.listReportsInView(bounds)
+    const matching = applyFilters(inView, {
+      ...DEFAULT_FILTERS,
+      status: filters.status,
+      minConfirmations: filters.minConfirmations,
+      since: filters.since,
+    })
+    return weighCells(
+      matching.map((report) => ({
+        id: report.id,
+        status: report.status,
+        moderationStatus: report.moderationStatus,
+        voteCount: report.voteCount,
+        cells: report.cells,
+      })),
+      resolution,
+      { statuses: filters.status === 'cleaned' ? ['cleaned'] : ['open'] },
     )
   }
 

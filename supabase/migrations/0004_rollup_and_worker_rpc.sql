@@ -22,7 +22,13 @@ create or replace function public.reports_rollup(
   min_lng    double precision,
   max_lat    double precision,
   max_lng    double precision,
-  resolution integer
+  resolution integer,
+  -- The same filters the panel offers. They have to be applied HERE, not to
+  -- whatever subset the client happened to fetch: a client-side rollup over a
+  -- capped page silently drops the very cells that should be hottest.
+  status_filter      text        default 'all',
+  min_confirmations  integer     default 0,
+  since              timestamptz default null
 )
 returns table (
   cell         text,
@@ -46,9 +52,18 @@ as $$
     sum(1 + r.vote_count)::bigint as weight,
     count(*)::bigint              as report_count
   from public.reports r
-  where r.status = 'open'
-    and r.moderation_status = 'approved'
+  where r.moderation_status = 'approved'
     and resolution in (1, 3, 5, 7, 9, 12)
+    -- Open only unless somebody explicitly asked to see cleaned spots. This is
+    -- what makes a cleanup cool the map, and why asking for cleaned ones has to
+    -- be an explicit choice rather than a silently empty result.
+    and (
+      (status_filter = 'all'     and r.status = 'open')
+      or (status_filter = 'open'    and r.status = 'open')
+      or (status_filter = 'cleaned' and r.status = 'cleaned')
+    )
+    and r.vote_count >= greatest(coalesce(min_confirmations, 0), 0)
+    and (since is null or r.created_at >= since)
     and r.lat between min_lat and max_lat
     -- A viewport that crosses the antimeridian arrives with min_lng > max_lng.
     -- Treating it as an ordinary BETWEEN would return nothing at all.
@@ -61,7 +76,8 @@ as $$
 $$;
 
 grant execute on function public.reports_rollup(
-  double precision, double precision, double precision, double precision, integer
+  double precision, double precision, double precision, double precision, integer,
+  text, integer, timestamptz
 ) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------

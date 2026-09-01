@@ -9,6 +9,19 @@ export const CLEANED_COLOR = '#2f9e6e'
 export const MIN_PIN_RADIUS = 7
 export const MAX_PIN_RADIUS = 16
 
+/**
+ * Pins never use the very bottom of the ramp.
+ *
+ * `colorForT(0)` is white, and a white circle with a white outline on a pale
+ * basemap is invisible. Cells get away with white because their opacity fades
+ * them out over a large area and the absence reads as "nothing here"; a pin
+ * stands for a specific report that somebody made, and it has to be visible
+ * even when it is the quietest one on screen.
+ */
+export const PIN_T_FLOOR = 0.25
+
+const pinT = (t: number) => PIN_T_FLOOR + (1 - PIN_T_FLOOR) * t
+
 export interface ReportPinLayerProps {
   reports: readonly ReportView[]
   onSelect: (report: ReportView) => void
@@ -54,12 +67,14 @@ export function ReportPinLayer({ reports, onSelect, selectedId }: ReportPinLayer
                 : MIN_PIN_RADIUS + (MAX_PIN_RADIUS - MIN_PIN_RADIUS) * t
             }
             pathOptions={{
-              fillColor: cleaned ? CLEANED_COLOR : colorForT(t),
+              fillColor: cleaned ? CLEANED_COLOR : colorForT(pinT(t)),
               fillOpacity: cleaned ? 0.55 : 0.85,
               // Pins get an outline, unlike cells: at this zoom they sit on top
               // of streets and buildings and need to stay distinguishable from
               // the map underneath.
-              color: selected ? '#0f172a' : '#ffffff',
+              // Dark, not white: a white outline round a pale fill is no
+              // outline at all.
+              color: selected ? '#0f172a' : '#475569',
               weight: selected ? 3 : 1.5,
             }}
             eventHandlers={{ click: () => onSelect(report) }}

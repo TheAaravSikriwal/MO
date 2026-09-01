@@ -6,7 +6,9 @@ import {
   CLEANED_COLOR,
   MIN_PIN_RADIUS,
   MAX_PIN_RADIUS,
+  PIN_T_FLOOR,
 } from './ReportPinLayer'
+import { oklch } from 'culori'
 import { colorForT } from '../../lib/color/ramp'
 import type { ReportView } from '../../lib/data/types'
 
@@ -109,8 +111,31 @@ describe('ReportPinLayer — how much attention a spot has', () => {
       />,
     )
     const [quiet, busy] = pins()
-    expect(quiet).toHaveAttribute('data-fill', colorForT(0))
+    expect(quiet).toHaveAttribute('data-fill', colorForT(PIN_T_FLOOR))
     expect(busy).toHaveAttribute('data-fill', colorForT(1))
+  })
+
+  it('never draws the quietest pin white, which would be invisible', () => {
+    // colorForT(0) is #ffffff, and a white circle on a pale basemap with a
+    // white outline cannot be seen at all.
+    render(<ReportPinLayer reports={[report({ id: 'quiet', voteCount: 0 })]} onSelect={vi.fn()} />)
+    const pin = pins()[0]
+    expect(pin.getAttribute('data-fill')).not.toBe('#ffffff')
+    expect(oklch(pin.getAttribute('data-fill')!)!.c).toBeGreaterThan(0.02)
+  })
+
+  it('outlines every pin in something darker than the fill', () => {
+    render(
+      <ReportPinLayer
+        reports={[report({ id: 'quiet', voteCount: 0 }), report({ id: 'busy', voteCount: 9 })]}
+        onSelect={vi.fn()}
+      />,
+    )
+    for (const pin of pins()) {
+      const stroke = oklch(pin.getAttribute('data-stroke')!)!
+      const fill = oklch(pin.getAttribute('data-fill')!)!
+      expect(stroke.l).toBeLessThan(fill.l)
+    }
   })
 
   it('ranks against the other pins on screen, not against a fixed scale', () => {
@@ -189,7 +214,15 @@ describe('ReportPinLayer — the selected pin', () => {
   })
 
   it('marks nothing when nothing is open', () => {
-    render(<ReportPinLayer reports={[report({ id: 'a' })]} onSelect={vi.fn()} />)
-    expect(pins()[0]).toHaveAttribute('data-stroke', '#ffffff')
+    render(
+      <ReportPinLayer
+        reports={[report({ id: 'a' }), report({ id: 'b' })]}
+        onSelect={vi.fn()}
+        selectedId={null}
+      />,
+    )
+    const [a, b] = pins()
+    expect(a.getAttribute('data-stroke')).toBe(b.getAttribute('data-stroke'))
+    expect(a.getAttribute('data-weight')).toBe(b.getAttribute('data-weight'))
   })
 })

@@ -1,4 +1,4 @@
-import type { WeighableReport, WeightedCell } from '../../types/report'
+import type { ReportStatus, WeighableReport, WeightedCell } from '../../types/report'
 
 /**
  * Aggregate reports into weighted cells at one resolution.
@@ -12,15 +12,30 @@ import type { WeighableReport, WeightedCell } from '../../types/report'
  * out entirely, which is what makes a cleanup visibly cool the map — the payoff
  * the whole product is built around.
  */
+export interface WeighOptions {
+  /**
+   * Which statuses contribute.
+   *
+   * Defaults to open only, which is what makes a cleanup visibly cool the map.
+   * The exception is when somebody has explicitly asked to SEE cleaned spots:
+   * weighing only open reports then leaves every cell empty and the map blank,
+   * which reads as "nothing was ever cleaned here" rather than as the answer to
+   * the question they asked.
+   */
+  statuses?: readonly ReportStatus[]
+}
+
 export function weighCells(
   reports: readonly WeighableReport[],
   resolution: number,
+  options: WeighOptions = {},
 ): WeightedCell[] {
+  const statuses = options.statuses ?? (['open'] as const)
   const column = `cell_r${resolution}`
   const byCell = new Map<string, WeightedCell>()
 
   for (const report of reports) {
-    if (report.status !== 'open') continue
+    if (!statuses.includes(report.status)) continue
     if (report.moderationStatus !== 'approved') continue
 
     const cell = report.cells[column]

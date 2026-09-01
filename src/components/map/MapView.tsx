@@ -8,6 +8,24 @@ export interface MapPosition {
   zoom: number
 }
 
+export interface MapBounds {
+  minLat: number
+  minLng: number
+  maxLat: number
+  maxLng: number
+}
+
+export interface MapView2 {
+  center: [number, number]
+  zoom: number
+  bounds: MapBounds
+}
+
+/** A fly target that repeats. See Recenter below for why the nonce is needed. */
+export interface FlyTarget extends MapPosition {
+  nonce: number
+}
+
 export interface MapViewProps {
   /** Where the map opens. Leaflet treats this as initial state only. */
   initialCenter: [number, number]
@@ -17,8 +35,8 @@ export interface MapViewProps {
    * Changing initialCenter alone does nothing once Leaflet has mounted, which is
    * the trap this prop exists to close.
    */
-  flyTo?: MapPosition | null
-  onViewChange: (view: MapPosition) => void
+  flyTo?: FlyTarget | null
+  onViewChange: (view: MapView2) => void
   children?: ReactNode
 }
 
@@ -27,22 +45,39 @@ function ViewWatcher({ onViewChange }: Pick<MapViewProps, 'onViewChange'>) {
     moveend(event) {
       const map = event.target
       const { lat, lng } = map.getCenter()
-      onViewChange({ center: [lat, lng], zoom: map.getZoom() })
+      const bounds = map.getBounds()
+      onViewChange({
+        center: [lat, lng],
+        zoom: map.getZoom(),
+        // The viewport, so what is fetched and aggregated matches what is on
+        // screen rather than being an arbitrary slice of the whole planet.
+        bounds: {
+          minLat: bounds.getSouth(),
+          minLng: bounds.getWest(),
+          maxLat: bounds.getNorth(),
+          maxLng: bounds.getEast(),
+        },
+      })
     },
   })
   return null
 }
 
-function Recenter({ flyTo }: { flyTo: MapPosition | null | undefined }) {
+function Recenter({ flyTo }: { flyTo: FlyTarget | null | undefined }) {
   const map = useMap()
-  const lat = flyTo?.center[0]
-  const lng = flyTo?.center[1]
-  const zoom = flyTo?.zoom
+  const nonce = flyTo?.nonce
 
   useEffect(() => {
-    if (lat === undefined || lng === undefined || zoom === undefined) return
-    map.flyTo([lat, lng], zoom)
-  }, [map, lat, lng, zoom])
+    if (!flyTo) return
+    map.flyTo(flyTo.center, flyTo.zoom)
+    // Keyed on the nonce, NOT on the coordinates.
+    //
+    // Depending on lat/lng/zoom meant asking to go somewhere you were already
+    // pointed at did nothing: "Update my location" after panning away returns
+    // the same cached fix, and picking the same search result twice produces
+    // identical numbers. Both are exactly when a person expects to be moved.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, nonce])
 
   return null
 }
