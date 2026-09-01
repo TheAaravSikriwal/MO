@@ -216,7 +216,25 @@ describe('migrations — unreviewed content stays unreachable', () => {
   it('looks profile names up by id instead of listing them', () => {
     // A listable view let anyone enumerate every account in the database.
     expect(flat).toContain('create or replace function public.profile_names(ids uuid[])')
-    expect(flat).not.toContain('grant select on public.public_profiles')
+    expect(flat).not.toContain('create view public.public_profiles')
+  })
+
+  it('is the relation the app actually calls', () => {
+    // The view was replaced by this RPC while the app kept querying the view,
+    // so every comment author silently rendered as "someone" and the error was
+    // discarded. Pin the two together.
+    const source = readFileSync(
+      join(process.cwd(), 'src', 'lib', 'data', 'supabaseSource.ts'),
+      'utf8',
+    )
+    expect(source).toContain("rpc('profile_names'")
+    expect(source).not.toContain("from('public_profiles')")
+  })
+
+  it('reports whether an escalation was actually applied', () => {
+    // Returning void made the caller assume success even when the guard
+    // refused the write, so the log claimed escalations that never happened.
+    expect(bodyOf('escalate_moderation_job')).toMatch(/returns\s+boolean/i)
   })
 
   it('lets a complaint outrank a machine verdict', () => {

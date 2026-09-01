@@ -146,8 +146,8 @@ alter table public.moderation_jobs enable row level security;
 -- profiles
 -- ---------------------------------------------------------------------------
 
--- Your own row only. Everything anyone else needs is in public_profiles,
--- which does not carry `role`.
+-- Your own row only. Anything anyone else needs comes from profile_names(),
+-- which returns display_name for ids you already hold and never `role`.
 create policy profiles_select_own
   on public.profiles for select
   to authenticated

@@ -263,17 +263,25 @@ export class SupabaseDataSource implements DataSource {
     const rows = data ?? []
     if (rows.length === 0) return []
 
-    // Names come from public_profiles, which carries id and display_name only.
-    // Reading `profiles` directly would expose `role` and let anyone enumerate
-    // admins, which is why that table is revoked.
+    // Names come from the profile_names RPC, which takes the ids you already
+    // hold and returns id and display_name only. Reading `profiles` directly
+    // would expose `role` and let anyone enumerate admins, and a listable view
+    // would let anyone enumerate every account.
     const authorIds = [...new Set(rows.map((row) => String(row.author_id)))]
-    const { data: profiles } = await this.client
-      .from('public_profiles')
-      .select('id, display_name')
-      .in('id', authorIds)
+    const { data: profiles, error: nameError } = await this.client.rpc('profile_names', {
+      ids: authorIds,
+    })
+    if (nameError) {
+      // Names are a nicety; the comments still matter. Say so rather than
+      // silently rendering everyone as "someone" forever.
+      console.error('[mo] could not load comment author names:', nameError.message)
+    }
 
     const nameById = new Map(
-      (profiles ?? []).map((p) => [String(p.id), (p.display_name as string | null) ?? null]),
+      ((profiles ?? []) as Array<{ id: string; display_name: string | null }>).map((p) => [
+        String(p.id),
+        p.display_name ?? null,
+      ]),
     )
 
     return rows.map((row) => ({

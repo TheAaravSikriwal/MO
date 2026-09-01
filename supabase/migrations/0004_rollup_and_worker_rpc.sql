@@ -252,12 +252,16 @@ $$;
 
 -- Mark a job as needing a person. Leaving verdict NULL is what puts it in the
 -- admin queue; see the moderation_jobs_review_idx index.
+-- Returns whether it actually applied, for the same reason the verdict path
+-- does: the guard below can legitimately refuse the write when an admin got
+-- there first, and a caller that assumes success logs an escalation which
+-- never happened.
 create or replace function public.escalate_moderation_job(
   job_id       uuid,
   tier_results jsonb default '{}'::jsonb,
   reason       text default null
 )
-returns void
+returns boolean
 language sql
 volatile
 set search_path = public
@@ -275,7 +279,8 @@ as $$
    -- disagreeing about what was decided.
    where id = job_id
      and status = 'in_progress'
-     and verdict is null;
+     and verdict is null
+  returning true;
 $$;
 
 -- These are the worker's, and the worker authenticates with the service role

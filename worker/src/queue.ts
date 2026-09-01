@@ -14,12 +14,19 @@ export class Queue {
   private readonly workerId: string
   private readonly photoBaseUrl: string
 
-  constructor(config: Config, photoBaseUrl = '') {
+  /**
+   * `client` is injectable so the guards below can be tested without a
+   * database. They are the only thing stopping a retried job from reversing a
+   * decision a person already made, and they were previously untested.
+   */
+  constructor(config: Config, photoBaseUrl = '', client?: SupabaseClient) {
     // The service role key bypasses row-level security entirely. It lives here,
     // in a process on a machine you control, and must never reach a browser.
-    this.client = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    })
+    this.client =
+      client ??
+      createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      })
     this.workerId = config.workerId
     this.photoBaseUrl = photoBaseUrl.replace(/\/$/, '')
   }
@@ -72,13 +79,15 @@ export class Queue {
    */
   async record(job: ModerationJob, decision: Decision): Promise<boolean> {
     if (decision.action === 'escalate') {
-      const { error } = await this.client.rpc('escalate_moderation_job', {
+      const { data, error } = await this.client.rpc('escalate_moderation_job', {
         job_id: job.id,
         tier_results: decision.tierResults,
         reason: decision.reason,
       })
       if (error) throw new Error(`could not escalate job ${job.id}: ${error.message}`)
-      return true
+      // Same guard as the verdict path: an admin may have decided it while the
+      // pipeline was running, in which case nothing was written.
+      return data === true
     }
 
     const { data, error } = await this.client.rpc('record_moderation_verdict', {
@@ -119,12 +128,13 @@ export class Queue {
   }
 
   /** A job whose content vanished has nothing left to judge. */
-  async discard(job: ModerationJob, reason: string): Promise<void> {
-    const { error } = await this.client.rpc('escalate_moderation_job', {
+  async discard(job: ModerationJob, reason: string): Promise<boolean> {
+    const { data, error } = await this.client.rpc('escalate_moderation_job', {
       job_id: job.id,
       tier_results: { discarded: true },
       reason,
     })
     if (error) throw new Error(`could not discard job ${job.id}: ${error.message}`)
+    return data === true
   }
 }
