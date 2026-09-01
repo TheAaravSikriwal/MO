@@ -36,11 +36,20 @@ const stripComments = (text: string) =>
 
 const allCode = stripComments(Object.values(sql).join('\n'))
 
-/** The body of a function, from its definition to the end of the file. */
+/**
+ * The body of one function, bounded by the start of the next one.
+ *
+ * A fixed-size window instead of this bound made three of the checks below
+ * tautological: `bodyOf('admin_moderation_queue')` ran far enough to include
+ * admin_decide_moderation's is_admin guard, so deleting the guard from the
+ * function actually named still passed.
+ */
 const bodyOf = (name: string) => {
   const at = allCode.indexOf('function public.' + name)
   expect(at, 'function not found: ' + name).toBeGreaterThan(-1)
-  return allCode.slice(at, at + 2500)
+  const rest = allCode.slice(at + name.length)
+  const next = rest.search(/create\s+or\s+replace\s+function/i)
+  return next === -1 ? allCode.slice(at) : allCode.slice(at, at + name.length + next)
 }
 
 describe('migrations — structure', () => {
@@ -171,6 +180,14 @@ describe('migrations — the admin surface refuses non-admins', () => {
     expect(offenders).toEqual([])
   })
 
+  it('bounds each function body at the next definition', () => {
+    // Guards the guard: if bodyOf over-reads, the is_admin checks above pass on
+    // a neighbouring function's guard rather than the one they name.
+    expect(bodyOf('admin_moderation_queue')).not.toContain('admin_decide_moderation')
+    expect(bodyOf('admin_decide_moderation')).not.toContain('admin_queue_size')
+    expect(bodyOf('admin_queue_size')).not.toContain('flag_reopens_review')
+  })
+
   it('closes the double-decide race', () => {
     const body = bodyOf('admin_decide_moderation')
     expect(body).toMatch(/for\s+update/i)
@@ -180,6 +197,32 @@ describe('migrations — the admin surface refuses non-admins', () => {
   it('rejects a null verdict explicitly', () => {
     // `null not in (...)` is NULL, not true, so it would fall straight through.
     expect(bodyOf('admin_decide_moderation')).toMatch(/new_verdict\s+is\s+null\s+or/i)
+  })
+})
+
+describe('migrations — nothing hands out unreviewed content', () => {
+  it('mark_report_cleaned does not return the report row', () => {
+    // Returning public.reports handed the caller the note as well, and
+    // SECURITY DEFINER meant the column grants did not apply.
+    const body = bodyOf('mark_report_cleaned')
+    expect(body).toMatch(/returns\s+void/i)
+    expect(body).not.toMatch(/returns\s+public\.reports/i)
+  })
+
+  it('does not expose profiles, which carry the admin role', () => {
+    expect(allCode).not.toMatch(/grant\s+select\s+on\s+public\.profiles\s+to\s+(anon|authenticated)/i)
+    expect(allCode).toMatch(/create\s+view\s+public\.public_profiles/i)
+  })
+
+  it('keeps role out of the public profile view', () => {
+    const view = allCode.slice(allCode.indexOf('create view public.public_profiles'))
+    expect(view.slice(0, 300)).not.toMatch(/role/i)
+  })
+
+  it('stops the worker overwriting a job a person flagged', () => {
+    // flag_reopens_review resets a job to done/verdict-null; without this guard
+    // the worker writes its verdict over the top and the flag never surfaces.
+    expect(bodyOf('record_moderation_verdict')).toMatch(/and\s+status\s*=\s*'in_progress'/i)
   })
 })
 

@@ -78,6 +78,14 @@ where p.moderation_status <> 'rejected'
      where r.id = p.report_id and r.reporter_id = auth.uid()
    );
 
+-- Only what a person needs to see about somebody else. `role` in particular
+-- would let anyone enumerate every admin account, and reporter_id/author_id
+-- appear on public content, so a readable profiles table linked every report
+-- and comment back to a named account.
+create view public.public_profiles as
+select p.id, p.display_name
+from public.profiles p;
+
 create view public.public_comments as
 select
   c.id,
@@ -107,9 +115,12 @@ alter table public.moderation_jobs enable row level security;
 -- profiles
 -- ---------------------------------------------------------------------------
 
-create policy profiles_select_all
+-- Your own row only. Everything anyone else needs is in public_profiles,
+-- which does not carry `role`.
+create policy profiles_select_own
   on public.profiles for select
-  using (true);
+  to authenticated
+  using (id = auth.uid());
 
 create policy profiles_insert_self
   on public.profiles for insert
@@ -342,8 +353,7 @@ grant select on public.public_reports       to anon, authenticated;
 grant select on public.public_report_photos to anon, authenticated;
 grant select on public.public_comments      to anon, authenticated;
 
--- Profiles carry no moderated content, so they stay directly readable.
-grant select on public.profiles to anon, authenticated;
+grant select on public.public_profiles to anon, authenticated;
 
 grant select on public.votes to authenticated;
 grant select on public.flags to authenticated;

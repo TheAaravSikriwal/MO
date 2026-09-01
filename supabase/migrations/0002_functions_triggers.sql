@@ -281,14 +281,20 @@ create trigger touch_moderation_jobs
 
 -- Exposed as an RPC rather than a table UPDATE so the RLS policy for reports can
 -- stay narrow: no ordinary user needs direct UPDATE on the table at all.
+-- Returns nothing on purpose.
+--
+-- Returning `public.reports` handed the caller the entire row -- including a
+-- note still waiting for review -- and SECURITY DEFINER meant the column grants
+-- in 0003 did not apply. Any signed-in person could have drained every
+-- unreviewed note in the database one RPC call at a time.
 create or replace function public.mark_report_cleaned(target_report uuid)
-returns public.reports
+returns void
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  updated public.reports;
+  updated_id uuid;
 begin
   if auth.uid() is null then
     raise exception 'you must be signed in to mark a report cleaned';
@@ -301,13 +307,11 @@ begin
    where id = target_report
      and status = 'open'
      and moderation_status = 'approved'
-  returning * into updated;
+  returning id into updated_id;
 
-  if updated is null then
+  if updated_id is null then
     raise exception 'report not found, already cleaned, or not yet approved';
   end if;
-
-  return updated;
 end;
 $$;
 

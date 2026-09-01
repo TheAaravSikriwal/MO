@@ -61,8 +61,14 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProp
       setItems((current) => current.filter((i) => i.jobId !== item.jobId))
       // The total has to come down too, or the header claims more are waiting
       // than there are -- the exact misreport the count exists to prevent.
-      setTotal((current) => Math.max(0, current - 1))
+      const remaining = Math.max(0, total - 1)
+      setTotal(remaining)
       onDecided?.()
+
+      // Clearing the visible page does not mean the queue is empty: it is
+      // capped at 50 and only loaded on mount. Without this, an admin who works
+      // through a page is told "Nothing to review." with the rest still waiting.
+      if (remaining > 0 && items.length <= 1) await load()
     } catch (cause) {
       const message = plainError(cause instanceof Error ? cause.message : null)
       // The local list may now disagree with the server, so re-read it -- but
@@ -87,7 +93,7 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProp
           <p className="text-xs text-slate-500">
             {loading
               ? 'Loading…'
-              : items.length === 0
+              : total === 0
                 ? 'Nothing to review.'
                 : total > items.length
                   ? `${total} waiting, showing the first ${items.length}`

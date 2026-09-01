@@ -439,3 +439,51 @@ describe('AdminQueue — a complaint reaches a person', () => {
     expect(panel).not.toHaveTextContent(/showing the first/i)
   })
 })
+
+describe('AdminQueue — the header never lies about what is left', () => {
+  it('does not say "nothing to review" while more are still queued', async () => {
+    // The page is capped, so clearing the visible items is not an empty queue.
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    data.seedQueueItem({ jobId: 'j1', text: 'the only one shown' })
+    vi.spyOn(data, 'getModerationQueueSize').mockResolvedValue(150)
+    vi.spyOn(data, 'listModerationQueue').mockResolvedValue([
+      {
+        jobId: 'j1',
+        subjectType: 'comment',
+        subjectId: 's1',
+        reportId: null,
+        text: 'the only one shown',
+        photoUrl: null,
+        reason: 'people reported this',
+        tierResults: {},
+        flagCount: 0,
+        createdAt: new Date().toISOString(),
+      },
+    ])
+    vi.spyOn(data, 'decideModerationItem').mockResolvedValue()
+    render(<AdminQueue data={data} isAdmin onClose={vi.fn()} />)
+
+    await user_click_allow()
+    const panel = screen.getByRole('region', { name: /review queue/i })
+    // The count itself comes from the server on reload; what must never happen
+    // is the panel claiming the queue is clear while items are still waiting.
+    await waitFor(() => expect(panel).not.toHaveTextContent(/nothing to review/i))
+    expect(panel).toHaveTextContent(/waiting/i)
+  })
+
+  it('says nothing to review only when the queue is genuinely empty', async () => {
+    setup([])
+    expect(await screen.findByText(/nothing to review/i)).toBeInTheDocument()
+  })
+
+  it('says nothing to review once the last item is decided', async () => {
+    const { user } = setup([{ jobId: 'j1', text: 'the last one' }])
+    await user.click(await screen.findByRole('button', { name: /allow/i }))
+    expect(await screen.findByText(/nothing to review/i)).toBeInTheDocument()
+  })
+})
+
+async function user_click_allow() {
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /allow/i }))
+}

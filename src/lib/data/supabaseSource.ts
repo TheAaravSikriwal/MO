@@ -73,42 +73,61 @@ export class SupabaseDataSource implements DataSource {
     moderationStatus: row.moderation_status as PhotoView['moderationStatus'],
   })
 
-  private async toReport(
-    row: Record<string, unknown>,
+  /**
+   * Build report views for a whole page in a fixed number of queries.
+   *
+   * Doing this per report meant one photo query and one vote query EACH: a
+   * signed-in load of 500 reports was over a thousand HTTP requests, and every
+   * moderation decision triggered the lot again through onDecided.
+   */
+  private async toReports(
+    rows: Array<Record<string, unknown>>,
     viewerId: string | null,
-  ): Promise<ReportView> {
-    const id = String(row.id)
+  ): Promise<ReportView[]> {
+    if (rows.length === 0) return []
+    const ids = rows.map((row) => String(row.id))
+
     const { data: photos } = await this.client
       .from('public_report_photos')
-      .select('id, storage_path, moderation_status')
-      .eq('report_id', id)
+      .select('id, report_id, storage_path, moderation_status')
+      .in('report_id', ids)
 
-    let viewerHasVoted = false
+    const photosByReport = new Map<string, PhotoView[]>()
+    for (const photo of photos ?? []) {
+      const key = String(photo.report_id)
+      const list = photosByReport.get(key) ?? []
+      list.push(this.toPhoto(photo))
+      photosByReport.set(key, list)
+    }
+
+    const voted = new Set<string>()
     if (viewerId) {
-      const { data: vote } = await this.client
+      const { data: votes } = await this.client
         .from('votes')
         .select('report_id')
-        .eq('report_id', id)
         .eq('user_id', viewerId)
-        .maybeSingle()
-      viewerHasVoted = Boolean(vote)
+        .in('report_id', ids)
+      for (const vote of votes ?? []) voted.add(String(vote.report_id))
     }
 
-    return {
-      id,
-      lat: Number(row.lat),
-      lng: Number(row.lng),
-      note: (row.note as string | null) ?? null,
-      noteStatus: row.note_status as ReportView['noteStatus'],
-      moderationStatus: row.moderation_status as ReportView['moderationStatus'],
-      status: row.status as ReportView['status'],
-      voteCount: Number(row.vote_count ?? 0),
-      createdAt: String(row.created_at),
-      cells: cellsForPoint(Number(row.lat), Number(row.lng)),
-      photos: (photos ?? []).map(this.toPhoto),
-      viewerHasVoted,
-      viewerIsReporter: viewerId !== null && row.reporter_id === viewerId,
-    }
+    return rows.map((row) => {
+      const id = String(row.id)
+      return {
+        id,
+        lat: Number(row.lat),
+        lng: Number(row.lng),
+        note: (row.note as string | null) ?? null,
+        noteStatus: row.note_status as ReportView['noteStatus'],
+        moderationStatus: row.moderation_status as ReportView['moderationStatus'],
+        status: row.status as ReportView['status'],
+        voteCount: Number(row.vote_count ?? 0),
+        createdAt: String(row.created_at),
+        cells: cellsForPoint(Number(row.lat), Number(row.lng)),
+        photos: photosByReport.get(id) ?? [],
+        viewerHasVoted: voted.has(id),
+        viewerIsReporter: viewerId !== null && row.reporter_id === viewerId,
+      }
+    })
   }
 
   async listReportsInView(bounds: {
@@ -127,7 +146,7 @@ export class SupabaseDataSource implements DataSource {
       .lte('lng', bounds.maxLng)
       .limit(500)
     if (error) throw new Error(error.message)
-    return Promise.all((data ?? []).map((row) => this.toReport(row, user?.id ?? null)))
+    return this.toReports(data ?? [], user?.id ?? null)
   }
 
   async getReport(id: string): Promise<ReportView | null> {
@@ -139,7 +158,7 @@ export class SupabaseDataSource implements DataSource {
       .maybeSingle()
     if (error) throw new Error(error.message)
     if (!data) return null
-    return this.toReport(data, user?.id ?? null)
+    return (await this.toReports([data], user?.id ?? null))[0] ?? null
   }
 
   async createReport(report: NewReport): Promise<{ id: string }> {
@@ -165,12 +184,22 @@ export class SupabaseDataSource implements DataSource {
     if (error) throw new Error(error.message)
 
     const reportId = String(data.id)
-    for (const photo of report.photos) {
-      const storagePath = await uploadPhoto(reportId, photo)
-      const { error: photoError } = await this.client
-        .from('report_photos')
-        .insert({ report_id: reportId, storage_path: storagePath })
-      if (photoError) throw new Error(photoError.message)
+
+    // A report is nothing without its photo, and there is no transaction across
+    // the insert and the upload. If the upload fails the row must go, or the
+    // person is told their report failed while the pin stays on the map for
+    // good with nothing to show.
+    try {
+      for (const photo of report.photos) {
+        const storagePath = await uploadPhoto(reportId, photo)
+        const { error: photoError } = await this.client
+          .from('report_photos')
+          .insert({ report_id: reportId, storage_path: storagePath })
+        if (photoError) throw new Error(photoError.message)
+      }
+    } catch (cause) {
+      await this.client.from('reports').delete().eq('id', reportId)
+      throw cause
     }
 
     return { id: reportId }

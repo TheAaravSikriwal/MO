@@ -178,6 +178,11 @@ begin
     raise exception 'no such moderation job: %', job_id;
   end if;
 
+  -- `status = 'in_progress'` is what stops the worker overwriting a job that a
+  -- person flagged while it was being processed. flag_reopens_review sets a job
+  -- back to done/verdict-null; without this guard the worker would then write
+  -- its own verdict over the top, and the flagged item would never reach a
+  -- human -- breaking the rule that a complaint always does.
   update public.moderation_jobs
      set status       = 'done',
          verdict      = new_verdict,
@@ -186,7 +191,14 @@ begin
          reason       = record_moderation_verdict.reason,
          locked_at    = null,
          locked_by    = null
-   where id = job_id;
+   where id = job_id
+     and status = 'in_progress';
+
+  if not found then
+    -- Someone flagged it, or another worker finished it. Leave their state
+    -- alone and do not touch the content.
+    return;
+  end if;
 
   if job.subject_type = 'photo' then
     update public.report_photos set moderation_status = new_verdict where id = job.subject_id;
