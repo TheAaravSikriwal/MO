@@ -164,6 +164,9 @@ $$;
 
 -- Record a verdict and apply it to the underlying row in one transaction, so a
 -- job can never be marked done while the content it judged stays pending.
+-- Returns whether the verdict was actually applied. It can legitimately be
+-- refused -- a flag landed, or another worker got there first -- and the caller
+-- needs to know, or its log will claim a decision that never happened.
 create or replace function public.record_moderation_verdict(
   job_id       uuid,
   new_verdict  moderation_status,
@@ -171,7 +174,7 @@ create or replace function public.record_moderation_verdict(
   tier_results jsonb default '{}'::jsonb,
   reason       text default null
 )
-returns void
+returns boolean
 language plpgsql
 volatile
 set search_path = public
@@ -207,7 +210,26 @@ begin
   if not found then
     -- Someone flagged it, or another worker finished it. Leave their state
     -- alone and do not touch the content.
-    return;
+    return false;
+  end if;
+
+  -- A complaint outranks a machine verdict, always. If anyone has flagged this
+  -- subject and no admin has ruled on that flag yet, the verdict is discarded
+  -- and the item goes to a person instead. This is what makes "community
+  -- flagged items always reach a human" true even when the flag arrives while
+  -- the worker is mid-decision.
+  if exists (
+    select 1 from public.flags
+     where subject_type = job.subject_type
+       and subject_id = job.subject_id
+       and resolved_at is null
+  ) then
+    update public.moderation_jobs
+       set verdict    = null,
+           decided_by = 'escalated',
+           reason     = 'people reported this'
+     where id = job_id;
+    return false;
   end if;
 
   if job.subject_type = 'photo' then
@@ -223,6 +245,8 @@ begin
     -- one's pin off the map entirely.
     update public.reports set note_status = new_verdict where id = job.subject_id;
   end if;
+
+  return true;
 end;
 $$;
 

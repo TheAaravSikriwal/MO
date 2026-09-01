@@ -112,6 +112,8 @@ And these should SUCCEED:
   column grant above; without it every submission fails.)
 - Does a report with no note become visible immediately, rather than waiting
   for a moderation job that is never created?
-- Does flagging an approved comment put it back in the admin queue and withhold
-  it in the meantime?
+- Does flagging an approved comment put it back in the admin queue, while
+  leaving it visible until a second person flags it too?
+- Does a machine verdict on a flagged item escalate instead of publishing?
+- Does deleting a report clear its moderation jobs and flags?
 - Does rejecting a note leave the pin on the map?

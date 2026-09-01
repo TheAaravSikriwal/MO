@@ -152,14 +152,22 @@ export class SupabaseDataSource implements DataSource {
     maxLng: number
   }): Promise<ReportView[]> {
     const user = await this.getCurrentUser()
-    const { data, error } = await this.client
+    // A viewport crossing the antimeridian arrives with minLng > maxLng, and a
+    // plain between returns nothing at all there. reports_rollup already
+    // handles this; the list query has to agree with it.
+    const crossesAntimeridian = bounds.minLng > bounds.maxLng
+
+    let query = this.client
       .from('public_reports')
       .select('*')
       .gte('lat', bounds.minLat)
       .lte('lat', bounds.maxLat)
-      .gte('lng', bounds.minLng)
-      .lte('lng', bounds.maxLng)
-      .limit(500)
+
+    query = crossesAntimeridian
+      ? query.or('lng.gte.' + bounds.minLng + ',lng.lte.' + bounds.maxLng)
+      : query.gte('lng', bounds.minLng).lte('lng', bounds.maxLng)
+
+    const { data, error } = await query.limit(500)
     if (error) throw new Error(error.message)
     return this.toReports(data ?? [], user?.id ?? null)
   }

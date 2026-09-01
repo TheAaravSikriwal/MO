@@ -57,15 +57,28 @@ async function main(): Promise<void> {
           const subject = await queue.fetchSubject(job)
           if (!subject) {
             await queue.discard(job, 'the content this job referred to no longer exists')
+            // Counts as work, or a batch of nothing but deleted subjects makes
+            // the worker sleep a full interval instead of draining the queue.
+            handled += 1
             continue
           }
 
           const decision = await moderate(subject, tiers)
-          await queue.record(job, decision)
+          const applied = await queue.record(job, decision)
           handled += 1
-          console.log(
-            `[mo-worker] ${job.subject_type} ${job.subject_id} -> ${decision.action} (${decision.decidedBy})`,
-          )
+
+          if (applied) {
+            console.log(
+              `[mo-worker] ${job.subject_type} ${job.subject_id} -> ${decision.action} (${decision.decidedBy})`,
+            )
+          } else {
+            // The write was refused: somebody flagged it, or another worker got
+            // there first. Logging the verdict anyway would claim a decision
+            // that was never recorded.
+            console.log(
+              `[mo-worker] ${job.subject_type} ${job.subject_id} -> not applied, left for a person`,
+            )
+          }
         } catch (error) {
           // One bad job must not stop the batch, but it must not vanish either.
           // Marking it failed records why and lets the retry cap eventually

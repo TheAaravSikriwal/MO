@@ -228,12 +228,31 @@ describe('ReportDetail — when things fail', () => {
 })
 
 describe('ReportDetail — reporting a comment', () => {
-  it('lets a signed-in reader report a comment, and records it', async () => {
-    const { user, data } = setup()
-    await user.type(screen.getByLabelText(/add a comment/i), 'something unpleasant')
-    await user.click(screen.getByRole('button', { name: /post comment/i }))
-    await screen.findByText('something unpleasant')
+  /** Seeds a comment at a given status BEFORE rendering, so the first load sees it. */
+  const renderWithComment = async (
+    body: string,
+    moderationStatus: 'pending' | 'approved' | 'rejected',
+  ) => {
+    const data = new FakeDataSource({ id: 'u1', email: 'a@b.com', isAdmin: false })
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    await data.addComment('r1', body)
+    ;(await data.listComments('r1'))[0].moderationStatus = moderationStatus
 
+    render(
+      <ReportDetail
+        data={data}
+        report={report}
+        signedIn
+        onChanged={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    await screen.findByText(body)
+    return { data, user: userEvent.setup() }
+  }
+
+  it('lets a signed-in reader report a published comment, and records it', async () => {
+    const { data, user } = await renderWithComment('something unpleasant', 'approved')
     await user.click(screen.getByRole('button', { name: /report this comment/i }))
 
     await waitFor(() => expect(data.raisedFlags).toHaveLength(1))
@@ -241,14 +260,25 @@ describe('ReportDetail — reporting a comment', () => {
   })
 
   it('thanks them and stops offering it again', async () => {
-    const { user } = setup()
-    await user.type(screen.getByLabelText(/add a comment/i), 'something unpleasant')
-    await user.click(screen.getByRole('button', { name: /post comment/i }))
-    await screen.findByText('something unpleasant')
-
+    const { user } = await renderWithComment('something unpleasant', 'approved')
     await user.click(screen.getByRole('button', { name: /report this comment/i }))
 
     expect(await screen.findByText(/thanks\. someone will look at this/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /report this comment/i })).not.toBeInTheDocument()
+  })
+
+  it('offers nothing to report on a comment still being checked', async () => {
+    // Nobody else has seen it yet, so there is nothing to complain about.
+    await renderWithComment('not yet published', 'pending')
+    expect(screen.queryByRole('button', { name: /report this comment/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/being checked before it appears/i)).toBeInTheDocument()
+  })
+
+  it('says so when a comment has been removed', async () => {
+    // Shown only to its author and to admins. Without it, a comment an admin
+    // just removed reads exactly like a live one.
+    await renderWithComment('removed by an admin', 'rejected')
+    expect(screen.getByText(/removed and not shown to others/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /report this comment/i })).not.toBeInTheDocument()
   })
 

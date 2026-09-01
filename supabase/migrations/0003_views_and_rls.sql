@@ -95,13 +95,27 @@ where p.moderation_status <> 'rejected'
      where r.id = p.report_id and r.reporter_id = auth.uid()
    );
 
--- Only what a person needs to see about somebody else. `role` in particular
--- would let anyone enumerate every admin account, and reporter_id/author_id
--- appear on public content, so a readable profiles table linked every report
--- and comment back to a named account.
-create view public.public_profiles as
-select p.id, p.display_name
-from public.profiles p;
+-- Names are looked up BY ID, never listed.
+--
+-- A plain view granted to anon let anyone GET every row and enumerate every
+-- account in the database, including people who have never posted anything and
+-- whose ids appear nowhere public. Callers only ever need names for author ids
+-- they already hold, so the function takes those ids and returns nothing else.
+create or replace function public.profile_names(ids uuid[])
+returns table (id uuid, display_name text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p.id, p.display_name
+  from public.profiles p
+  where p.id = any(ids)
+  limit 200;
+$$;
+
+revoke all on function public.profile_names(uuid[]) from public;
+grant execute on function public.profile_names(uuid[]) to anon, authenticated;
 
 create view public.public_comments as
 select
@@ -369,14 +383,12 @@ revoke all on public.moderation_jobs from anon, authenticated;
 revoke all on public.public_reports       from anon, authenticated;
 revoke all on public.public_report_photos from anon, authenticated;
 revoke all on public.public_comments      from anon, authenticated;
-revoke all on public.public_profiles      from anon, authenticated;
 
 -- SELECT only. These are read surfaces; nothing writes through them.
 grant select on public.public_reports       to anon, authenticated;
 grant select on public.public_report_photos to anon, authenticated;
 grant select on public.public_comments      to anon, authenticated;
 
-grant select on public.public_profiles to anon, authenticated;
 
 grant select on public.votes to authenticated;
 grant select on public.flags to authenticated;

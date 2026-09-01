@@ -113,7 +113,19 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
       <div className="mt-3 grid grid-cols-3 gap-2">
         {report.photos.map((photo) => (
           <div key={photo.id}>
-            {photo.url ? (
+            {/*
+              Branching on the URL alone was wrong in both directions: a
+              rejected photo shows the author "being checked" forever, and shows
+              an admin the live image, so Remove looked like it had done nothing.
+            */}
+            {photo.moderationStatus === 'rejected' ? (
+              <div
+                data-testid="photo-removed"
+                className="flex aspect-square w-full items-center justify-center rounded-lg bg-slate-100 p-2 text-center text-xs text-slate-500"
+              >
+                Photo removed
+              </div>
+            ) : photo.url ? (
               <img
                 src={photo.url}
                 alt="Litter reported at this spot"
@@ -129,6 +141,7 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
             )}
             {signedIn &&
               photo.url &&
+              photo.moderationStatus === 'approved' &&
               (reported.has(photo.id) ? (
                 <p className="mt-1 text-xs text-slate-500">Thanks.</p>
               ) : (
@@ -234,7 +247,11 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
                 {comment.moderationStatus === 'pending' && (
                   <p className="mt-1 text-xs text-slate-500">Being checked before it appears.</p>
                 )}
+                {comment.moderationStatus === 'rejected' && (
+                  <p className="mt-1 text-xs text-slate-500">Removed and not shown to others.</p>
+                )}
                 {signedIn &&
+                  comment.moderationStatus === 'approved' &&
                   (reported.has(comment.id) ? (
                     <p className="mt-1 text-xs text-slate-500">Thanks. Someone will look at this.</p>
                   ) : (

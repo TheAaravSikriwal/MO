@@ -10,6 +10,7 @@ import { weighCells } from './lib/severity/weight'
 import { normaliseWeights } from './lib/severity/percentile'
 import { createDebouncedSearch, type Place } from './lib/geo/nominatim'
 import { createDataSource } from './lib/data/createDataSource'
+import { plainError } from './lib/moderation/plainWords'
 import type { CurrentUser, DataSource, ReportView } from './lib/data/types'
 import type { WeighableReport } from './types/report'
 
@@ -49,22 +50,30 @@ export default function App({ data: injected }: AppProps = {}) {
   const [openReport, setOpenReport] = useState<ReportView | null>(null)
   const [adding, setAdding] = useState(false)
   const [reviewing, setReviewing] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const search = useMemo(() => createDebouncedSearch(), [])
 
   const refresh = useCallback(async () => {
     // A generous window: the map is the homepage, so something should always
     // be on it rather than only what is strictly in frame.
-    const loaded = await data.listReportsInView({
-      minLat: -90,
-      minLng: -180,
-      maxLat: 90,
-      maxLng: 180,
-    })
-    setReports(loaded)
-    setOpenReport((current) =>
-      current ? (loaded.find((r) => r.id === current.id) ?? current) : null,
-    )
+    try {
+      const loaded = await data.listReportsInView({
+        minLat: -90,
+        minLng: -180,
+        maxLat: 90,
+        maxLng: 180,
+      })
+      setReports(loaded)
+      setOpenReport((current) =>
+        current ? (loaded.find((r) => r.id === current.id) ?? current) : null,
+      )
+      setLoadError(null)
+    } catch (cause) {
+      // Without this the promise rejects unhandled and a failed load renders as
+      // an empty map -- indistinguishable from an area with nothing reported.
+      setLoadError(plainError(cause instanceof Error ? cause.message : null))
+    }
   }, [data])
 
   useEffect(() => {
@@ -138,6 +147,12 @@ export default function App({ data: injected }: AppProps = {}) {
             >
               Review queue
             </button>
+          )}
+
+          {loadError && (
+            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
+              {loadError} Reports may be missing.
+            </p>
           )}
 
           {chosen.demo && !injected && (

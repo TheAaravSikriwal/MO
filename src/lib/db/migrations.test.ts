@@ -172,7 +172,6 @@ describe('migrations — unreviewed content stays unreachable', () => {
     'public_reports',
     'public_report_photos',
     'public_comments',
-    'public_profiles',
   ])('revokes %s explicitly before granting select on it', (view) => {
     const revokeAt = flat.indexOf('revoke all on public.' + view + ' from anon')
     const grantAt = flat.indexOf('grant select on public.' + view + ' to anon')
@@ -203,10 +202,32 @@ describe('migrations — unreviewed content stays unreachable', () => {
     )
   })
 
-  it('revokes every non-admin function from anon, not just from public', () => {
+  it('revokes mark_report_cleaned from anon, not just from public', () => {
     // Revoking from PUBLIC does not remove Supabase's explicit default grant
     // to anon, so `from public` alone leaves a signed-out caller with EXECUTE.
+    //
+    // Deliberately NOT asserted for is_admin(): the definer views call it, and
+    // function-execute privilege is checked against the current user rather
+    // than the view owner, so revoking it from anon would break anonymous map
+    // reads entirely.
     expect(flat).toContain('revoke all on function public.mark_report_cleaned(uuid) from public, anon')
+  })
+
+  it('looks profile names up by id instead of listing them', () => {
+    // A listable view let anyone enumerate every account in the database.
+    expect(flat).toContain('create or replace function public.profile_names(ids uuid[])')
+    expect(flat).not.toContain('grant select on public.public_profiles')
+  })
+
+  it('lets a complaint outrank a machine verdict', () => {
+    const body = bodyOf('record_moderation_verdict')
+    expect(body).toMatch(/from\s+public\.flags/i)
+    expect(body).toMatch(/resolved_at\s+is\s+null/i)
+  })
+
+  it('only reopens review for jobs the machines have finished with', () => {
+    // Resetting a pending job would let anyone push items past tiers 2 and 3.
+    expect(bodyOf('flag_reopens_review')).toMatch(/status\s*=\s*'done'/i)
   })
 
   it('cleans up moderation jobs when their subject is deleted', () => {
@@ -403,13 +424,17 @@ describe('migrations — nothing hands out unreviewed content', () => {
 
   it('does not expose profiles, which carry the admin role', () => {
     expect(allCode).not.toMatch(/grant\s+select\s+on\s+public\.profiles\s+to\s+(anon|authenticated)/i)
-    expect(allCode).toMatch(/create\s+view\s+public\.public_profiles/i)
   })
 
-  it('keeps role out of the public profile view', () => {
-    // Bounded at the statement, not a fixed 300 chars -- that overran the view
-    // and would have passed or failed on whatever followed it.
-    expect(viewOf('public_profiles')).not.toMatch(/role/i)
+  it('keeps role out of the name lookup', () => {
+    // Exposing it would let anyone enumerate every admin account.
+    expect(bodyOf('profile_names')).not.toMatch(/role/i)
+  })
+
+  it('bounds the name lookup so it cannot be used to page through accounts', () => {
+    const body = bodyOf('profile_names')
+    expect(body).toMatch(/where\s+p\.id\s*=\s*any\(ids\)/i)
+    expect(body).toMatch(/limit\s+\d+/i)
   })
 
   it('still lets the app find out whether YOU are an admin', () => {

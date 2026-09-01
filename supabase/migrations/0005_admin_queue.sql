@@ -235,7 +235,16 @@ begin
          reason     = 'people reported this',
          locked_at  = null,
          locked_by  = null,
-         updated_at = now();
+         updated_at = now()
+   -- Only pull back something the machines have already finished with.
+   --
+   -- Resetting a job that is still pending or in progress would let anyone
+   -- shove items straight past tiers 2 and 3 into the human queue -- and the
+   -- ids of the whole unreviewed backlog are public, because the UI needs them
+   -- to show "being checked" placeholders. A flag on a job still in the machine
+   -- queue is not lost: record_moderation_verdict below refuses to publish
+   -- anything carrying an unresolved complaint, and escalates it instead.
+   where public.moderation_jobs.status = 'done';
   return null;
 end;
 $$;
@@ -385,16 +394,9 @@ begin
   delete from public.flags
    where subject_type = kind and subject_id = old.id;
 
-  -- A deleted report takes its photos' jobs with it, since ON DELETE CASCADE
-  -- removes the photo rows without firing a per-row cleanup for each.
-  if tg_table_name = 'reports' then
-    delete from public.moderation_jobs
-     where subject_type = 'photo'
-       and subject_id in (select id from public.report_photos where report_id = old.id);
-    delete from public.moderation_jobs
-     where subject_type = 'comment'
-       and subject_id in (select id from public.comments where report_id = old.id);
-  end if;
+  -- Nothing extra is needed for a report's photos and comments: Postgres does
+  -- fire row-level triggers on cascade deletes, so their own cleanup triggers
+  -- below run for each cascaded row and clear their flags too.
 
   return old;
 end;

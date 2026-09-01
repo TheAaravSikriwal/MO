@@ -70,7 +70,7 @@ export class Queue {
    * job and the content it judged in one transaction — a job can never be
    * marked done while the thing it judged stays pending.
    */
-  async record(job: ModerationJob, decision: Decision): Promise<void> {
+  async record(job: ModerationJob, decision: Decision): Promise<boolean> {
     if (decision.action === 'escalate') {
       const { error } = await this.client.rpc('escalate_moderation_job', {
         job_id: job.id,
@@ -78,10 +78,10 @@ export class Queue {
         reason: decision.reason,
       })
       if (error) throw new Error(`could not escalate job ${job.id}: ${error.message}`)
-      return
+      return true
     }
 
-    const { error } = await this.client.rpc('record_moderation_verdict', {
+    const { data, error } = await this.client.rpc('record_moderation_verdict', {
       job_id: job.id,
       new_verdict: decision.action === 'approve' ? 'approved' : 'rejected',
       decided_by: decision.decidedBy,
@@ -89,6 +89,11 @@ export class Queue {
       reason: decision.reason,
     })
     if (error) throw new Error(`could not record verdict for job ${job.id}: ${error.message}`)
+
+    // The RPC refuses to publish anything carrying an unresolved complaint, and
+    // says so rather than raising. Returning that stops the caller logging a
+    // verdict which was never recorded.
+    return data === true
   }
 
   /**
