@@ -2,19 +2,26 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { CellLayer, MIN_FILL_OPACITY, MAX_FILL_OPACITY, CROSSFADE_MS } from './CellLayer'
+import {
+  CellLayer,
+  MIN_FILL_OPACITY,
+  MAX_FILL_OPACITY,
+  CROSSFADE_MS,
+  CELL_CLASS,
+} from './CellLayer'
 import { cellsForPoint } from '../../lib/grid/cells'
 import { colorForT } from '../../lib/color/ramp'
 
 vi.mock('react-leaflet', () => ({
-  Polygon: ({ positions, pathOptions }: any) => (
+  Polygon: ({ positions, pathOptions, className }: any) => (
     <div
       data-testid="cell"
       data-points={positions.length}
       data-fill={pathOptions.fillColor}
       data-stroke={String(pathOptions.stroke)}
       data-opacity={pathOptions.fillOpacity}
-      data-class={pathOptions.className}
+      data-class={className}
+      data-nested-class={pathOptions.className}
     />
   ),
 }))
@@ -298,10 +305,77 @@ describe('CellLayer — the fade cannot get stuck', () => {
     expect(Number(screen.getByTestId('cell').getAttribute('data-opacity'))).toBeGreaterThan(0)
   })
 
-  it('puts every cell in the class the stylesheet animates', () => {
-    // Without the class the opacity change is an instant two-step jump rather
-    // than a fade -- the flicker this feature exists to remove.
+  it('puts the animated class where Leaflet will actually read it', () => {
+    // Not inside pathOptions. react-leaflet hands the constructor
+    // { pathOptions, pane, ... }, so a nested className is undefined when
+    // Leaflet creates the path -- and _initPath is the only place it is ever
+    // applied. Nested, the stylesheet matched nothing in a production build and
+    // every fade was a hard cut.
     render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
-    expect(screen.getByTestId('cell')).toHaveAttribute('data-class', 'mo-cell')
+    const cell = screen.getByTestId('cell')
+    expect(cell).toHaveAttribute('data-class', CELL_CLASS)
+    expect(cell).not.toHaveAttribute('data-nested-class')
+  })
+})
+
+describe('CellLayer — fast zooming across bands', () => {
+  const at = (id: string, t = 1) => [{ cell: id, weight: 1, reportCount: 1, t }]
+
+  it('does not flash the mid-fade set back to full brightness', async () => {
+    // A second crossing inside one fade used to renumber the set that was
+    // rising, so React rebuilt its layers at full opacity before fading them
+    // out again -- a bright pulse in the middle of a smooth zoom.
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+    // r9 is now the current set, risen to full.
+    const before = screen
+      .getAllByTestId('cell')
+      .map((c) => Number(c.getAttribute('data-opacity')))
+    expect(Math.max(...before)).toBeGreaterThan(0)
+
+    // Cross again while that is still on screen.
+    rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
+
+    const opacities = screen
+      .getAllByTestId('cell')
+      .map((c) => Number(c.getAttribute('data-opacity')))
+    // Exactly one set visible and one at zero: no third layer, and nothing
+    // sitting at double strength.
+    expect(opacities.filter((o) => o > 0)).toHaveLength(1)
+  })
+
+  it('keeps the mid-fade set mounted when a second crossing arrives', () => {
+    // On the second crossing the set that was rising becomes the outgoing one.
+    // If it is given a different fragment key, React tears down its Leaflet
+    // layers and rebuilds them at full opacity -- a bright flash mid-zoom.
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+
+    // [outgoing r7, current r9] -- grab the r9 node.
+    const rising = screen.getAllByTestId('cell')[1]
+
+    rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
+
+    // [outgoing r9, current r12] -- the r9 node must be the same element.
+    expect(screen.getAllByTestId('cell')[0]).toBe(rising)
+  })
+})
+
+describe('CellLayer — turning motion off mid-fade', () => {
+  const at = (id: string) => [{ cell: id, weight: 1, reportCount: 1, t: 0.5 }]
+
+  it('clears a running fade even though the zoom band did not change', () => {
+    // crossfade changes without fadeKey changing, which used to return before
+    // the cancel logic and strand the outgoing set for good.
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+    expect(screen.getAllByTestId('cell')).toHaveLength(2)
+
+    rerender(<CellLayer crossfade={false} fadeKey={9} cells={at(london.cell_r9)} />)
+    expect(screen.getAllByTestId('cell')).toHaveLength(1)
   })
 })
