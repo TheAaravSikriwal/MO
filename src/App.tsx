@@ -16,11 +16,14 @@ import { ReportDetail } from './components/report/ReportDetail'
 import { SignInPanel } from './components/auth/SignInPanel'
 import { AdminQueue } from './components/admin/AdminQueue'
 import { resolutionForZoom, PIN_ZOOM_THRESHOLD } from './lib/grid/zoomResolution'
-import { normaliseWeights } from './lib/severity/percentile'
+import { normaliseWeights, type NormalisedCell } from './lib/severity/percentile'
 import { createDebouncedSearch, type Place } from './lib/geo/nominatim'
 import { createDataSource } from './lib/data/createDataSource'
 import { plainError } from './lib/moderation/plainWords'
 import type { CurrentUser, DataSource, ReportView, RollupCell } from './lib/data/types'
+
+/** Stable identity, so handing 'no cells' to the map does not churn every render. */
+const NO_CELLS: NormalisedCell[] = []
 
 const WORLD_VIEW = { center: [20, 0] as [number, number], zoom: 3 }
 const PLACE_ZOOM = 16
@@ -413,14 +416,25 @@ export default function App({ data: injected }: AppProps = {}) {
         flyTo={flyTo}
         onViewChange={setView}
       >
-        {showPins ? (
+        {/*
+          The cell layer stays mounted across the pin threshold.
+
+          Swapping it out for the pin layer unmounted every hexagon in one
+          frame -- the harshest cut on the map, and the one zoom boundary with
+          no fade at all. Handing it an empty set instead lets it fade the
+          hexagons out, and fade them back in on the way down.
+        */}
+        <CellLayer
+          cells={showPins ? NO_CELLS : normalisedCells}
+          fadeKey={showPins ? 'pins' : (cells.resolution ?? 'none')}
+        />
+
+        {showPins && (
           <ReportPinLayer
             reports={visibleReports}
-            selectedId={openReport?.id ?? null}
+            selectedId={openReportId}
             onSelect={(report) => setOpenReportId(report.id)}
           />
-        ) : (
-          <CellLayer cells={normalisedCells} fadeKey={cells.resolution ?? undefined} />
         )}
       </MapView>
 

@@ -246,8 +246,11 @@ describe('App — pins and cells never draw together', () => {
 
     await moveMapTo(16)
     await waitFor(() => expect(screen.getAllByTestId('pin').length).toBeGreaterThan(0))
-    // Never both: overlapping hexes and pins say the same thing twice.
-    expect(screen.queryByTestId('cell')).not.toBeInTheDocument()
+
+    // The hexagons fade out rather than vanishing in one frame, so they may
+    // still be on screen for a moment. What must not happen is both being shown
+    // together once things settle -- that says the same thing twice.
+    await waitFor(() => expect(screen.queryByTestId('cell')).not.toBeInTheDocument())
   })
 
   it('leaves rejected reports off the map entirely', async () => {
@@ -339,5 +342,29 @@ describe('App — filters', () => {
 
     await user.click(screen.getByRole('button', { name: /^clear$/i }))
     expect(await screen.findByText('1 of 2 reports')).toBeInTheDocument()
+  })
+})
+
+describe('App — the pin threshold', () => {
+  const withReports2 = () => {
+    const data = new FakeDataSource(null)
+    data.seed({ id: 'r1', lat: 51.5074, lng: -0.1278, voteCount: 2 })
+    return data
+  }
+
+  it('fades the hexagons out rather than cutting them at the pin threshold', async () => {
+    // Swapping the cell layer for the pin layer unmounted every hexagon in a
+    // single frame -- the harshest cut on the map, and the one zoom boundary
+    // that had no fade at all.
+    render(<App data={withReports2()} />)
+    await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
+
+    await moveMapTo(13)
+    await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
+
+    await moveMapTo(16)
+    // Still present for the length of the fade, alongside the arriving pins.
+    expect(screen.queryAllByTestId('cell').length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.getAllByTestId('pin').length).toBeGreaterThan(0))
   })
 })

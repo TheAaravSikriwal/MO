@@ -8,6 +8,7 @@ import {
   MAX_FILL_OPACITY,
   CROSSFADE_MS,
   CELL_CLASS,
+  MAX_LAYERS,
 } from './CellLayer'
 import { cellsForPoint } from '../../lib/grid/cells'
 import { colorForT } from '../../lib/color/ramp'
@@ -126,13 +127,14 @@ describe('CellLayer — crossing a zoom band', () => {
   })
 
   it('starts the incoming set at zero, so it rises rather than snapping in', () => {
+    // A freshly created path has no previous value to transition from, so it
+    // has to mount at nothing and rise on a later commit. The outgoing set
+    // needs no such dance: it is already on screen, so setting its target to
+    // zero is what starts its ramp down.
     const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7, 1)} />)
     rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9, 1)} />)
 
-    // Outgoing still at full, incoming still at nothing.
-    const [leaving, arriving] = opacities()
-    expect(leaving).toBeGreaterThan(0)
-    expect(arriving).toBe(0)
+    expect(opacities()[1]).toBe(0)
   })
 
   it('drives the outgoing set to zero rather than culling it part-way', async () => {
@@ -165,15 +167,60 @@ describe('CellLayer — crossing a zoom band', () => {
     }
   })
 
-  it('keeps only one outgoing set however fast the zoom changes', async () => {
-    // A wheel-zoom across several bands inside one fade used to pile up layers
-    // of mismatched hexagons, each adding more alpha over the same ground.
+  it('caps how many layers can pile up on a long zoom', async () => {
+    // Several bands can be crossed inside one fade. They must overlap rather
+    // than cull each other, but not without bound.
     const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
     rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
     rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
     rerender(<CellLayer fadeKey={1} cells={at(london.cell_r1)} />)
+    rerender(<CellLayer fadeKey={3} cells={at(london.cell_r3)} />)
+    rerender(<CellLayer fadeKey={5} cells={at(london.cell_r5)} />)
 
-    expect(screen.getAllByTestId('cell').length).toBeLessThanOrEqual(2)
+    expect(screen.getAllByTestId('cell').length).toBeLessThanOrEqual(MAX_LAYERS)
+  })
+
+  it('does not cull an earlier layer part-way through its fade', () => {
+    // Culling it at roughly half opacity drops that much alpha across the whole
+    // viewport in one frame -- the flash this feature exists to remove.
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+    expect(screen.getAllByTestId('cell')).toHaveLength(2)
+
+    rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
+    // All three still present: the first is still ramping down.
+    expect(screen.getAllByTestId('cell')).toHaveLength(3)
+  })
+
+  it('retires each layer on its own timer, not all at once', async () => {
+    // Staged in time on purpose. With both crossings at t=0 their timers fire
+    // together, so a shared "clear everything" and a per-layer retirement look
+    // identical -- the test could not tell them apart.
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+      rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+
+      await act(async () => {
+        vi.advanceTimersByTime(200)
+      })
+      rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
+      expect(screen.getAllByTestId('cell')).toHaveLength(3)
+
+      // The first crossing's timer fires; only the oldest layer goes.
+      await act(async () => {
+        vi.advanceTimersByTime(140)
+      })
+      expect(screen.getAllByTestId('cell')).toHaveLength(2)
+
+      // The second crossing's timer fires later, on its own schedule.
+      await act(async () => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(screen.getAllByTestId('cell')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('swaps instantly when the fade is turned off', () => {
@@ -321,33 +368,6 @@ describe('CellLayer — the fade cannot get stuck', () => {
 describe('CellLayer — fast zooming across bands', () => {
   const at = (id: string, t = 1) => [{ cell: id, weight: 1, reportCount: 1, t }]
 
-  it('does not flash the mid-fade set back to full brightness', async () => {
-    // A second crossing inside one fade used to renumber the set that was
-    // rising, so React rebuilt its layers at full opacity before fading them
-    // out again -- a bright pulse in the middle of a smooth zoom.
-    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
-    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
-
-    await act(async () => {
-      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
-    })
-    // r9 is now the current set, risen to full.
-    const before = screen
-      .getAllByTestId('cell')
-      .map((c) => Number(c.getAttribute('data-opacity')))
-    expect(Math.max(...before)).toBeGreaterThan(0)
-
-    // Cross again while that is still on screen.
-    rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
-
-    const opacities = screen
-      .getAllByTestId('cell')
-      .map((c) => Number(c.getAttribute('data-opacity')))
-    // Exactly one set visible and one at zero: no third layer, and nothing
-    // sitting at double strength.
-    expect(opacities.filter((o) => o > 0)).toHaveLength(1)
-  })
-
   it('keeps the mid-fade set mounted when a second crossing arrives', () => {
     // On the second crossing the set that was rising becomes the outgoing one.
     // If it is given a different fragment key, React tears down its Leaflet
@@ -355,13 +375,13 @@ describe('CellLayer — fast zooming across bands', () => {
     const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
     rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
 
-    // [outgoing r7, current r9] -- grab the r9 node.
+    // [r7, r9] -- grab the r9 node.
     const rising = screen.getAllByTestId('cell')[1]
 
     rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
 
-    // [outgoing r9, current r12] -- the r9 node must be the same element.
-    expect(screen.getAllByTestId('cell')[0]).toBe(rising)
+    // [r7, r9, r12] -- the r9 node must be the same element, not rebuilt.
+    expect(screen.getAllByTestId('cell')[1]).toBe(rising)
   })
 })
 

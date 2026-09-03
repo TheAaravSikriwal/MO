@@ -13,13 +13,24 @@ export const MAX_FILL_OPACITY = 0.7
  * How long the old cells take to give way to the new ones.
  *
  * Must match the transition duration in index.css. There is a test pinning the
- * two together, because a silent mismatch means the outgoing layer is removed
- * part-way through its fade — a visible step across the whole map.
+ * two together, because a silent mismatch means a layer is removed part-way
+ * through its fade — a visible step across the whole map.
  */
 export const CROSSFADE_MS = 320
 
-/** The class index.css animates. See the note in `draw` for why it is a top-level prop. */
+/** The class index.css animates. See the note in the render for why it is a top-level prop. */
 export const CELL_CLASS = 'mo-cell'
+
+/**
+ * How many fading layers may overlap.
+ *
+ * A continuous wheel or pinch zoom steps a level every 60–100 ms and fires a
+ * move each time, so several bands can be crossed inside one fade. Keeping only
+ * one meant the earlier layer was culled mid-ramp at around half opacity — a
+ * flash across the whole viewport, which is the artefact this exists to remove.
+ * The cap stops an unbounded pile-up on a long zoom.
+ */
+export const MAX_LAYERS = 4
 
 export interface CellLayerProps {
   cells: readonly NormalisedCell[]
@@ -37,9 +48,11 @@ export interface CellLayerProps {
   crossfade?: boolean
 }
 
-interface Generation {
+interface Layer {
   id: number
   cells: readonly NormalisedCell[]
+  /** 1 while visible, 0 once on its way out. CSS does the ramp between them. */
+  scale: number
 }
 
 const prefersReducedMotion = () =>
@@ -62,8 +75,8 @@ const opacityFor = (t: number, min: number, max: number) => min + (max - min) * 
  * the quiet end out instead means clean areas simply show the map underneath.
  *
  * Crossing a zoom band swaps every cell for a differently-sized one, which in a
- * single frame reads as a flicker. The outgoing set is held on screen and
- * driven to zero while the incoming set rises from zero over the top.
+ * single frame reads as a flicker. Outgoing sets are held on screen and driven
+ * to zero while the incoming set rises from zero over the top.
  */
 export function CellLayer({
   cells,
@@ -75,76 +88,82 @@ export function CellLayer({
   const previousKey = useRef(fadeKey)
   const previousCells = useRef(cells)
   const nextId = useRef(0)
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
 
   /**
-   * The set on screen, held in state rather than read straight from props.
+   * Every set currently drawn, oldest first; the last one is the live set.
    *
-   * Rendering props directly meant that between a band change and the effect
-   * that handles it, React drew the NEW cells under the OLD generation id --
-   * destroying the set that was about to become the outgoing one, so it
-   * remounted at full opacity instead of fading.
+   * Held in state rather than read from props: rendering props directly meant
+   * that between a band change and the effect handling it, React drew the NEW
+   * cells under the OLD layer's id, destroying the set that was about to fade.
    */
-  const [current, setCurrent] = useState<Generation>({ id: 0, cells })
-  const [outgoing, setOutgoing] = useState<Generation | null>(null)
-  const [arrived, setArrived] = useState(true)
+  const [layers, setLayers] = useState<Layer[]>([{ id: 0, cells, scale: 1 }])
 
   useEffect(() => {
-    // Cancelling comes first, and outside the key check.
+    // Collapsing to the live set has to be possible from any exit path.
     //
-    // React runs the previous cleanup before re-running this effect, so any
-    // path that returns without rescheduling leaves the outgoing set with no
-    // timer to remove it — stranded on the map, invisible but still
-    // re-projected on every pan. Turning motion off mid-fade took exactly that
-    // path, because it changes `crossfade` without changing `fadeKey`.
-    const stop = () => {
-      setOutgoing(null)
-      setArrived(true)
+    // React runs the previous cleanup before re-running this effect, so a path
+    // that returns without rescheduling would leave fading layers with no timer
+    // to remove them — stranded on the map, invisible but still re-projected on
+    // every pan. Turning motion off mid-fade takes exactly that path, because
+    // it changes `crossfade` without changing `fadeKey`.
+    const collapse = () => {
+      for (const timer of timers.current) clearTimeout(timer)
+      timers.current.clear()
+      setLayers((current) => [{ ...current[current.length - 1], scale: 1 }])
     }
 
     if (!crossfade || prefersReducedMotion()) {
-      stop()
+      collapse()
       previousKey.current = fadeKey
       return
     }
 
     // Deliberately NOT keyed on `cells`. Listing it meant every refetch — a
-    // pan, a filter change — ran this effect's cleanup, cancelling the timer
-    // that ends the fade and leaving the outgoing set on screen for good.
+    // pan, a filter change — ran this effect's cleanup, cancelling the timers
+    // that end the fades and leaving those layers on screen for good.
     if (fadeKey === previousKey.current) return
     previousKey.current = fadeKey
 
-    const leaving = previousCells.current
-
-    // Nothing to fade between if there is no previous set, or if both sides are
-    // the same data. Fading a set against itself dips the combined alpha — a
-    // pulse across the whole map, the exact artefact this is here to prevent.
-    if (leaving.length === 0 || leaving === cells) {
-      stop()
+    // Nothing to fade between if both sides are the same data. Fading a set
+    // against itself dips the combined alpha — a pulse across the whole map,
+    // the exact artefact this is here to prevent.
+    if (previousCells.current === cells) {
+      collapse()
       return
     }
 
-    // The set that was current becomes the outgoing one, keeping its id.
-    //
-    // A fixed key meant a second band crossing inside one fade renumbered the
-    // mid-rise set, so React tore down its Leaflet layers and rebuilt them at
-    // full opacity — a jump to full brightness before fading out again.
-    setOutgoing({ id: current.id, cells: leaving })
-    setCurrent({ id: ++nextId.current, cells })
-    setArrived(false)
+    const arriving = ++nextId.current
+
+    setLayers((current) => {
+      // Everything on screen is now leaving; the newcomer starts at nothing.
+      // Older layers are already at 0 and keep ramping down from wherever CSS
+      // has them, rather than being culled mid-ramp.
+      const leaving = current.map((layer) => ({ ...layer, scale: 0 }))
+      return [...leaving, { id: arriving, cells, scale: 0 }].slice(-MAX_LAYERS)
+    })
 
     // A second commit is what makes it a fade rather than a snap: the incoming
-    // set mounts at zero and only then rises, and the outgoing set is driven to
-    // zero rather than being culled part-way down.
-    const raf = requestAnimationFrame(() => setArrived(true))
-    const timer = setTimeout(() => setOutgoing(null), CROSSFADE_MS)
+    // set mounts at zero and only then rises.
+    const raf = requestAnimationFrame(() => {
+      setLayers((current) =>
+        current.map((layer) => (layer.id === arriving ? { ...layer, scale: 1 } : layer)),
+      )
+    })
+
+    // Its own timer, so an earlier layer is never cut short by a later fade.
+    const timer = setTimeout(() => {
+      timers.current.delete(timer)
+      setLayers((current) => (current.length === 1 ? current : current.slice(1)))
+    }, CROSSFADE_MS)
+    timers.current.add(timer)
 
     return () => {
       cancelAnimationFrame(raf)
-      clearTimeout(timer)
     }
-    // `cells` and `current` are read above but deliberately not dependencies:
-    // this must run only when the zoom band changes, or when motion is turned
-    // off. The closure already holds the values from that render.
+    // `cells` is read above but deliberately not a dependency: this must run
+    // only when the zoom band changes, or when motion is turned off. The
+    // closure already holds the value from that render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fadeKey, crossfade])
 
@@ -152,46 +171,55 @@ export function CellLayer({
   // above still sees the previous set when both change in the same commit.
   useEffect(() => {
     previousCells.current = cells
-    // Keep the visible set in step with new data that did not cross a band --
-    // a pan, or a filter change. The id stays put, so nothing remounts.
-    setCurrent((c) => (c.cells === cells ? c : { ...c, cells }))
+    // Keep the live set in step with new data that did not cross a band — a
+    // pan, or a filter change. Its id stays put, so nothing remounts.
+    setLayers((current) => {
+      const live = current[current.length - 1]
+      if (live.cells === cells) return current
+      return [...current.slice(0, -1), { ...live, cells }]
+    })
   }, [cells])
 
-  const draw = (generation: Generation, scale: number) => (
-    <Fragment key={generation.id}>
-      {generation.cells.map((cell) => (
-        <Polygon
-          key={cell.cell}
-          positions={cellBoundary(cell.cell)}
-          // Top level, NOT inside pathOptions.
-          //
-          // react-leaflet hands the constructor `{pathOptions, pane, ...}`, so a
-          // className nested inside pathOptions is still undefined when Leaflet
-          // creates the path — and _initPath is the only place Leaflet ever
-          // applies it. setStyle, which runs afterwards, never touches the
-          // class. Nested, the stylesheet rule matched nothing in a production
-          // build and every "fade" was a hard cut; it only appeared to work in
-          // dev, where StrictMode remounts each layer.
-          className={CELL_CLASS}
-          pathOptions={{
-            fillColor: colorForT(cell.t),
-            fillOpacity: opacityFor(cell.t, minFillOpacity, maxFillOpacity) * scale,
-            stroke: false,
-          }}
-        />
+  // Nothing may outlive the component.
+  useEffect(() => {
+    const pending = timers.current
+    return () => {
+      for (const timer of pending) clearTimeout(timer)
+      pending.clear()
+    }
+  }, [])
+
+  return (
+    <>
+      {/* An ARRAY, not sibling expressions: React matches siblings by position,
+          and keys only govern identity inside an array. As siblings, a set
+          moving from live to leaving changed slot and was torn down, so Leaflet
+          rebuilt it at full opacity mid-fade. */}
+      {layers.map((layer) => (
+        <Fragment key={layer.id}>
+          {layer.cells.map((cell) => (
+            <Polygon
+              key={cell.cell}
+              positions={cellBoundary(cell.cell)}
+              // Top level, NOT inside pathOptions.
+              //
+              // react-leaflet hands the constructor `{pathOptions, pane, ...}`,
+              // so a className nested inside pathOptions is still undefined
+              // when Leaflet creates the path — and _initPath is the only place
+              // Leaflet ever applies it. setStyle, which runs afterwards, never
+              // touches the class. Nested, the stylesheet rule matched nothing
+              // in a production build and every "fade" was a hard cut; it only
+              // appeared to work in dev, where StrictMode remounts each layer.
+              className={CELL_CLASS}
+              pathOptions={{
+                fillColor: colorForT(cell.t),
+                fillOpacity: opacityFor(cell.t, minFillOpacity, maxFillOpacity) * layer.scale,
+                stroke: false,
+              }}
+            />
+          ))}
+        </Fragment>
       ))}
-    </Fragment>
+    </>
   )
-
-  // Rendered as an ARRAY, not as two sibling expressions.
-  //
-  // React matches `<>{a}{b}</>` by position; keys only govern identity inside
-  // an array. As siblings, the set that was current moved from the second slot
-  // to the first when it became the outgoing one, so React tore it down and
-  // rebuilt its Leaflet layers at full opacity mid-fade.
-  const layers: Array<{ generation: Generation; scale: number }> = []
-  if (outgoing) layers.push({ generation: outgoing, scale: arrived ? 0 : 1 })
-  layers.push({ generation: current, scale: outgoing && !arrived ? 0 : 1 })
-
-  return <>{layers.map(({ generation, scale }) => draw(generation, scale))}</>
 }
