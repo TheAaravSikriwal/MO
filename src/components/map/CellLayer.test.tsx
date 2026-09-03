@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { CellLayer, MIN_FILL_OPACITY, MAX_FILL_OPACITY, CROSSFADE_MS } from './CellLayer'
 import { cellsForPoint } from '../../lib/grid/cells'
 import { colorForT } from '../../lib/color/ramp'
@@ -92,42 +94,59 @@ describe('CellLayer', () => {
 })
 
 describe('CellLayer — crossing a zoom band', () => {
-  const cellsAt = (id: string, t: number) => [{ cell: id, weight: 1, reportCount: 1, t }]
+  const at = (id: string, t = 0.5) => [{ cell: id, weight: 1, reportCount: 1, t }]
+  const opacities = () =>
+    screen.getAllByTestId('cell').map((c) => Number(c.getAttribute('data-opacity')))
 
   it('holds the outgoing cells on screen while the new ones arrive', () => {
     // Unmounting one set and mounting the other in a single frame reads as a
     // flicker across the whole map.
-    const { rerender } = render(<CellLayer cells={cellsAt(london.cell_r7, 0.5)} />)
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
     expect(screen.getAllByTestId('cell')).toHaveLength(1)
 
-    rerender(<CellLayer cells={cellsAt(london.cell_r9, 0.5)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
     expect(screen.getAllByTestId('cell')).toHaveLength(2)
   })
 
-  it('marks which set is leaving, so only one of them animates out', () => {
-    const { rerender } = render(<CellLayer cells={cellsAt(london.cell_r7, 0.5)} />)
-    rerender(<CellLayer cells={cellsAt(london.cell_r9, 0.5)} />)
+  it('does not fade on a pan, only on a change of zoom band', async () => {
+    // cells is a fresh array after every pan and every filter change. Fading on
+    // that made the whole map pulse darker each time it was dragged.
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    rerender(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
 
-    const classes = screen.getAllByTestId('cell').map((c) => c.getAttribute('data-class'))
-    expect(classes.filter((c) => c?.includes('leaving'))).toHaveLength(1)
-    expect(classes.filter((c) => c === 'mo-cell')).toHaveLength(1)
+    expect(screen.getAllByTestId('cell')).toHaveLength(1)
+    expect(opacities()[0]).toBeGreaterThan(0)
   })
 
-  it('fades the outgoing set down rather than leaving it at full strength', () => {
-    const { rerender } = render(<CellLayer cells={cellsAt(london.cell_r7, 1)} />)
-    rerender(<CellLayer cells={cellsAt(london.cell_r9, 1)} />)
+  it('starts the incoming set at zero, so it rises rather than snapping in', () => {
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7, 1)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9, 1)} />)
 
-    const [leaving, arriving] = screen.getAllByTestId('cell')
-    expect(Number(leaving.getAttribute('data-opacity'))).toBeLessThan(
-      Number(arriving.getAttribute('data-opacity')),
-    )
+    // Outgoing still at full, incoming still at nothing.
+    const [leaving, arriving] = opacities()
+    expect(leaving).toBeGreaterThan(0)
+    expect(arriving).toBe(0)
+  })
+
+  it('drives the outgoing set to zero rather than culling it part-way', async () => {
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7, 1)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9, 1)} />)
+
+    // The next frame swaps them over.
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+
+    const [leaving, arriving] = opacities()
+    expect(leaving).toBe(0)
+    expect(arriving).toBeGreaterThan(0)
   })
 
   it('drops the outgoing set once the fade is over', async () => {
     vi.useFakeTimers()
     try {
-      const { rerender } = render(<CellLayer cells={cellsAt(london.cell_r7, 0.5)} />)
-      rerender(<CellLayer cells={cellsAt(london.cell_r9, 0.5)} />)
+      const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+      rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
       expect(screen.getAllByTestId('cell')).toHaveLength(2)
 
       await act(async () => {
@@ -139,24 +158,75 @@ describe('CellLayer — crossing a zoom band', () => {
     }
   })
 
+  it('keeps only one outgoing set however fast the zoom changes', async () => {
+    // A wheel-zoom across several bands inside one fade used to pile up layers
+    // of mismatched hexagons, each adding more alpha over the same ground.
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+    rerender(<CellLayer fadeKey={12} cells={at(london.cell_r12)} />)
+    rerender(<CellLayer fadeKey={1} cells={at(london.cell_r1)} />)
+
+    expect(screen.getAllByTestId('cell').length).toBeLessThanOrEqual(2)
+  })
+
   it('swaps instantly when the fade is turned off', () => {
-    const { rerender } = render(<CellLayer crossfade={false} cells={cellsAt(london.cell_r7, 0.5)} />)
-    rerender(<CellLayer crossfade={false} cells={cellsAt(london.cell_r9, 0.5)} />)
+    const { rerender } = render(
+      <CellLayer crossfade={false} fadeKey={7} cells={at(london.cell_r7)} />,
+    )
+    rerender(<CellLayer crossfade={false} fadeKey={9} cells={at(london.cell_r9)} />)
     expect(screen.getAllByTestId('cell')).toHaveLength(1)
   })
 
   it('swaps instantly for anyone who has asked for less motion', () => {
-    // A map-wide fade every time you zoom is exactly the kind of motion that
-    // setting exists to stop.
     const original = window.matchMedia
     window.matchMedia = ((query: string) =>
       ({ matches: query.includes('reduce'), media: query })) as unknown as typeof window.matchMedia
     try {
-      const { rerender } = render(<CellLayer cells={cellsAt(london.cell_r7, 0.5)} />)
-      rerender(<CellLayer cells={cellsAt(london.cell_r9, 0.5)} />)
+      const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+      rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
       expect(screen.getAllByTestId('cell')).toHaveLength(1)
     } finally {
       window.matchMedia = original
+    }
+  })
+
+  it('does not fade in from nothing on the very first render', () => {
+    render(<CellLayer fadeKey={7} cells={at(london.cell_r7, 1)} />)
+    expect(opacities()[0]).toBeGreaterThan(0)
+  })
+
+  it('keeps the stylesheet duration and CROSSFADE_MS in step', () => {
+    // They are tuned to end together. A silent mismatch deletes the outgoing
+    // layer part-way through its fade -- a visible step across the whole map.
+    const css = readFileSync(join(process.cwd(), 'src', 'index.css'), 'utf8')
+    const declared = css.match(/\.mo-cell\s*\{[^}]*transition:\s*fill-opacity\s+(\d+)ms/)
+    expect(declared).not.toBeNull()
+    expect(Number(declared![1])).toBe(CROSSFADE_MS)
+  })
+})
+
+describe('CellLayer — a refetch must not strand the fade', () => {
+  const at = (id: string, t = 0.5) => [{ cell: id, weight: 1, reportCount: 1, t }]
+
+  it('still finishes the fade when new data arrives mid-fade', async () => {
+    // A pan or a filter change refetches, producing a fresh cells array. If the
+    // fade lifecycle is keyed on that array, the refetch cancels the timer that
+    // ends the fade and the outgoing set never leaves the screen.
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+      rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+      expect(screen.getAllByTestId('cell')).toHaveLength(2)
+
+      // Same zoom band, new array — exactly what a pan produces.
+      rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+
+      await act(async () => {
+        vi.advanceTimersByTime(CROSSFADE_MS + 20)
+      })
+      expect(screen.getAllByTestId('cell')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

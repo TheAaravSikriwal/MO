@@ -408,7 +408,8 @@ export default function App({ data: injected }: AppProps = {}) {
             onSelect={(report) => setOpenReportId(report.id)}
           />
         ) : (
-          <CellLayer cells={normalisedCells} />
+          <CellLayer cells={normalisedCells}
+            fadeKey={resolutionForZoom(view.zoom) ?? undefined} />
         )}
       </MapView>
 
