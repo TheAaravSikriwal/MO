@@ -230,3 +230,78 @@ describe('CellLayer — a refetch must not strand the fade', () => {
     }
   })
 })
+
+describe('CellLayer — the fade cannot get stuck', () => {
+  const at = (id: string, t = 0.5) => [{ cell: id, weight: 1, reportCount: 1, t }]
+
+  it('never fades a set against itself', () => {
+    // The key can change before the new cells arrive. Fading identical data
+    // dips the combined alpha and pulses the whole map, which is the artefact
+    // the fade exists to remove.
+    const same = at(london.cell_r7)
+    const { rerender } = render(<CellLayer fadeKey={7} cells={same} />)
+    rerender(<CellLayer fadeKey={9} cells={same} />)
+    expect(screen.getAllByTestId('cell')).toHaveLength(1)
+  })
+
+  it('fades out rather than vanishing when the next band is empty', async () => {
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+      rerender(<CellLayer fadeKey={9} cells={[]} />)
+      // The old cells stay while they fade, rather than blinking out.
+      expect(screen.getAllByTestId('cell')).toHaveLength(1)
+
+      await act(async () => {
+        vi.advanceTimersByTime(CROSSFADE_MS + 20)
+      })
+      expect(screen.queryAllByTestId('cell')).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not strand cells when a fade starts from an empty band', async () => {
+    // React runs the previous cleanup before re-running the effect, so an early
+    // return used to leave the outgoing set with no timer to remove it --
+    // invisible but still attached, and re-projected on every pan.
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+      rerender(<CellLayer fadeKey={9} cells={[]} />)
+      // Now the previous set IS empty, which is the early-return path.
+      rerender(<CellLayer fadeKey={5} cells={at(london.cell_r5)} />)
+
+      await act(async () => {
+        vi.advanceTimersByTime(CROSSFADE_MS * 3)
+      })
+      expect(screen.getAllByTestId('cell')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears a running fade when motion is switched off mid-fade', () => {
+    const { rerender } = render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    rerender(<CellLayer fadeKey={9} cells={at(london.cell_r9)} />)
+    expect(screen.getAllByTestId('cell')).toHaveLength(2)
+
+    rerender(<CellLayer crossfade={false} fadeKey={12} cells={at(london.cell_r12)} />)
+    expect(screen.getAllByTestId('cell')).toHaveLength(1)
+  })
+
+  it('draws exactly one set on the very first render', () => {
+    // Asserting only that the opacity is above zero passed even when the first
+    // render started a fade, because the outgoing copy is drawn first.
+    render(<CellLayer fadeKey={7} cells={at(london.cell_r7, 1)} />)
+    expect(screen.getAllByTestId('cell')).toHaveLength(1)
+    expect(Number(screen.getByTestId('cell').getAttribute('data-opacity'))).toBeGreaterThan(0)
+  })
+
+  it('puts every cell in the class the stylesheet animates', () => {
+    // Without the class the opacity change is an instant two-step jump rather
+    // than a fade -- the flicker this feature exists to remove.
+    render(<CellLayer fadeKey={7} cells={at(london.cell_r7)} />)
+    expect(screen.getByTestId('cell')).toHaveAttribute('data-class', 'mo-cell')
+  })
+})

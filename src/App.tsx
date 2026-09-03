@@ -36,7 +36,19 @@ export default function App({ data: injected }: AppProps = {}) {
 
   const [view, setView] = useState<MapView2>({ ...WORLD_VIEW, bounds: WHOLE_WORLD })
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null)
-  const [cells, setCells] = useState<RollupCell[]>([])
+  /**
+   * The aggregated cells AND the resolution they were computed at, set
+   * together.
+   *
+   * They have to arrive in one commit. Deriving the fade key from view.zoom
+   * instead meant the key changed the moment the map moved, while the cells
+   * were still the previous band's -- so the fade ran the old cells against
+   * themselves, and the actual swap, one round trip later, snapped.
+   */
+  const [cells, setCells] = useState<{ resolution: number | null; cells: RollupCell[] }>({
+    resolution: null,
+    cells: [],
+  })
   const [totalInView, setTotalInView] = useState(0)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Place[]>([])
@@ -102,7 +114,7 @@ export default function App({ data: injected }: AppProps = {}) {
   // the new ones fade in, keyed on the identity of this prop -- recomputing it
   // every render would start a fresh fade on every render and pile up
   // generations without end.
-  const normalisedCells = useMemo(() => normaliseWeights(cells), [cells])
+  const normalisedCells = useMemo(() => normaliseWeights(cells.cells), [cells.cells])
 
   const showPins = resolutionForZoom(view.zoom) === null
 
@@ -168,7 +180,7 @@ export default function App({ data: injected }: AppProps = {}) {
 
     const resolution = resolutionForZoom(view.zoom)
     if (resolution === null) {
-      setCells([])
+      setCells({ resolution: null, cells: [] })
       // The banner belongs to the aggregated view. Left set, it kept saying
       // "Reports may be missing" over a pin view whose reports all loaded.
       setCellsError(null)
@@ -180,7 +192,7 @@ export default function App({ data: injected }: AppProps = {}) {
       // hottest.
       const rolled = await data.getRollup(view.bounds, resolution, serverFilters)
       if (seq !== cellsSeq.current) return
-      setCells(rolled)
+      setCells({ resolution, cells: rolled })
       setCellsError(null)
     } catch (cause) {
       if (seq !== cellsSeq.current) return
@@ -408,8 +420,7 @@ export default function App({ data: injected }: AppProps = {}) {
             onSelect={(report) => setOpenReportId(report.id)}
           />
         ) : (
-          <CellLayer cells={normalisedCells}
-            fadeKey={resolutionForZoom(view.zoom) ?? undefined} />
+          <CellLayer cells={normalisedCells} fadeKey={cells.resolution ?? undefined} />
         )}
       </MapView>
 

@@ -87,7 +87,29 @@ export function CellLayer({
     previousKey.current = fadeKey
 
     const leaving = previousCells.current
-    if (!crossfade || prefersReducedMotion() || leaving.length === 0) return
+
+    // Cancel any fade already running before deciding not to start a new one.
+    // React runs the previous cleanup first, so an early return here used to
+    // leave the outgoing set with no timer to remove it -- stranded on the map
+    // for good, invisible but still re-projected on every pan.
+    const stop = () => {
+      setOutgoing(null)
+      setArrived(true)
+    }
+
+    if (!crossfade || prefersReducedMotion() || leaving.length === 0) {
+      stop()
+      return
+    }
+
+    // Nothing to fade between if both sides are the same data. This happens
+    // when the key changes before the new cells have arrived, and fading a set
+    // against itself dips the combined alpha -- a pulse across the whole map,
+    // the exact artefact this is here to prevent.
+    if (leaving === cells) {
+      stop()
+      return
+    }
 
     // Exactly one outgoing set, always the immediately previous one. Keeping a
     // stack meant a fast wheel-zoom across several bands piled up layers of
@@ -105,6 +127,10 @@ export function CellLayer({
       cancelAnimationFrame(raf)
       clearTimeout(timer)
     }
+    // `cells` is read above but deliberately not a dependency: this effect must
+    // run only when the zoom band changes. The closure already holds the cells
+    // from that render, which is exactly what the comparison needs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fadeKey, crossfade])
 
   // Declared after the fade effect on purpose: effects run in order, so the one
