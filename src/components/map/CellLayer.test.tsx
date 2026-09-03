@@ -167,6 +167,38 @@ describe('CellLayer — crossing a zoom band', () => {
     }
   })
 
+  it('retires every layer even after the cap has trimmed one', async () => {
+    // Once the cap drops a layer, its timer outlives it. If a timer removes
+    // "the oldest survivor" rather than its own layers, that surplus timer
+    // culls a layer that is still ramping down.
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<CellLayer fadeKey={1} cells={at(london.cell_r1)} />)
+      const bands: Array<[number, string]> = [
+        [3, london.cell_r3],
+        [5, london.cell_r5],
+        [7, london.cell_r7],
+        [9, london.cell_r9],
+        [12, london.cell_r12],
+      ]
+      for (const [key, cell] of bands) {
+        rerender(<CellLayer fadeKey={key} cells={at(cell)} />)
+        await act(async () => {
+          vi.advanceTimersByTime(20)
+        })
+      }
+      expect(screen.getAllByTestId("cell").length).toBeLessThanOrEqual(MAX_LAYERS)
+
+      await act(async () => {
+        vi.advanceTimersByTime(CROSSFADE_MS * 2)
+      })
+      // Exactly the live set: nothing stranded, nothing removed twice.
+      expect(screen.getAllByTestId("cell")).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('caps how many layers can pile up on a long zoom', async () => {
     // Several bands can be crossed inside one fade. They must overlap rather
     // than cull each other, but not without bound.

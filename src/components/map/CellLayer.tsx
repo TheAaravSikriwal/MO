@@ -151,10 +151,19 @@ export function CellLayer({
       )
     })
 
-    // Its own timer, so an earlier layer is never cut short by a later fade.
+    // Each timer retires the layers ITS crossing set fading, identified by id
+    // rather than by position.
+    //
+    // Removing "the oldest survivor" instead meant that once the cap trimmed a
+    // layer, its timer outlived it and the next one fired against a layer still
+    // ramping down — culling it mid-fade, the exact thing the cap exists to
+    // prevent. Filtering by id makes a surplus timer a harmless no-op.
     const timer = setTimeout(() => {
       timers.current.delete(timer)
-      setLayers((current) => (current.length === 1 ? current : current.slice(1)))
+      setLayers((current) => {
+        const kept = current.filter((layer) => layer.id >= arriving)
+        return kept.length === 0 ? current.slice(-1) : kept
+      })
     }, CROSSFADE_MS)
     timers.current.add(timer)
 

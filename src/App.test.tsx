@@ -3,6 +3,7 @@ import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { FakeDataSource } from './lib/data/fakeSource'
+import { CROSSFADE_MS } from './components/map/CellLayer'
 
 const flyToSpy = vi.fn()
 const mapInstance = { flyTo: flyToSpy }
@@ -366,5 +367,46 @@ describe('App — the pin threshold', () => {
     // Still present for the length of the fade, alongside the arriving pins.
     expect(screen.queryAllByTestId('cell').length).toBeGreaterThan(0)
     await waitFor(() => expect(screen.getAllByTestId('pin').length).toBeGreaterThan(0))
+  })
+})
+
+describe('App — coming back from the pin view', () => {
+  const seeded = () => {
+    const data = new FakeDataSource(null)
+    data.seed({ id: 'r1', lat: 51.5074, lng: -0.1278, voteCount: 2 })
+    return data
+  }
+
+  it('does not leave a bare basemap on the way back out', async () => {
+    // Clearing the cells on entering the pin view meant that zooming out
+    // unmounted the pins, found no cells, and showed nothing at all until the
+    // rollup returned.
+    //
+    // The rollup is made to hang for the return trip on purpose: the fake
+    // normally resolves in a microtask, so the cells would be back before any
+    // assertion could run and the test would pass either way.
+    const data = seeded()
+    render(<App data={data} />)
+    await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
+
+    await moveMapTo(13)
+    await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
+
+    await moveMapTo(16)
+    await waitFor(() => expect(screen.getAllByTestId('pin').length).toBeGreaterThan(0))
+
+    vi.spyOn(data, 'getRollup').mockImplementation(() => new Promise(() => {}))
+    await moveMapTo(13)
+
+    // Wait past the fade window before looking. The hexagons that were fading
+    // OUT on the way in are still drawn for CROSSFADE_MS, so without this the
+    // assertion cannot tell a retained set from a fading remnant.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, CROSSFADE_MS + 80))
+    })
+
+    // Nothing has come back from the rollup, so this can only be the set that
+    // was kept rather than cleared.
+    expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0)
   })
 })

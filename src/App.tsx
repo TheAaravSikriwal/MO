@@ -180,15 +180,24 @@ export default function App({ data: injected }: AppProps = {}) {
     // unopposed and paints the old viewport's cells the moment you zoom back
     // out somewhere else.
     const seq = ++cellsSeq.current
-
     const resolution = resolutionForZoom(view.zoom)
+
     if (resolution === null) {
-      setCells({ resolution: null, cells: [] })
-      // The banner belongs to the aggregated view. Left set, it kept saying
-      // "Reports may be missing" over a pin view whose reports all loaded.
+      // Deliberately does NOT clear the cells.
+      //
+      // Clearing them meant zooming back out showed a bare basemap for a whole
+      // round trip: the pins unmounted, the cells were already gone, and
+      // nothing appeared until the rollup returned. Every other band boundary
+      // holds the previous cells until the new ones land; this one now does
+      // too. App simply stops drawing them while pins are shown.
+      //
+      // The banner does go, though: it belongs to the aggregated view, and
+      // left set it kept saying "Reports may be missing" over a pin view whose
+      // reports had all loaded.
       setCellsError(null)
       return
     }
+
     try {
       // Aggregated where the data is, with the filters pushed down -- rolling
       // up a capped page on the client drops the very cells that should be
