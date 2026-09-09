@@ -5,6 +5,13 @@ location, other people confirm those reports, and the map shows where litter has
 been reported from street level out to a world view. When a spot gets cleaned up,
 the map visibly improves.
 
+## Start here
+
+Read `HANDOFF.md` before doing anything. It carries the current state: what is
+built, what is deliberately unfinished, what is blocked on which account, and
+the next three steps in order. This file carries the rules; that one carries
+the situation.
+
 ## Layout
 
 | Path | What it is |
@@ -15,6 +22,7 @@ the map visibly improves.
 | `worker/` | Standalone moderation worker, its own package and deps |
 | `supabase/migrations/` | Schema, RLS, RPCs — **not yet applied to any database** |
 | `docs/superpowers/` | Design spec and implementation plans |
+| `.claude/agents/` | The blind auditor. See the audit gate below |
 
 ## Hard constraints
 
@@ -41,3 +49,17 @@ complete, invoke the `blind-auditor` subagent. Pass it ONLY the original
 requirement verbatim and the list of changed files — never my own summary
 or any "it works" claim. On FAIL or CONCERNS, fix every finding and
 re-invoke before calling the step done. Don't argue findings away.
+
+
+## Verifying a fix
+
+When you fix something an audit found, break the fix on purpose and confirm
+the test fails, then restore it. Several fixes in this history looked correct
+and changed nothing — a scripted edit that silently failed to match, or a test
+that passed with the behaviour it named deleted.
+
+## Line endings
+
+`.gitattributes` pins LF. The repo previously had mixed CRLF/LF and scripted
+edits written with LF failed to match while reporting success. If an edit
+reports success, check it landed.
