@@ -24,13 +24,16 @@ What that project already has, which MO was blocked on:
 |---|---|
 | A Supabase project | one, with `public.profiles` auto-created per auth user |
 | An R2 bucket | `chintubucket`, with credentials in `.env.local.example` |
-| A presigner | `src/lib/r2.js` on the AWS SDK, including `deleteObject` |
+| A presigner | `src/lib/r2.js` on the AWS SDK. In the end the map does not use it: it signs with MO's own `shared/sigv4.ts`, because the SDK's presigner adds checksum parameters R2 refuses and drops the signed headers MO relies on |
 | Request auth | `src/lib/auth.js` `authenticateRequest` |
 
-**Still missing, and the reason item 6 below is unchanged:** `R2_PUBLIC_URL` is
+**Still missing, and the reason item 8 below is unchanged:** `R2_PUBLIC_URL` is
 a `pub-<hash>.r2.dev` address, which is Cloudflare's hostname and not one on
 the wearechintu zone. The free CSAM scanning applies to a zone, so it needs a
 custom domain attached to the bucket. The existing setup does not satisfy it.
+The upload endpoint enforces this: it refuses any `*.r2.dev` photo host and
+answers "Photo upload is not set up on this site yet" until the custom domain
+is configured. Merging the port therefore cannot switch on unscanned uploads.
 
 ### Done
 
@@ -106,35 +109,66 @@ its map signup and wave it straight past the age check, turning MO's open
 sign-up into a sign-up path into the marketplace. Not fixable from this repo;
 somebody has to own that decision on the other side.
 
+### The port, as of 2026-09-27
+
+The map is in the wearechintu app at `/map` (its commit `5a76830`), and MO
+changes reach it through a script rather than by hand:
+
+```bash
+node scripts/sync-wearechintu.mjs ../gitbuddywebsite
+```
+
+It copies `src/` into `src/mo/`, MO's upload handler and signer into
+`src/mo/server/`, and the migrations in as `010`-`015`, applying the few
+changes Next needs as exact replacements. Each replacement is checked to
+match, so if MO's code moves under one the script stops and names it instead of
+writing something half-converted. Running it twice changes nothing.
+`src/mo/README.md` in that repo lists every change it makes. **Edit MO, not
+the copies**: the next sync overwrites them.
+
+The latest sync is committed on a local branch, `mo-sync`, in the worktree
+`D:\VisualStudioProjects\gitbuddywebsite-mo-sync`. It is not merged, not
+pushed and not deployed. That branch also adds what the first port lacked:
+`POST /api/map/sign-upload`. The client was already calling that endpoint and
+would have had a 404 back. It is a thin route over MO's own handler, which maps
+the site's existing variable names (`R2_ENDPOINT`, `R2_BUCKET_NAME`,
+`NEXT_PUBLIC_*`) onto what the handler reads. It signs with `shared/sigv4.ts`,
+not the site's AWS SDK presigner, so the signed length and `if-none-match`
+survive.
+
+Photo keys are now `map/<user>/<report>/<photo>.<ext>` in MO itself, both in
+the endpoint and in the `upload_grants` policy. The bucket is shared with the
+marketplace, and the prefix keeps the map's objects together.
+
+The first port also changed `next.config.mjs` for `geolocation=(self)`. It
+does not add `esm.sh` to `script-src`. Instead the NSFW model is meant to be
+self-hosted through `NEXT_PUBLIC_NSFW_MODULE_URL`, which that repo's
+`src/mo/README.md` explains.
+
 ### Next, in order
 
-1. **Port the app into the Next project.** `react-leaflet` 5 → 4 for React 18
-   (MO only uses `MapContainer`, `TileLayer`, `Polygon`, `CircleMarker`,
-   `useMap`, `useMapEvents`, all unchanged in v4), `import.meta.env` →
-   `process.env.NEXT_PUBLIC_*`, `'use client'` on the map tree, and a `/map`
-   route. The site has no test runner at all, so Vitest goes in with it — MO's
-   suite is the only thing making the port safe.
-2. **Replace `api/sign-upload` with a Next route handler** over the site's
-   existing `lib/r2`. The signer, now `shared/sigv4.ts`, stays: the worker
-   signs its R2 deletes with it. `getUploadUrl`
-   there signs only `ContentType`, so it needs `ContentLength` and
-   `IfNoneMatch` adding or MO loses its size cap and its one-write guarantee —
-   see `api/README.md`. Note their own comment: R2 rejects a presigned URL that
-   signs `ChecksumAlgorithm`, so treat extra signed headers as unproven.
-3. **Three header changes in `next.config.mjs`**, each a hard blocker today:
-   `Permissions-Policy: geolocation=()` kills near-me; `script-src` has no
-   `esm.sh`, so the browser NSFW check fails open; and the R2 CORS rule needs
-   `if-none-match` in `AllowedHeaders`.
-4. **Move the migrations in as `010`–`015`** following that project's 3-digit
-   numbering. They must be renumbered, not copied: `0001` sorts before `001`
-   as a string, and the Supabase CLI compares versions as text and refuses
-   out-of-order migrations.
-5. **Add `mo` to the project's exposed-schemas list** — Supabase dashboard,
-   API settings. This is one checkbox and nothing works without it: PostgREST
-   answers 406 `PGRST106` ("The schema must be one of the following") to every
-   read, every RPC, the upload endpoint's grant insert and the whole worker
-   pipeline. Applying the migrations is not sufficient on its own, which is
-   easy to assume because everything else about this is SQL.
+1. **Review and merge `mo-sync`** in the wearechintu repo. It is on a branch
+   precisely so that happens on purpose.
+2. **Add `mo` to the project's exposed-schemas list** in the Supabase
+   dashboard, under API settings. This is one checkbox, and nothing works
+   without it. PostgREST answers every read, every RPC, the upload endpoint's
+   grant insert and the whole worker pipeline with 406 `PGRST106` ("The schema
+   must be one of the following"). Applying the migrations is not enough on its
+   own. That is easy to miss, because everything else about this is SQL.
+   In the same dashboard, under Authentication and URL configuration, add the
+   site's `/map` address to Redirect URLs. The sign-in email links back to the
+   page it was asked for from, and Supabase sends any address not on that list
+   to the Site URL: the home page, where nothing picks the sign-in up.
+3. **Apply migrations `010`-`015`** to that project, then make yourself the
+   first admin (the snippet is under "Admin bootstrap" in `013`/`0004`).
+4. **The R2 CORS rule** has to allow `PUT` from the site with the
+   `content-type` and `if-none-match` headers. Then do one real upload. That is
+   the first time R2 sees MO's signature.
+5. **Attach a custom domain to `chintubucket`** so Cloudflare's CSAM scanning
+   applies (item 8 below), switch the scanning on, and set
+   `NEXT_PUBLIC_PHOTO_BASE_URL` to it. Uploads stay refused until then:
+   the endpoint will not accept an `r2.dev` photo host. So step 4's real
+   upload waits on this step too.
 
 ## What MO is
 
@@ -208,7 +242,7 @@ Eight things. The first two are blocked on accounts rather than on code:
    itself, and signs a two-minute PUT with the type and the exact byte length
    baked into the signature. The signature is pinned against AWS's own
    published example, so the maths is proven. What is NOT proven is that R2
-   accepts it, because there is no bucket. `api/README.md` says what has to
+   accepts it: nothing has been uploaded to `chintubucket` yet. `api/README.md` says what has to
    exist — a bucket, a CORS rule, a Cloudflare-proxied hostname — and names
    the two things most likely to need adjusting on first contact: the signed
    `content-length` and `if-none-match` headers. Neither may simply be deleted.
@@ -358,7 +392,9 @@ Eight things. The first two are blocked on accounts rather than on code:
    Cloudflare's free scanning tool applied to the R2 hostname serving the photos,
    which is why photos are meant to live in R2 behind Cloudflare.
 
-Nothing is deployed. No Supabase project, no R2 bucket, no Vercel project.
+Nothing of MO's is deployed. The wearechintu site, its Supabase project and
+`chintubucket` exist and are live, but the map is only on the local `mo-sync`
+branch: none of its migrations are applied and no photo has been uploaded.
 
 ## The original next three steps
 

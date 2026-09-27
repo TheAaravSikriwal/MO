@@ -37,8 +37,15 @@
 -- What an object key is allowed to look like
 -- ---------------------------------------------------------------------------
 --
--- The exact shape api/sign-upload generates: three lowercase UUIDs and one of
--- three extensions, and nothing else at all.
+-- The exact shape the signing endpoint generates: the `map/` prefix, three
+-- lowercase UUIDs and one of three extensions, and nothing else at all.
+--
+-- The `map/` prefix is not decoration. The bucket is wearechintu's, shared
+-- with the marketplace, which already partitions it: `covers/` is served
+-- publicly and `artifacts/` is meant to stay private. Map photos get their own
+-- namespace, so a bucket-level rule scoped by prefix -- public read, a
+-- lifecycle policy, a CORS rule -- can name them as a group. The same shape is
+-- PHOTO_KEY_PREFIX in src/lib/upload/objectKey.ts.
 --
 -- The unique indexes below are on the literal string, and a photo URL is built
 -- by concatenation and then read by a URL parser. Without this, two DIFFERENT
@@ -91,7 +98,7 @@ returns boolean
 language sql
 immutable
 as $$
-  select key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|webp)$';
+  select key ~ '^map/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|webp)$';
 $$;
 
 grant execute on function mo.is_photo_object_key(text) to anon, authenticated;
@@ -358,7 +365,7 @@ create policy upload_grants_insert_own
     -- grant here only signed an upload whose bytes nothing would ever point
     -- at, and spent one of the hour's thirty.
     and mo.report_on_map(report_id)
-    and storage_path like (auth.uid()::text || '/' || report_id::text || '/%')
+    and storage_path like ('map/' || auth.uid()::text || '/' || report_id::text || '/%')
   );
 
 -- Nobody reads this table from a browser. It is a counter, not content, and

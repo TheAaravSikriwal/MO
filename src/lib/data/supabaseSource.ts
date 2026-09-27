@@ -122,7 +122,16 @@ export class SupabaseDataSource implements DataSource {
   }
 
   async signInWithEmail(email: string): Promise<void> {
-    const { error } = await this.client.auth.signInWithOtp({ email })
+    // The link in the email comes back to the page it was asked for from.
+    // Without this Supabase sends it to the project's Site URL. Once the map
+    // lives at /map inside the wearechintu site, that is the site's home page,
+    // where nothing picks the sign-in up. Supabase only honours an address on
+    // the project's Redirect URLs list and uses the Site URL for any other, so
+    // the query and hash are left off: one entry per page is enough.
+    const { error } = await this.client.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin + window.location.pathname },
+    })
     if (error) throw new Error(error.message)
   }
 

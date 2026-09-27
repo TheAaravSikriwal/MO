@@ -157,7 +157,7 @@ map signup and grandfather it straight through the age check — so MO's open
 magic-link sign-up quietly becomes a sign-up path into the marketplace, which
 is the thing that gate exists to prevent.
 
-Neither is MO's bug, and neither is fixable from this repo. They are what
+Neither is MO's bug, and neither is fixable from MO's code. They are what
 "one set of user accounts" means in both directions, and whoever owns the
 marketplace side needs to decide: either that gate learns about accounts with
 no GitHub history, or the two features stop sharing `auth.users`.
@@ -167,11 +167,12 @@ Adding a column would have put MO's moderation model in the marketplace's
 table; a separate table can be revoked outright, so the moderator list is
 ungranted rather than merely unreadable.
 
-> **These migrations have never been run.** They were written against the design
-> spec without a live Postgres instance to test on. Everything else in this repo
-> has passing tests behind it; this does not yet. Expect to fix something on
-> first apply, and verify the policies against a real database before trusting
-> them.
+> **These migrations have run only in PGlite, never on Supabase.** MO's suite
+> applies them to a real Postgres in process and exercises them as `anon`,
+> `authenticated` and `service_role`, but with small stand-ins for PostGIS and
+> Supabase's `auth` schema, and without PostgREST. Expect to fix something on
+> first apply, and verify the policies against the real database before
+> trusting them.
 
 ## Files
 
@@ -186,17 +187,16 @@ ungranted rather than merely unreadable.
 
 ## Applying them
 
-**Renumber them first.** chintu's database already has `001` to `009`, and MO's
-files are `0001` to `0006`, which sort BEFORE all of them as strings. The
-Supabase CLI compares migration versions as text and will refuse them as
-out-of-order. They need to become `010_` to `015_` in that project's
-`supabase/migrations/`, which is step 4 of the plan in `HANDOFF.md`.
+**Apply the renumbered copies in the wearechintu project, not these files.**
+chintu's database already has `001` to `009`, and MO's files are `0001` to
+`0006`, which sort BEFORE all of them as strings. The Supabase CLI compares
+migration versions as text and will refuse them as out-of-order.
+`scripts/sync-wearechintu.mjs` copies them into
+`gitbuddywebsite/supabase/migrations/` as `010_` to `015_`. There is no
+`supabase/config.toml` in MO, so the CLI has no project to push to from here.
 
-Then paste each file into the Supabase SQL editor in order. `supabase db push`
-is not an alternative from THIS repo: there is no `supabase/config.toml` here,
-so the CLI has no project to push to. Once the files live in
-`gitbuddywebsite/supabase/migrations/`, that project's CLI setup handles them
-like any other.
+Either paste each renumbered file into the Supabase SQL editor in order, or let
+that project's CLI setup push them like any other migration.
 
 Then create the first admin — see the bottom of `0004`. Nothing can be reviewed
 until you do, because ambiguous content escalates to a human and there is no
@@ -267,7 +267,7 @@ they always hold their own. The keys are unguessable (three UUIDs), the bucket
 must not be listable, and nobody else is given a pending or rejected path. But a
 photo a human rejected stays retrievable by whoever uploaded it until the
 worker's cleanup deletes the bytes (`claim_objects_to_delete` in `0006`; see
-`HANDOFF.md` item 3). That has not yet run against a real bucket.
+"R2 cleanup" in MO's `HANDOFF.md`). That has not yet run against a real bucket.
 
 **Read through the views, because there is no other way.** `public_reports`,
 `public_report_photos` and `public_comments` are the ONLY public read path.

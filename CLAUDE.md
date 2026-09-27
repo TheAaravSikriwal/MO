@@ -21,6 +21,7 @@ the situation.
 | `src/lib/data/` | The `DataSource` seam; UI never touches Supabase directly |
 | `worker/` | Standalone moderation worker, its own package and deps |
 | `supabase/migrations/` | Schema, RLS, RPCs — **applied only in the PGlite tests, never to Supabase** |
+| `scripts/sync-wearechintu.mjs` | Copies MO into the wearechintu app (`src/mo/`, migrations `010`–`015`). Edit MO, then sync; never edit the copies |
 | `docs/superpowers/` | Design spec and implementation plans |
 | `.claude/agents/` | The blind auditor. See the audit gate below |
 

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   CellLayer,
   MIN_FILL_OPACITY,
@@ -284,7 +285,13 @@ describe('CellLayer — crossing a zoom band', () => {
   it('keeps the stylesheet duration and CROSSFADE_MS in step', () => {
     // They are tuned to end together. A silent mismatch deletes the outgoing
     // layer part-way through its fade -- a visible step across the whole map.
-    const css = readFileSync(join(process.cwd(), 'src', 'index.css'), 'utf8')
+    // Resolved from this file, not from the working directory, so it reads the
+    // right stylesheet wherever the suite is run from -- including after the
+    // sync script copies it into wearechintu, where the file is map.css.
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'index.css'),
+      'utf8',
+    )
     const declared = css.match(/\.mo-cell\s*\{[^}]*transition:\s*fill-opacity\s+(\d+)ms/)
     expect(declared).not.toBeNull()
     expect(Number(declared![1])).toBe(CROSSFADE_MS)

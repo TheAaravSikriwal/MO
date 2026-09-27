@@ -24,7 +24,7 @@ const as = <T>(userId: string | null, work: () => Promise<T>) =>
 const worker = <T>(work: () => Promise<T>) => asRole(db, 'service_role', null, work)
 
 const key = (reportId: string, n: number) =>
-  `${OWNER}/${reportId}/${n.toString(16).padStart(8, '0')}-0000-4000-8000-000000000000.jpg`
+  `map/${OWNER}/${reportId}/${n.toString(16).padStart(8, '0')}-0000-4000-8000-000000000000.jpg`
 
 // This file files more reports than the hourly limit allows one person, and
 // the limit is not what it tests, so each report starts from a clear record.
@@ -281,7 +281,7 @@ describe('which objects the worker is told to delete', () => {
       )
       return rows[0].id
     })
-    const path = `${GONE}/${theirs}/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c.jpg`
+    const path = `map/${GONE}/${theirs}/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c.jpg`
     await asRole(db, 'authenticated', GONE, async () => {
       await db.query('insert into mo.upload_grants (user_id, report_id, storage_path) values ($1, $2, $3)', [
         GONE,

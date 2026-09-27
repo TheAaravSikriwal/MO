@@ -38,7 +38,7 @@ beforeAll(async () => {
     return rows[0].id
   })
 
-  const key = `${OWNER}/${pin}/${OBJECT}.jpg`
+  const key = `map/${OWNER}/${pin}/${OBJECT}.jpg`
   await as(OWNER, async () => {
     await db.query('insert into mo.upload_grants (user_id, report_id, storage_path) values ($1, $2, $3)', [
       OWNER,
@@ -66,7 +66,7 @@ const photosSeenBy = (viewer: string | null) =>
 
 describe('a pin off the map, and its photos', () => {
   it('shows an approved photo to anybody while the pin is on the map', async () => {
-    expect(await photosSeenBy(null)).toEqual([{ storage_path: `${OWNER}/${pin}/${OBJECT}.jpg` }])
+    expect(await photosSeenBy(null)).toEqual([{ storage_path: `map/${OWNER}/${pin}/${OBJECT}.jpg` }])
   })
 
   it('hides it from everybody but the reporter and admins once the pin is off', async () => {
@@ -79,7 +79,7 @@ describe('a pin off the map, and its photos', () => {
   it('signs no new upload URLs while the pin is off the map', async () => {
     // The grant is what api/sign-upload writes before it signs. Refusing it
     // means no bytes are ever uploaded for a pin nobody else can see.
-    const key = `${OWNER}/${pin}/0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f.jpg`
+    const key = `map/${OWNER}/${pin}/0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f.jpg`
     const refused = await as(OWNER, async () => {
       try {
         await db.query('insert into mo.upload_grants (user_id, report_id, storage_path) values ($1, $2, $3)', [
@@ -98,7 +98,7 @@ describe('a pin off the map, and its photos', () => {
   it('takes no new photo either, even with a grant made before the pin came off', async () => {
     // A grant written as the table owner stands in for one minted while the
     // pin was still on the map.
-    const key = `${OWNER}/${pin}/0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d.jpg`
+    const key = `map/${OWNER}/${pin}/0d0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d.jpg`
     await db.query('insert into mo.upload_grants (user_id, report_id, storage_path) values ($1, $2, $3)', [
       OWNER,
       pin,

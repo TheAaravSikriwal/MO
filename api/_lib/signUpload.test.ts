@@ -75,10 +75,10 @@ describe('sign-upload: a valid request', () => {
     expect(response.status).toBe(200)
 
     const body = await bodyOf(response)
-    expect(body.key).toBe(`${USER}/${REPORT}/${PHOTO}.jpg`)
+    expect(body.key).toBe(`map/${USER}/${REPORT}/${PHOTO}.jpg`)
     const url = new URL(String(body.url))
     expect(url.host).toBe('acc123.r2.cloudflarestorage.com')
-    expect(url.pathname).toBe(`/mo-photos/${USER}/${REPORT}/${PHOTO}.jpg`)
+    expect(url.pathname).toBe(`/mo-photos/map/${USER}/${REPORT}/${PHOTO}.jpg`)
     expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
   })
 
@@ -165,7 +165,7 @@ describe('sign-upload: a valid request', () => {
         }),
       ),
     )
-    expect(String(body.key).startsWith(`${USER}/`)).toBe(true)
+    expect(String(body.key).startsWith(`map/${USER}/`)).toBe(true)
   })
 
   it('ignores any key the caller supplies', async () => {
@@ -180,7 +180,7 @@ describe('sign-upload: a valid request', () => {
         }),
       ),
     )
-    expect(body.key).toBe(`${USER}/${REPORT}/${PHOTO}.jpg`)
+    expect(body.key).toBe(`map/${USER}/${REPORT}/${PHOTO}.jpg`)
   })
 
   it('lowercases the report id, because the grant policy compares against lowercase', async () => {
@@ -198,7 +198,7 @@ describe('sign-upload: a valid request', () => {
         }),
       ),
     )
-    expect(body.key).toBe(`${USER}/${REPORT}/${PHOTO}.jpg`)
+    expect(body.key).toBe(`map/${USER}/${REPORT}/${PHOTO}.jpg`)
   })
 
   it('gives each photo its own key, so two uploads cannot overwrite each other', async () => {
@@ -624,6 +624,29 @@ describe('sign-upload: when it is not configured', () => {
     const response = await handle(signRequest())
     expect(response.status).toBe(503)
     expect((await bodyOf(response)).message).toBe('Photo upload is not set up on this site yet.')
+  })
+
+  it.each([
+    'https://pub-0123456789abcdef.r2.dev',
+    'https://PUB-0123456789ABCDEF.R2.DEV/photos',
+    'https://pub-0123456789abcdef.r2.dev.',
+    'https://r2.dev',
+  ])('refuses %s, Cloudflare’s own bucket address, which CSAM scanning does not cover', async (url) => {
+    // Scanning is switched on per zone, and r2.dev is not one of ours. It is
+    // also the address a bucket comes with, so it is the likeliest thing to be
+    // configured before a custom domain is attached.
+    const handle = createSignUploadHandler({ ...fullEnv, VITE_PHOTO_BASE_URL: url }, deps())
+    const response = await handle(signRequest())
+    expect(response.status).toBe(503)
+    expect((await bodyOf(response)).message).toBe('Photo upload is not set up on this site yet.')
+  })
+
+  it('accepts a custom domain whose name merely contains r2.dev', async () => {
+    const handle = createSignUploadHandler(
+      { ...fullEnv, VITE_PHOTO_BASE_URL: 'https://photos.myr2.dev.example' },
+      deps(),
+    )
+    expect((await handle(signRequest())).status).toBe(200)
   })
 
   it('accepts a photo host served under a path, which the app appends to', async () => {

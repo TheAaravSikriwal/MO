@@ -34,7 +34,7 @@ describe('isUuid', () => {
 describe('photoObjectKey', () => {
   it('nests the photo under its owner and its report', () => {
     expect(photoObjectKey({ userId: USER, reportId: REPORT, contentType: 'image/jpeg', photoId: PHOTO }))
-      .toBe(`${USER}/${REPORT}/${PHOTO}.jpg`)
+      .toBe(`map/${USER}/${REPORT}/${PHOTO}.jpg`)
   })
 
   it('takes the extension from the content type, not from any filename', () => {
@@ -67,7 +67,9 @@ describe('photoObjectKey', () => {
       contentType: 'image/png',
       photoId: PHOTO,
     })
-    expect(key.split('/')).toHaveLength(3)
+    // The `map/` prefix, the owner, the report, the photo.
+    expect(key.split('/')).toHaveLength(4)
+    expect(key.startsWith('map/')).toBe(true)
     expect(key).not.toContain('..')
   })
 })

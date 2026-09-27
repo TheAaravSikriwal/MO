@@ -158,7 +158,16 @@ function isServableBaseUrl(value: string): boolean {
     // them in the middle of the URL, so `https://img.example?x=1` becomes
     // `https://img.example?x=1/<key>` and every photo is a broken image the UI
     // treats as real. Checking the scheme alone let that through.
-    return url.protocol === 'https:' && url.search === '' && url.hash === ''
+    if (url.protocol !== 'https:' || url.search !== '' || url.hash !== '') return false
+    // Not Cloudflare's own `pub-<hash>.r2.dev` address. It serves the bucket
+    // perfectly well, and it is the default a bucket comes with, so it is the
+    // likeliest value to be configured. But it is Cloudflare's hostname, not
+    // one on a zone of ours, and the CSAM scanning tool is switched on per
+    // zone, so photos served there are never scanned. Until a custom domain is
+    // attached to the bucket, uploads stay off. The trailing dot is the same
+    // host written absolutely.
+    const host = url.hostname.replace(/\.$/, '')
+    return host !== 'r2.dev' && !host.endsWith('.r2.dev')
   } catch {
     return false
   }

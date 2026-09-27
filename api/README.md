@@ -34,7 +34,8 @@ Five independent limits, because any one of them can be wrong:
    limit on *volume*, and it is the one that took two attempts to get right.
    See below.
 3. **The key is decided here**, from the verified user id — never from the
-   request. It is `<user-id>/<report-id>/<photo-id>.<ext>`, every part a UUID
+   request. It is `map/<user-id>/<report-id>/<photo-id>.<ext>` -- `map/` because
+   the bucket is shared with the marketplace -- every part after it a UUID
    and the extension taken from the declared content type. Nothing
    attacker-controlled reaches the key, a signed URL can only ever write inside
    the caller's own prefix, and the grant row is what makes that key the only
@@ -292,7 +293,9 @@ them out again afterwards.
 endpoint signs against, and it is the one that matters legally: Cloudflare's
 free CSAM scanning applies to a zone, which is the whole reason photos live in
 R2 rather than in Supabase storage. Serving photos from anywhere else leaves
-that obligation unmet.
+that obligation unmet. That includes the bucket's own `pub-<hash>.r2.dev`
+address: it works, but it is Cloudflare's hostname rather than one on your
+zone, so scanning never applies. The endpoint refuses any `r2.dev` host.
 
 The endpoint therefore **refuses to sign anything until it is set**, even
 though it never uses the value itself. Accepting bytes with nowhere to serve

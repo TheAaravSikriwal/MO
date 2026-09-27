@@ -1,7 +1,4 @@
-import {
-  extensionForPhotoType,
-  type AllowedPhotoType,
-} from '../../src/lib/upload/photoLimits'
+import { type AllowedPhotoType } from '../../src/lib/upload/photoLimits'
 import { presignUrl } from '../../shared/sigv4'
 
 /**
@@ -34,38 +31,10 @@ export interface R2Config {
   bucket: string
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-export function isUuid(value: string): boolean {
-  return UUID.test(value)
-}
-
-/**
- * Where one photo lives in the bucket.
- *
- * Every part is either a UUID or a fixed extension, so nothing
- * attacker-controlled reaches the key: no traversal, no overlong names, no
- * second extension smuggled in through a filename.
- *
- * The owner's id comes first so that a signed URL can only ever write inside
- * the prefix belonging to the person who asked for it, and so an abusive
- * upload is attributable without a database lookup.
- */
-export function photoObjectKey(input: {
-  userId: string
-  reportId: string
-  contentType: AllowedPhotoType
-  photoId: string
-}): string {
-  for (const [name, value] of Object.entries({
-    userId: input.userId,
-    reportId: input.reportId,
-    photoId: input.photoId,
-  })) {
-    if (!isUuid(value)) throw new Error(`${name} must be a UUID`)
-  }
-  return `${input.userId}/${input.reportId}/${input.photoId}.${extensionForPhotoType(input.contentType)}`
-}
+// The object key is built by src/lib/upload/objectKey.ts, which the wearechintu
+// port also uses: one definition of the shape, including the `map/` prefix the
+// shared bucket needs. Re-exported so the endpoint's imports stay as they were.
+export { isUuid, photoObjectKey, PHOTO_KEY_PREFIX } from '../../src/lib/upload/objectKey'
 
 export interface PhotoPutRequest {
   key: string

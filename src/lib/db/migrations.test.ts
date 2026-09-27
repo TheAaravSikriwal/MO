@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
-import { MAX_PHOTOS } from '../upload/photoLimits'
+import { MAX_PHOTOS, ALLOWED_PHOTO_TYPES } from '../upload/photoLimits'
+import { photoObjectKey, PHOTO_KEY_PREFIX } from '../upload/objectKey'
 import { join } from 'node:path'
 
 /**
@@ -1227,6 +1228,7 @@ describe('migrations — a signed upload URL is recorded and countable', () => {
     }
 
     const KEY =
+      'map/' +
       '11111111-1111-4111-8111-111111111111/' +
       '22222222-2222-4222-8222-222222222222/' +
       '33333333-3333-4333-8333-333333333333.jpg'
@@ -1255,12 +1257,35 @@ describe('migrations — a signed upload URL is recorded and countable', () => {
       }
     })
 
+    it('accepts every key the app itself builds, with the prefix the upload policy expects', () => {
+      // The hand-written KEY above could agree with the SQL while
+      // photoObjectKey had drifted from both; then every grant insert is
+      // refused by a constraint the endpoint cannot see. Hex letters in the
+      // ids, because a key of digits alone passes a pattern that forgot a-f.
+      const ids = {
+        userId: 'abcdef01-2345-4678-9abc-def012345678',
+        reportId: 'fedcba98-7654-4321-8fed-cba987654321',
+        photoId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+      }
+      for (const contentType of ALLOWED_PHOTO_TYPES) {
+        const key = photoObjectKey({ ...ids, contentType })
+        expect(pattern().test(key)).toBe(true)
+        expect(key.startsWith(`${PHOTO_KEY_PREFIX}${ids.userId}/${ids.reportId}/`)).toBe(true)
+      }
+      expect(flat).toContain(`like ('${PHOTO_KEY_PREFIX}' || auth.uid()::text || '/' || report_id::text || '/%')`)
+    })
+
     it('rejects a query or a fragment, which a URL parser would drop', () => {
       // `<key>?x=1` is a different string, so unique, but fetches the same
       // object -- enough to relink an image an admin had rejected.
       for (const suffix of ['?x=1', '#a', '?', ' ']) {
         expect(pattern().test(KEY + suffix)).toBe(false)
       }
+    })
+
+    it('refuses a key outside the map’s own namespace in the shared bucket', () => {
+      expect(pattern().test(KEY.replace('map/', ''))).toBe(false)
+      expect(pattern().test(KEY.replace('map/', 'covers/'))).toBe(false)
     })
 
     it('rejects dot segments, which a URL parser would fold away', () => {
@@ -1332,7 +1357,7 @@ describe('migrations — a signed upload URL is recorded and countable', () => {
 
   it('pins a claimed object to the claimant and their report', () => {
     expect(grantPolicy()).toContain(
-      "storage_path like (auth.uid()::text || '/' || report_id::text || '/%')",
+      "storage_path like ('map/' || auth.uid()::text || '/' || report_id::text || '/%')",
     )
   })
 
