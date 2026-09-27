@@ -40,7 +40,11 @@ returns table (
   content_text text,
   storage_path text,
   report_id    uuid,
-  flag_count   bigint
+  flag_count   bigint,
+  -- Whether the report this item sits on is on the map right now, or null
+  -- when it sits on no report. Carried with the item so the queue never has
+  -- to guess from what it happens to have loaded or done itself.
+  pin_on_map   boolean
 )
 language plpgsql
 stable
@@ -70,7 +74,17 @@ begin
       when 'photo' then (select p.storage_path from mo.report_photos p where p.id = j.subject_id)
       else null
     end,
-    case j.subject_type
+    target.rid,
+    (select count(*) from mo.flags f
+      where f.subject_type = j.subject_type and f.subject_id = j.subject_id
+        and f.resolved_at is null),
+    -- Null, not false, when the report is gone: there is no pin to be off.
+    case when pin.id is null then null
+         else pin.moderation_status = 'approved' end
+  from mo.moderation_jobs j
+  -- The report the item sits on, worked out once for both columns above.
+  cross join lateral (
+    select case j.subject_type
       when 'photo'   then (select p.report_id from mo.report_photos p where p.id = j.subject_id)
       when 'comment' then (select c.report_id from mo.comments      c where c.id = j.subject_id)
       when 'note'    then j.subject_id
@@ -78,11 +92,9 @@ begin
       -- subject_id here would hand the admin screen a user id labelled as a
       -- report id.
       else null
-    end,
-    (select count(*) from mo.flags f
-      where f.subject_type = j.subject_type and f.subject_id = j.subject_id
-        and f.resolved_at is null)
-  from mo.moderation_jobs j
+    end as rid
+  ) target
+  left join mo.reports pin on pin.id = target.rid
   -- Three ways an item ends up needing a person:
   --   * the machine tiers finished but could not decide (verdict is null)
   --   * the worker gave up after repeated failures
@@ -198,6 +210,118 @@ $$;
 
 revoke all on function mo.admin_decide_moderation(uuid, moderation_status, text) from public, anon;
 grant execute on function mo.admin_decide_moderation(uuid, moderation_status, text) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Taking a pin off the map, and putting it back
+-- ---------------------------------------------------------------------------
+
+-- The only writer of reports.moderation_status. A function rather than a
+-- column grant, for the reason 0003 gives for removing those: a direct PATCH
+-- would change what the map shows with no record of who did it or why. This
+-- one refuses anybody who is not an admin -- raising, not quietly updating
+-- nothing, so an admin is never told a pin is gone when it is not -- and
+-- writes who, when and why alongside the status.
+--
+-- Rejecting a photo or a note withholds that content and leaves the pin. This
+-- is for the pin itself: spam, a joke, a pin in the sea. Its photos and
+-- comments are hidden with it (the public views check the pin) but not
+-- changed, so putting it back restores it as it was.
+--
+-- Asking for the state a pin is already in changes nothing and records
+-- nothing, so a double click, or two admins at once, cannot overwrite who took
+-- it off or why. Every real change is appended to mo.pin_history, which keeps
+-- the record the reports columns lose when a pin is put back.
+create or replace function mo.admin_set_report_on_map(
+  target_report uuid,
+  on_map        boolean,
+  reason        text default null
+)
+-- Whether the pin actually moved. False means it was already where it was
+-- asked to be, so the screen can say so instead of claiming it just happened.
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = mo, public
+as $$
+begin
+  if not mo.is_admin() then
+    raise exception 'only an admin may take a pin off the map';
+  end if;
+  if on_map is null then
+    raise exception 'say whether the pin should be on the map';
+  end if;
+
+  update mo.reports
+     set moderation_status = case when on_map then 'approved' else 'rejected' end::moderation_status,
+         removed_by        = case when on_map then null else auth.uid() end,
+         removed_at        = case when on_map then null else now() end,
+         removal_reason    = case when on_map then null else left(admin_set_report_on_map.reason, 500) end
+   where id = target_report
+     and moderation_status <> case when on_map then 'approved' else 'rejected' end::moderation_status;
+
+  if not found then
+    -- Either it does not exist, or it is already where it was asked to be.
+    if not exists (select 1 from mo.reports where id = target_report) then
+      raise exception 'no such report';
+    end if;
+    return false;
+  end if;
+
+  insert into mo.pin_history (report_id, action, acted_by, reason)
+  values (
+    target_report,
+    case when on_map then 'on' else 'off' end,
+    auth.uid(),
+    left(admin_set_report_on_map.reason, 500)
+  );
+  return true;
+end;
+$$;
+
+revoke all on function mo.admin_set_report_on_map(uuid, boolean, text) from public, anon;
+grant execute on function mo.admin_set_report_on_map(uuid, boolean, text) to authenticated;
+
+-- No new comments or photos on a pin that is off the map, refused in words.
+--
+-- The insert policies already refuse both (report_on_map in 0003). But a
+-- policy refusal arrives as "new row violates row-level security policy",
+-- which the app cannot tell apart from the comment policy's other reason --
+-- no name yet -- and so asked people for a name they already had. BEFORE
+-- triggers run ahead of a policy's WITH CHECK, so this one's message is the one
+-- that comes back. The policies stay, so removing this trigger fails closed.
+-- Touches only report_id, which both tables have.
+create or replace function mo.refuse_post_on_off_map_pin()
+returns trigger
+language plpgsql
+security definer
+set search_path = mo, public
+as $$
+begin
+  if exists (
+    select 1 from mo.reports r
+    where r.id = new.report_id and r.moderation_status = 'rejected'
+  ) then
+    raise exception 'this report is off the map';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger refuse_comment_on_off_map_pin
+  before insert on mo.comments
+  for each row execute function mo.refuse_post_on_off_map_pin();
+
+create trigger refuse_photo_on_off_map_pin
+  before insert on mo.report_photos
+  for each row execute function mo.refuse_post_on_off_map_pin();
+
+-- Votes too. votes_insert_own already refuses them, through
+-- report_accepts_votes, but its refusal read as "You cannot confirm this one"
+-- to somebody whose panel did not yet know the pin had gone.
+create trigger refuse_vote_on_off_map_pin
+  before insert on mo.votes
+  for each row execute function mo.refuse_post_on_off_map_pin();
 
 -- ---------------------------------------------------------------------------
 -- How full is the queue

@@ -457,6 +457,7 @@ describe('AdminQueue — the header never lies about what is left', () => {
         reason: 'people reported this',
         tierResults: {},
         flagCount: 0,
+        pinOnMap: null,
         createdAt: new Date().toISOString(),
       },
     ])
@@ -533,5 +534,29 @@ describe('AdminQueue — a name changed while it was on screen', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not be found/i)
     expect(data.nameOf('admin-1')).toEqual({ name: 'Something Else', status: 'pending' })
+  })
+})
+
+describe('AdminQueue — taking the pin off the map', () => {
+  it('takes the pin an item sits on off the map, separately from judging the item', async () => {
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
+    data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    data.seedQueueItem({ jobId: 'j1', subjectType: 'note', subjectId: 'r1', reportId: 'r1', text: 'spam spam' })
+    const onDecided = vi.fn()
+    render(<AdminQueue data={data} isAdmin onClose={vi.fn()} onDecided={onDecided} />)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /take the pin off the map/i }))
+    expect(await screen.findByText(/pin taken off the map/i)).toBeInTheDocument()
+    expect((await data.getReport('r1'))!.moderationStatus).toBe('rejected')
+    expect(onDecided).toHaveBeenCalled()
+    // The item itself is still waiting for Allow or Remove.
+    expect(screen.getByRole('button', { name: /allow/i })).toBeInTheDocument()
+  })
+
+  it('offers nothing of the kind for a name, which sits on no report', async () => {
+    setup([{ jobId: 'j1', subjectType: 'name', subjectId: 'u9', text: 'Sam', reportId: null }])
+    await screen.findByText('Sam')
+    expect(screen.queryByRole('button', { name: /take the pin off the map/i })).not.toBeInTheDocument()
   })
 })

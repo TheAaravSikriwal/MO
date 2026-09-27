@@ -269,20 +269,21 @@ create table mo.reports (
   -- The PIN's own visibility. A location with litter on it is not itself
   -- objectionable, so a report is visible the moment it is made.
   --
-  -- NOTHING WRITES THIS. The comment used to say "only an admin ever rejects
-  -- the row", and no code path does: `record_moderation_verdict` and
-  -- `admin_decide_moderation` write photo and comment statuses and the report's
-  -- `note_status`, never this column, and the moderation subject types are
-  -- photo, comment and note — there is no pin subject. So in practice this is
-  -- always 'approved', `reports_select_visible` reduces to `using (true)`, and
-  -- the author-sees-own-rejected branch of `mo.public_reports` is unreachable.
+  -- Written by exactly one thing: mo.admin_set_report_on_map (0005), which an
+  -- admin reaches from a report or from the review queue. 'rejected' takes the
+  -- pin off the map for everybody but its reporter and admins, and out of the
+  -- weighting -- reports_rollup and count_reports_in_view count approved only
+  -- -- and stops it being confirmed or marked cleaned. Rejecting a photo or a
+  -- note is separate, and leaves the pin where it is.
   --
-  -- It matters because a spam or malicious pin keeps contributing weight to the
-  -- map forever: `reports_rollup` filters on `moderation_status = 'approved'`,
-  -- and that is the only value this can hold. Rejecting the photo and the note
-  -- withholds the content and leaves the coloured cell. Removing the pin is a
-  -- SQL-editor job today. Recorded in HANDOFF.md under what is not done.
+  -- Until 2026-09-26 nothing wrote this at all, so a spam pin kept its colour
+  -- on the map forever and removing it was a SQL-editor job.
   moderation_status moderation_status not null default 'approved',
+  -- Who took the pin off the map, when, and why. Set with it, cleared when it
+  -- is put back; the check below keeps the two in step.
+  removed_by        uuid references public.profiles (id) on delete set null,
+  removed_at        timestamptz,
+  removal_reason    text check (char_length(removal_reason) <= 500),
   -- The NOTE's visibility, judged separately. Free text somebody attached to a
   -- place is exactly what needs review, and withholding it must not take the
   -- pin down with it.
@@ -301,6 +302,14 @@ create table mo.reports (
   constraint cleaned_fields_agree check (
     (status = 'cleaned' and cleaned_at is not null) or
     (status = 'open'    and cleaned_at is null and cleaned_by is null)
+  ),
+
+  -- Off the map exactly when a removal is recorded. 'pending' is not a state a
+  -- pin is ever put in, so it is refused rather than half-meaning something.
+  constraint pin_removal_recorded check (
+    (moderation_status = 'approved' and removed_at is null and removed_by is null
+       and removal_reason is null)
+    or (moderation_status = 'rejected' and removed_at is not null)
   )
 );
 
@@ -317,6 +326,30 @@ create index reports_geom_idx        on mo.reports using gist (geom);
 create index reports_reporter_idx    on mo.reports (reporter_id, created_at desc);
 create index reports_open_recent_idx on mo.reports (created_at desc)
   where status = 'open' and moderation_status = 'approved';
+
+-- ---------------------------------------------------------------------------
+-- pin_history  --  every time a pin was taken off the map or put back
+-- ---------------------------------------------------------------------------
+--
+-- reports.removed_* describe the pin's CURRENT removal and are cleared when it
+-- is put back, so on their own they keep only the latest removal and none at
+-- all once it is restored. This keeps every change. Written only by
+-- admin_set_report_on_map (0005), and only when the pin's state actually
+-- changes, so a double click records one removal, not two.
+create table mo.pin_history (
+  id         uuid primary key default gen_random_uuid(),
+  -- Deliberately NOT a foreign key. With `on delete cascade` the person whose
+  -- pin was taken off could delete the report and every record of the removal
+  -- with it -- reporters may delete their own reports. The id is kept as a
+  -- plain value, so the history outlives the pin it is about.
+  report_id  uuid not null,
+  action     text not null check (action in ('off', 'on')),
+  acted_by   uuid references public.profiles (id) on delete set null,
+  acted_at   timestamptz not null default now(),
+  reason     text check (char_length(reason) <= 500)
+);
+
+create index pin_history_report_idx on mo.pin_history (report_id, acted_at desc);
 
 -- ---------------------------------------------------------------------------
 -- report_photos

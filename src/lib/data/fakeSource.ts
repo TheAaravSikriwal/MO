@@ -23,6 +23,7 @@ import type {
   RollupFilters,
   ViewBounds,
 } from './types'
+import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE } from './types'
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -163,6 +164,7 @@ export class FakeDataSource implements DataSource {
       reason: 'The automatic checks could not decide this one.',
       tierResults: {},
       flagCount: 0,
+      pinOnMap: null,
       createdAt: new Date(this.now()).toISOString(),
     })
   }
@@ -213,8 +215,9 @@ export class FakeDataSource implements DataSource {
     // containsPoint, not a plain between: a viewport straddling the dateline
     // arrives as minLng > maxLng, and a range test returns nothing there. The
     // fake has to match the real source or it hides that bug from every test.
+    // Live pins only, as the real source asks for them.
     const inView = [...this.reports.values()]
-      .filter((r) => containsPoint(bounds, r.lat, r.lng))
+      .filter((r) => containsPoint(bounds, r.lat, r.lng) && r.moderationStatus !== 'rejected')
       .map((r) => this.present(r))
     if (!filters) return inView
 
@@ -283,12 +286,14 @@ export class FakeDataSource implements DataSource {
       const own = authorId === this.user?.id
       report.reporterName = name && (name.status === 'approved' || own) ? name.name : null
     }
+    // Admins only, as public_reports gives it.
+    report.removalReason = this.user?.isAdmin ? (this.removalReasons.get(report.id) ?? null) : null
     return report
   }
 
   async getReport(id: string) {
     const report = this.reports.get(id)
-    return report ? this.present(report) : null
+    return report && this.visibleTo(report) ? this.present(report) : null
   }
 
   async createReport(report: NewReport) {
@@ -319,6 +324,7 @@ export class FakeDataSource implements DataSource {
       viewerIsReporter: true,
       // The reporter sees their own name at once, as public_reports shows it.
       reporterName: reporter.name,
+      removalReason: null,
     })
     this.reportAuthors.set(id, this.user.id)
     return { id }
@@ -329,6 +335,8 @@ export class FakeDataSource implements DataSource {
   async addVote(reportId: string) {
     const report = this.requireReport(reportId)
     if (!this.user) throw new Error('you must be signed in to confirm a report')
+    // As refuse_vote_on_off_map_pin, which answers before the policy does.
+    if (report.moderationStatus === 'rejected') throw new Error('this report is off the map')
     if (report.viewerIsReporter) throw new Error('you cannot confirm your own report')
     if (report.viewerHasVoted) throw new Error('you have already confirmed this report')
     report.voteCount += 1
@@ -389,7 +397,9 @@ export class FakeDataSource implements DataSource {
   async addComment(reportId: string, body: string) {
     if (!this.user) throw new Error('you must be signed in to comment')
     if (body.trim() === '') throw new Error('a comment cannot be empty')
-    this.requireReport(reportId)
+    const target = this.requireReport(reportId)
+    // As refuse_post_on_off_map_pin, which answers before the policy does.
+    if (target.moderationStatus === 'rejected') throw new Error('this report is off the map')
     const author = this.requireName('comments')
 
     const existing = this.comments.get(reportId) ?? []
@@ -414,6 +424,7 @@ export class FakeDataSource implements DataSource {
   async markCleaned(reportId: string) {
     const report = this.requireReport(reportId)
     if (!this.user) throw new Error('you must be signed in to mark a report cleaned')
+    if (report.moderationStatus === 'rejected') throw new Error('this report is off the map')
     if (report.status === 'cleaned') throw new Error('this report is already marked cleaned')
     report.status = 'cleaned'
   }
@@ -595,10 +606,18 @@ export class FakeDataSource implements DataSource {
 
   async listModerationQueue(): Promise<QueueItem[]> {
     if (!this.user?.isAdmin) throw new Error('only an admin may read the moderation queue')
-    // Flagged items first, then oldest, matching admin_moderation_queue.
+    // Flagged items first, then oldest, matching admin_moderation_queue. The
+    // pin's state is read now, as the real queue reads it.
     return this.queue
       .filter((item) => !this.decided.has(item.jobId))
-      .slice()
+      .map((item) => ({
+        ...item,
+        // Null when the report is gone, as the real queue gives it.
+        pinOnMap:
+          item.reportId && this.reports.has(item.reportId)
+            ? this.reports.get(item.reportId)!.moderationStatus === 'approved'
+            : null,
+      }))
       .sort((a, b) =>
         b.flagCount - a.flagCount || a.createdAt.localeCompare(b.createdAt),
       )
@@ -607,6 +626,80 @@ export class FakeDataSource implements DataSource {
   async getModerationQueueSize(): Promise<number> {
     if (!this.user?.isAdmin) throw new Error('only an admin may read the moderation queue')
     return this.queue.filter((item) => !this.decided.has(item.jobId)).length
+  }
+
+  /** Every real change of a pin's place on the map, as mo.pin_history keeps it. */
+  readonly pinHistory: Array<{
+    reportId: string
+    action: 'off' | 'on'
+    actedBy: string
+    reason: string | null
+  }> = []
+
+  private removalReasons = new Map<string, string | null>()
+  private removedAt = new Map<string, number>()
+
+  /**
+   * As admin_set_report_on_map in 0005: admins only, a no-op when the pin is
+   * already where it was asked to be, and every real change recorded.
+   */
+  async setReportOnMap(reportId: string, onMap: boolean, reason?: string) {
+    if (!this.user?.isAdmin) throw new Error('only an admin may take a pin off the map')
+    const report = this.reports.get(reportId)
+    if (!report) throw new Error('no such report')
+    const wanted = onMap ? 'approved' : 'rejected'
+    if (report.moderationStatus === wanted) return false
+    report.moderationStatus = wanted
+    this.removalReasons.set(reportId, onMap ? null : (reason ?? null))
+    if (onMap) this.removedAt.delete(reportId)
+    else this.removedAt.set(reportId, this.now())
+    this.pinHistory.push({
+      reportId,
+      action: onMap ? 'on' : 'off',
+      actedBy: this.user.id,
+      reason: reason ?? null,
+    })
+    return true
+  }
+
+  async listOffMapInView(bounds: ViewBounds, filters: RollupFilters) {
+    if (!this.user) return { reports: [], more: false }
+    const offMap = [...this.reports.values()]
+      .filter(
+        (r) =>
+          r.moderationStatus === 'rejected' && containsPoint(bounds, r.lat, r.lng) && this.visibleTo(r),
+      )
+      .map((r) => this.present(r))
+    // The same filters as the live pins, as the real source applies them.
+    const matching = applyFilters(offMap, {
+      ...DEFAULT_FILTERS,
+      status: filters.status,
+      minConfirmations: filters.minConfirmations,
+      since: filters.since,
+      origin: filters.origin,
+      withinMetres: filters.withinMetres,
+    })
+    return { reports: matching.slice(0, OFF_MAP_IN_VIEW), more: matching.length > OFF_MAP_IN_VIEW }
+  }
+
+  async listReportsOffMap() {
+    const all = [...this.reports.values()]
+      .filter((report) => report.moderationStatus === 'rejected' && this.visibleTo(report))
+      .map((report) => this.present(report))
+      // Most recently taken off first, as the real source orders it.
+      .sort((a, b) => (this.removedAt.get(b.id) ?? 0) - (this.removedAt.get(a.id) ?? 0))
+    return { reports: all.slice(0, OFF_MAP_PAGE), more: all.length > OFF_MAP_PAGE }
+  }
+
+  /**
+   * Whether this viewer can see a report at all, as public_reports decides it:
+   * a pin off the map is visible only to its reporter and to admins.
+   */
+  private visibleTo(report: ReportView): boolean {
+    if (report.moderationStatus !== 'rejected') return true
+    if (this.user?.isAdmin) return true
+    const authorId = this.reportAuthors.get(report.id)
+    return authorId !== undefined ? authorId === this.user?.id : report.viewerIsReporter
   }
 
   async decideModerationItem(jobId: string, verdict: 'approved' | 'rejected') {
@@ -658,6 +751,7 @@ export class FakeDataSource implements DataSource {
       reason: 'the judge was not sure',
       tierResults: {},
       flagCount: 0,
+      pinOnMap: null,
       createdAt: new Date().toISOString(),
       ...item,
     }
@@ -677,6 +771,7 @@ export class FakeDataSource implements DataSource {
   seed(report: Partial<ReportView> & { id: string; lat: number; lng: number }): ReportView {
     const full: ReportView = {
       reporterName: null,
+      removalReason: null,
       note: 'Bags of rubbish by the bus stop',
       noteStatus: 'approved',
       moderationStatus: 'approved',

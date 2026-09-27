@@ -122,7 +122,12 @@ select
         d.moderation_status = 'approved'
         or d.user_id = auth.uid()
       )
-  ) as reporter_name
+  ) as reporter_name,
+  -- Why a pin is off the map, for admins only: it is what they need to decide
+  -- whether to put it back, and it can name the reason bluntly.
+  case when mo.is_admin() then r.removal_reason else null end as removal_reason,
+  -- And when, so the review queue can list the most recently taken off first.
+  case when mo.is_admin() then r.removed_at else null end as removed_at
 from mo.reports r
 where r.moderation_status <> 'rejected'
    or r.reporter_id = auth.uid()
@@ -153,12 +158,22 @@ select
   p.moderation_status,
   p.created_at
 from mo.report_photos p
-where p.moderation_status <> 'rejected'
-   or mo.is_admin()
-   or exists (
-     select 1 from mo.reports r
-     where r.id = p.report_id and r.reporter_id = auth.uid()
-   );
+where (
+     p.moderation_status <> 'rejected'
+     or mo.is_admin()
+     or exists (
+       select 1 from mo.reports r
+       where r.id = p.report_id and r.reporter_id = auth.uid()
+     )
+   )
+  -- And only while the pin itself is visible to this viewer. A pin taken off
+  -- the map took nothing with it before: its photos stayed readable by anybody
+  -- holding the report id, and report ids were public until then.
+  and exists (
+    select 1 from mo.reports r
+    where r.id = p.report_id
+      and (r.moderation_status <> 'rejected' or r.reporter_id = auth.uid() or mo.is_admin())
+  );
 
 -- There is no mo.profile_names any more.
 --
@@ -202,9 +217,17 @@ select
   c.moderation_status,
   c.created_at
 from mo.comments c
-where c.moderation_status = 'approved'
-   or c.author_id = auth.uid()
-   or mo.is_admin();
+where (
+     c.moderation_status = 'approved'
+     or c.author_id = auth.uid()
+     or mo.is_admin()
+   )
+  -- Hidden with the pin, for the same reason as its photos.
+  and exists (
+    select 1 from mo.reports r
+    where r.id = c.report_id
+      and (r.moderation_status <> 'rejected' or r.reporter_id = auth.uid() or mo.is_admin())
+  );
 
 -- ---------------------------------------------------------------------------
 -- Enable RLS everywhere
@@ -213,6 +236,7 @@ where c.moderation_status = 'approved'
 alter table mo.admins          enable row level security;
 alter table mo.display_names   enable row level security;
 alter table mo.post_log        enable row level security;
+alter table mo.pin_history     enable row level security;
 alter table mo.reports         enable row level security;
 alter table mo.report_photos   enable row level security;
 alter table mo.votes           enable row level security;
@@ -328,6 +352,9 @@ create policy report_photos_insert_own_report
   with check (
     moderation_status = 'pending'
     and mo.owns_report(report_id)
+    -- Not on a pin that is off the map: each photo is a new moderation job,
+    -- about a pin nobody else can see.
+    and mo.report_on_map(report_id)
   );
 
 
@@ -387,6 +414,9 @@ create policy comments_insert_own
   with check (
     author_id = auth.uid()
     and mo.has_display_name()
+    -- Not on a pin that is off the map. Through the definer helper, since this
+    -- policy runs as the caller, who cannot read mo.reports.
+    and mo.report_on_map(report_id)
     and moderation_status = 'pending'
   );
 
@@ -498,6 +528,10 @@ revoke all on mo.display_names   from anon, authenticated;
 -- No policy either: written only by the rate-limit triggers, which run as
 -- owner. A person who could delete their own rows here could reset the limit.
 revoke all on mo.post_log        from anon, authenticated;
+-- Admins' own record of their decisions. No browser reads it today; if an
+-- admin screen ever does, it should be through a definer function that checks
+-- is_admin(), like the review queue.
+revoke all on mo.pin_history     from anon, authenticated;
 revoke all on mo.moderation_jobs from anon, authenticated;
 
 

@@ -334,6 +334,10 @@ create policy upload_grants_insert_own
   with check (
     user_id = auth.uid()
     and mo.owns_report(report_id)
+    -- Not for a pin that is off the map. The photo row would be refused, so a
+    -- grant here only signed an upload whose bytes nothing would ever point
+    -- at, and spent one of the hour's thirty.
+    and mo.report_on_map(report_id)
     and storage_path like (auth.uid()::text || '/' || report_id::text || '/%')
   );
 

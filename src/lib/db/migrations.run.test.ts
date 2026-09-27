@@ -579,3 +579,238 @@ describe('the flag limit cannot be reset by deleting what you flagged', () => {
     expect(await failure(() => flag(neds[0].id))).toMatch(/too many reports in the last hour/)
   })
 })
+
+describe('an admin can take a pin off the map, and put it back', () => {
+  const OWEN = '12121212-1212-4212-8212-121212121212'
+  const PIA = '13131313-1313-4313-8313-131313131313'
+  let pin: string
+
+  beforeAll(async () => {
+    await addProfile(db, OWEN, 'owen.o')
+    await addProfile(db, PIA, 'pia.p')
+    await setName(OWEN, 'Owen')
+    await setName(PIA, 'Pia')
+    // Somewhere nothing else is, so the rollup below counts only this pin.
+    pin = await as(OWEN, async () => {
+      const { rows } = await db.query<{ id: string }>(
+        `insert into mo.reports
+           (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7, cell_r9, cell_r12, note)
+         values ($1, -33.9, 18.4, $2, $2, $2, $2, $2, $2, null)
+         returning id`,
+        [OWEN, '8abc00000000fff'],
+      )
+      return rows[0].id
+    })
+  })
+
+  const setOnMap = (userId: string, onMap: boolean) =>
+    as(userId, () => db.query("select mo.admin_set_report_on_map($1, $2, 'spam')", [pin, onMap]))
+
+  const seenBy = (viewer: string | null) =>
+    as(viewer, async () => {
+      const { rows } = await db.query<{ moderation_status: string }>(
+        'select moderation_status from mo.public_reports where id = $1',
+        [pin],
+      )
+      return rows[0] ?? null
+    })
+
+  const weightThere = () =>
+    as(null, async () => {
+      const { rows } = await db.query<{ weight: string }>(
+        'select weight from mo.reports_rollup(-34, 18, -33, 19, 12)',
+      )
+      return rows.reduce((sum, row) => sum + Number(row.weight), 0)
+    })
+
+  it('is refused to anybody who is not an admin', async () => {
+    expect(await failure(() => setOnMap(PIA, false))).toMatch(/only an admin/)
+    expect(await failure(() => setOnMap(OWEN, false))).toMatch(/only an admin/)
+    expect(await failure(() => as(null, () => db.query('select mo.admin_set_report_on_map($1, false)', [pin])))).toMatch(
+      /permission denied/,
+    )
+  })
+
+  it('cannot be done by writing the column directly, even by an admin', async () => {
+    expect(
+      await failure(() =>
+        as(ADMIN, () => db.query("update mo.reports set moderation_status = 'rejected' where id = $1", [pin])),
+      ),
+    ).toMatch(/permission denied/)
+  })
+
+  it('takes the pin off the map for everybody but its reporter, and out of the colours', async () => {
+    expect(await weightThere()).toBe(1)
+    await setOnMap(ADMIN, false)
+
+    expect(await seenBy(null)).toBeNull()
+    expect(await seenBy(PIA)).toBeNull()
+    expect(await seenBy(OWEN)).toEqual({ moderation_status: 'rejected' })
+    expect(await weightThere()).toBe(0)
+
+    const { rows } = await db.query<{ removed_by: string; removal_reason: string }>(
+      'select removed_by, removal_reason from mo.reports where id = $1',
+      [pin],
+    )
+    expect(rows[0]).toEqual({ removed_by: ADMIN, removal_reason: 'spam' })
+  })
+
+  it('stops a removed pin being confirmed or marked cleaned', async () => {
+    expect(
+      await failure(() =>
+        as(PIA, () => db.query('insert into mo.votes (report_id, user_id) values ($1, $2)', [pin, PIA])),
+      ),
+    ).toMatch(/this report is off the map/)
+    // Said as it is: not "already cleaned", which the old combined message
+    // turned into for a pin that had only been taken off.
+    expect(await failure(() => as(PIA, () => db.query('select mo.mark_report_cleaned($1)', [pin])))).toMatch(
+      /this report is off the map/,
+    )
+  })
+
+  it('puts it back as it was, and forgets the removal', async () => {
+    await setOnMap(ADMIN, true)
+    expect(await seenBy(null)).toEqual({ moderation_status: 'approved' })
+    expect(await weightThere()).toBe(1)
+    const { rows } = await db.query<Record<string, unknown>>(
+      'select removed_by, removed_at, removal_reason from mo.reports where id = $1',
+      [pin],
+    )
+    expect(rows[0]).toEqual({ removed_by: null, removed_at: null, removal_reason: null })
+  })
+
+  it('refuses a pin marked off the map with no record of the removal', async () => {
+    expect(
+      await failure(() => db.query("update mo.reports set moderation_status = 'rejected' where id = $1", [pin])),
+    ).toMatch(/pin_removal_recorded/)
+  })
+})
+
+describe('a pin off the map takes its comments with it, and keeps a record', () => {
+  const QUIN = '14141414-1414-4414-8414-141414141414'
+  const RAY = '15151515-1515-4515-8515-151515151515'
+  const ADMIN2 = '16161616-1616-4616-8616-161616161616'
+  let pin: string
+
+  beforeAll(async () => {
+    await addProfile(db, QUIN, 'quin.q')
+    await addProfile(db, RAY, 'ray.r')
+    await addProfile(db, ADMIN2, 'second.admin')
+    await db.query('insert into mo.admins (user_id) values ($1)', [ADMIN2])
+    await setName(QUIN, 'Quin')
+    await setName(RAY, 'Ray')
+    pin = await addReport(QUIN)
+    await addComment(RAY, pin, 'still here')
+    const { rows } = await db.query<{ id: string }>(
+      "select j.id from mo.moderation_jobs j join mo.comments c on c.id = j.subject_id where j.subject_type = 'comment' and c.report_id = $1",
+      [pin],
+    )
+    await as(ADMIN, () => db.query("select mo.admin_decide_moderation($1, 'approved')", [rows[0].id]))
+  })
+
+  const commentsSeenBy = (viewer: string | null) =>
+    as(viewer, async () =>
+      (await db.query('select body from mo.public_comments where report_id = $1', [pin])).rows,
+    )
+
+  it('hides the pin’s comments from everybody but its reporter and admins', async () => {
+    expect(await commentsSeenBy(null)).toEqual([{ body: 'still here' }])
+    await as(ADMIN, () => db.query("select mo.admin_set_report_on_map($1, false, 'a joke pin')", [pin]))
+    expect(await commentsSeenBy(null)).toEqual([])
+    // Not even to the person who wrote the comment: the pin is hidden from him,
+    // so he could not open the report to see it anyway.
+    expect(await commentsSeenBy(RAY)).toEqual([])
+    expect(await commentsSeenBy(QUIN)).toEqual([{ body: 'still here' }])
+    expect(await commentsSeenBy(ADMIN)).toEqual([{ body: 'still here' }])
+  })
+
+  it('takes no new comments while it is off the map, and says so', async () => {
+    // In words. The policy's own refusal could not be told apart from "no name
+    // yet", and the app asked for a name the person already had.
+    expect(await failure(() => addComment(RAY, pin, 'another'))).toMatch(/this report is off the map/)
+  })
+
+  it('refuses the same comment by policy alone, if the trigger is ever lost', async () => {
+    await db.exec('alter table mo.comments disable trigger refuse_comment_on_off_map_pin')
+    try {
+      expect(await failure(() => addComment(RAY, pin, 'another'))).toMatch(
+        /row-level security policy for table "comments"/,
+      )
+    } finally {
+      await db.exec('alter table mo.comments enable trigger refuse_comment_on_off_map_pin')
+    }
+  })
+
+  it('shows the reason to admins only', async () => {
+    const reasonFor = (viewer: string | null) =>
+      as(viewer, async () =>
+        (await db.query<{ removal_reason: string | null }>('select removal_reason from mo.public_reports where id = $1', [pin]))
+          .rows[0]?.removal_reason,
+      )
+    expect(await reasonFor(ADMIN)).toBe('a joke pin')
+    expect(await reasonFor(QUIN)).toBeNull()
+  })
+
+  it('does not let a second removal overwrite the first', async () => {
+    await as(ADMIN2, () => db.query("select mo.admin_set_report_on_map($1, false, 'something else')", [pin]))
+    const { rows } = await db.query<{ removed_by: string; removal_reason: string }>(
+      'select removed_by, removal_reason from mo.reports where id = $1',
+      [pin],
+    )
+    expect(rows[0]).toEqual({ removed_by: ADMIN, removal_reason: 'a joke pin' })
+  })
+
+  it('says whether the pin actually moved', async () => {
+    // Already off from the tests above.
+    const { rows } = await as(ADMIN, () =>
+      db.query<{ moved: boolean }>("select mo.admin_set_report_on_map($1, false) as moved", [pin]),
+    )
+    expect(rows[0].moved).toBe(false)
+  })
+
+  it('tells the review queue whether each item’s pin is on the map', async () => {
+    const pinState = async () => {
+      const { rows } = await as(ADMIN, () =>
+        db.query<{ report_id: string; pin_on_map: boolean | null }>(
+          'select report_id, pin_on_map from mo.admin_moderation_queue(200)',
+        ),
+      )
+      return rows.filter((row) => row.report_id === pin).map((row) => row.pin_on_map)
+    }
+    // Reopen a job on this pin so it is in the queue: a complaint about its
+    // approved comment does exactly that.
+    const { rows: comments } = await db.query<{ id: string }>('select id from mo.comments where report_id = $1', [pin])
+    await as(QUIN, () =>
+      db.query("insert into mo.flags (subject_type, subject_id, flagger_id, reason) values ('comment', $1, $2, 'x')", [
+        comments[0].id,
+        QUIN,
+      ]),
+    )
+    expect(await pinState()).toEqual([false])
+  })
+
+  it('keeps every real change in the history, including putting it back', async () => {
+    await as(ADMIN2, () => db.query('select mo.admin_set_report_on_map($1, true)', [pin]))
+    await as(ADMIN2, () => db.query('select mo.admin_set_report_on_map($1, true)', [pin])) // no-op
+    const { rows } = await db.query<{ action: string; acted_by: string; reason: string | null }>(
+      'select action, acted_by, reason from mo.pin_history where report_id = $1 order by acted_at, action desc',
+      [pin],
+    )
+    expect(rows).toEqual([
+      { action: 'off', acted_by: ADMIN, reason: 'a joke pin' },
+      { action: 'on', acted_by: ADMIN2, reason: null },
+    ])
+    expect(await commentsSeenBy(null)).toEqual([{ body: 'still here' }])
+  })
+
+  it('keeps the history after the reporter deletes the report', async () => {
+    await as(ADMIN, () => db.query("select mo.admin_set_report_on_map($1, false, 'again')", [pin]))
+    await as(QUIN, () => db.query('delete from mo.reports where id = $1', [pin]))
+    const { rows } = await db.query<{ n: number }>('select count(*)::int as n from mo.pin_history where report_id = $1', [pin])
+    expect(rows[0].n).toBe(3)
+  })
+
+  it('keeps the history out of reach of browsers', async () => {
+    expect(await failure(() => as(ADMIN, () => db.query('select * from mo.pin_history')))).toMatch(/permission denied/)
+  })
+})

@@ -4,6 +4,7 @@ import { cellsForPoint } from '../grid/cells'
 import { crossesAntimeridian, boundsAround, intersectBounds } from '../geo/bounds'
 import { distanceMetres } from '../geo/distance'
 import { uploadPhoto } from '../upload/uploadPhoto'
+import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE } from './types'
 
 /**
  * How many individual reports one viewport will return.
@@ -272,12 +273,48 @@ export class SupabaseDataSource implements DataSource {
         // From public_reports, which only fills it once the name is approved
         // (or for the reporter themselves). Never looked up from an id.
         reporterName: (row.reporter_name as string | null) ?? null,
+        // Only ever filled for an admin; the view returns null to everybody else.
+        removalReason: (row.removal_reason as string | null) ?? null,
       }
     })
   }
 
   async listReportsInView(bounds: ViewBounds, filters: RollupFilters): Promise<ReportView[]> {
     const user = await this.getCurrentUser()
+    const { rows } = await this.filteredRows(bounds, filters, 'on', REPORT_PAGE_LIMIT)
+    return this.toReports(rows, user?.id ?? null)
+  }
+
+  async listOffMapInView(
+    bounds: ViewBounds,
+    filters: RollupFilters,
+  ): Promise<{ reports: ReportView[]; more: boolean }> {
+    const user = await this.getCurrentUser()
+    // Signed out, the view returns none of these, so do not ask.
+    if (!user) return { reports: [], more: false }
+    // The same filters as the live pins. Viewport alone drew every off-map pin
+    // in the box for an admin who had asked for "Cleaned up" or a small radius.
+    // One more than it draws, so a cut-short list can say so.
+    const { rows, fetched } = await this.filteredRows(bounds, filters, 'off', OFF_MAP_IN_VIEW + 1)
+    return {
+      reports: await this.toReports(rows.slice(0, OFF_MAP_IN_VIEW), user.id),
+      // From what the database returned, before the radius trimmed it. Hitting
+      // the fetch limit means matching pins may lie beyond it, even if trimming
+      // the box's corners then left fewer than a page to draw.
+      more: fetched > OFF_MAP_IN_VIEW,
+    }
+  }
+
+  /**
+   * One query for both lists, so the live pins and the off-map ones can never
+   * be filtered differently.
+   */
+  private async filteredRows(
+    bounds: ViewBounds,
+    filters: RollupFilters,
+    map: 'on' | 'off',
+    limit: number,
+  ): Promise<{ rows: Array<Record<string, unknown>>; fetched: number }> {
     // Every filter is applied by the database. Applying them to a capped page
     // afterwards meant "Cleaned up" could legitimately return nothing while
     // cleaned reports sat right there -- the page just happened not to hold any.
@@ -290,11 +327,15 @@ export class SupabaseDataSource implements DataSource {
         ? intersectBounds(bounds, boundsAround(filters.origin, filters.withinMetres))
         : bounds
 
-    let query = this.client
-      .from('public_reports')
-      .select('*')
-      .gte('lat', searched.minLat)
-      .lte('lat', searched.maxLat)
+    let query = this.client.from('public_reports').select('*')
+    // Live pins, or off-map ones, never both. Off-map pins come back only to
+    // their reporter and to admins, and in the live list they took room in the
+    // capped page and disagreed with the counts.
+    query =
+      map === 'on'
+        ? query.neq('moderation_status', 'rejected')
+        : query.eq('moderation_status', 'rejected')
+    query = query.gte('lat', searched.minLat).lte('lat', searched.maxLat)
 
     // A viewport crossing the antimeridian arrives with minLng > maxLng, and a
     // plain between returns nothing at all there.
@@ -311,7 +352,7 @@ export class SupabaseDataSource implements DataSource {
     const { data, error } = await query
       .order('vote_count', { ascending: false })
       .order('created_at', { ascending: false })
-      .limit(REPORT_PAGE_LIMIT)
+      .limit(limit)
 
     if (error) throw new Error(error.message)
 
@@ -319,6 +360,7 @@ export class SupabaseDataSource implements DataSource {
     // st_dwithin on a plain select. It is safe here because it only ever
     // narrows what the viewport already bounded, and the viewport is always
     // smaller than the radius by the time anybody is looking at pins.
+    const fetched = (data ?? []).length
     const rows =
       filters.origin && filters.withinMetres
         ? (data ?? []).filter(
@@ -329,8 +371,7 @@ export class SupabaseDataSource implements DataSource {
               }) <= filters.withinMetres!,
           )
         : (data ?? [])
-
-    return this.toReports(rows, user?.id ?? null)
+    return { rows, fetched }
   }
 
   /**
@@ -590,6 +631,7 @@ export class SupabaseDataSource implements DataSource {
       reason: (row.reason as string | null) ?? 'no reason recorded',
       tierResults: (row.tier_results as Record<string, unknown>) ?? {},
       flagCount: Number(row.flag_count ?? 0),
+      pinOnMap: typeof row.pin_on_map === 'boolean' ? row.pin_on_map : null,
       createdAt: String(row.created_at),
     }))
   }
@@ -598,6 +640,38 @@ export class SupabaseDataSource implements DataSource {
     const { data, error } = await this.client.rpc('admin_queue_size')
     if (error) throw new Error(error.message)
     return Number(data ?? 0)
+  }
+
+  async setReportOnMap(reportId: string, onMap: boolean, reason?: string): Promise<boolean> {
+    // The only writer of the pin's status. Refuses non-admins outright rather
+    // than quietly updating nothing.
+    const { data, error } = await this.client.rpc('admin_set_report_on_map', {
+      target_report: reportId,
+      on_map: onMap,
+      reason: reason ?? null,
+    })
+    if (error) throw new Error(error.message)
+    return data === true
+  }
+
+  async listReportsOffMap(): Promise<{ reports: ReportView[]; more: boolean }> {
+    // public_reports returns a pin that is off the map only to its reporter and
+    // to admins, so for an admin this is every one of them. Ordered by when it
+    // was taken off, not when it was made: the one an admin just removed by
+    // mistake must be at the top, however old the report.
+    const user = await this.getCurrentUser()
+    const { data, error } = await this.client
+      .from('public_reports')
+      .select('*')
+      .eq('moderation_status', 'rejected')
+      .order('removed_at', { ascending: false })
+      .limit(OFF_MAP_PAGE + 1)
+    if (error) throw new Error(error.message)
+    const rows = data ?? []
+    return {
+      reports: await this.toReports(rows.slice(0, OFF_MAP_PAGE), user?.id ?? null),
+      more: rows.length > OFF_MAP_PAGE,
+    }
   }
 
   async decideModerationItem(jobId: string, verdict: 'approved' | 'rejected'): Promise<void> {

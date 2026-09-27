@@ -54,6 +54,8 @@ export interface ReportView {
   viewerIsReporter: boolean
   /** The reporter's chosen name, or null while it is still being checked. */
   reporterName: string | null
+  /** Why an admin took the pin off the map. Given to admins only. */
+  removalReason: string | null
 }
 
 export type QueueSubject = 'photo' | 'comment' | 'note' | 'name'
@@ -92,8 +94,19 @@ export interface QueueItem {
   tierResults: Record<string, unknown>
   /** How many people complained about it. */
   flagCount: number
+  /**
+   * Whether the report it sits on is on the map right now, from the database
+   * at the time the queue was read. Null when it sits on no report.
+   */
+  pinOnMap: boolean | null
   createdAt: string
 }
+
+/** How many off-map pins the review queue lists at once. */
+export const OFF_MAP_PAGE = 50
+
+/** How many off-map pins are drawn in one viewport. */
+export const OFF_MAP_IN_VIEW = 100
 
 export interface ViewBounds {
   minLat: number
@@ -152,7 +165,17 @@ export interface DataSource {
    */
   setDisplayName(name: string): Promise<void>
 
+  /** Pins on the map. Never one that is off it: those are listOffMapInView's. */
   listReportsInView(bounds: ViewBounds, filters: RollupFilters): Promise<ReportView[]>
+  /**
+   * Pins off the map in this viewport that the viewer may still see: their own,
+   * or every one for an admin. Kept apart from listReportsInView so they take no
+   * room in its page and are never counted as reports on the map.
+   */
+  listOffMapInView(
+    bounds: ViewBounds,
+    filters: RollupFilters,
+  ): Promise<{ reports: ReportView[]; more: boolean }>
 
   /**
    * Aggregated cells for a viewport, computed where the data is.
@@ -200,4 +223,15 @@ export interface DataSource {
   /** Total waiting, which can exceed the page listModerationQueue returns. */
   getModerationQueueSize(): Promise<number>
   decideModerationItem(jobId: string, verdict: 'approved' | 'rejected'): Promise<void>
+  /**
+   * Take a pin off the map, or put it back. Separate from judging its photo or
+   * note: this is for the pin itself. Refused to anybody but an admin.
+   */
+  /** Resolves true if the pin moved, false if it was already there. */
+  setReportOnMap(reportId: string, onMap: boolean, reason?: string): Promise<boolean>
+  /**
+   * Pins that are off the map, most recently taken off first, so an admin can
+   * put one back. Capped at OFF_MAP_PAGE; `more` says there are others.
+   */
+  listReportsOffMap(): Promise<{ reports: ReportView[]; more: boolean }>
 }

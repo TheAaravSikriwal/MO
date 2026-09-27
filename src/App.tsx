@@ -56,6 +56,13 @@ export default function App({ data: injected }: AppProps = {}) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Place[]>([])
   const [reports, setReports] = useState<ReportView[]>([])
+  const [offMapReports, setOffMapReports] = useState<ReportView[]>([])
+  // Said, not swallowed: a cut-short or failed list of off-map pins must not
+  // look like a complete one. Only ever set for somebody who can see them.
+  const [offMapNotice, setOffMapNotice] = useState<string | null>(null)
+  // Bumped whenever a pin changes from a report's screen, so an open review
+  // queue reloads its list of pins off the map.
+  const [pinsVersion, setPinsVersion] = useState(0)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [openReportId, setOpenReportId] = useState<string | null>(null)
   const [openReport, setOpenReport] = useState<ReportView | null>(null)
@@ -154,13 +161,25 @@ export default function App({ data: injected }: AppProps = {}) {
       // be an exact count of what matches, not the length of a capped page, or
       // a dense viewport reports "500 of 12000" with no filter applied and
       // blames the filters for the cap.
-      const [loaded, matching, total] = await Promise.all([
+      const [loaded, matching, total, offMap] = await Promise.all([
         data.listReportsInView(view.bounds, serverFilters),
         data.countReportsInView(view.bounds, serverFilters),
         data.countReportsInView(view.bounds),
+        // Only ever the viewer's own, or all of them for an admin. Caught
+        // here so a failure does not take the live map down with it -- and
+        // then said, below, rather than passed off as "none".
+        data.listOffMapInView(view.bounds, serverFilters).catch(() => null),
       ])
       if (seq !== reportsSeq.current) return
       setReports(loaded)
+      setOffMapReports(offMap?.reports ?? [])
+      setOffMapNotice(
+        offMap === null
+          ? 'Could not load the pins taken off the map here.'
+          : offMap.more
+            ? 'Not every pin taken off the map here is shown. Zoom in to see the rest.'
+            : null,
+      )
       setMatchingInView(matching)
       setTotalInView(total)
       setReportsError(null)
@@ -252,10 +271,13 @@ export default function App({ data: injected }: AppProps = {}) {
   }, [refreshCells])
 
   const publishedReports = useMemo(
-    // A rejected pin is visible to its author and to admins, and must not be
-    // drawn on the map for them as though it were live.
-    () => reports.filter((report) => report.moderationStatus === 'approved'),
-    [reports],
+    // Off-map pins are included. The server only ever returns one to its
+    // reporter and to admins, and those are exactly the people who need to
+    // find it again: the reporter to be told it was taken off, an admin to put
+    // it back. Filtering them out here made both impossible. The pin layer
+    // draws them greyed out, and they add nothing to the colours.
+    () => [...reports, ...offMapReports],
+    [reports, offMapReports],
   )
 
   const visibleReports = useMemo(
@@ -352,6 +374,12 @@ export default function App({ data: injected }: AppProps = {}) {
             </p>
           )}
 
+          {offMapNotice && (
+            <p role="status" className="rounded-lg bg-slate-100 p-3 text-xs text-slate-700">
+              {offMapNotice}
+            </p>
+          )}
+
           {(reportsError ?? cellsError) && (
             <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
               {reportsError ?? cellsError} Reports may be missing.
@@ -371,6 +399,7 @@ export default function App({ data: injected }: AppProps = {}) {
               data={data}
               isAdmin={user.isAdmin}
               onClose={() => setReviewing(false)}
+              pinsVersion={pinsVersion}
               onDecided={() => {
                 void refresh()
                 void refreshCells()
@@ -380,9 +409,14 @@ export default function App({ data: injected }: AppProps = {}) {
 
           {openReport && (
             <ReportDetail
+              // One panel per report. Without the key, opening another pin
+              // swapped the report under the same panel, and a reason typed for
+              // one pin was sent -- and recorded for good -- against the next.
+              key={openReport.id}
               data={data}
               report={openReport}
               signedIn={user !== null}
+              isAdmin={user?.isAdmin ?? false}
               onChanged={() => {
                 // Cells too. Marking a report cleaned from the aggregated view
                 // dropped it from the counts while its hexagon stayed exactly
@@ -390,6 +424,8 @@ export default function App({ data: injected }: AppProps = {}) {
                 void refresh()
                 void refreshCells()
               }}
+              // Only a pin moving on or off the map reloads an open review queue.
+              onPinChanged={() => setPinsVersion((version) => version + 1)}
               onClose={() => setOpenReportId(null)}
             />
           )}
@@ -453,7 +489,8 @@ export default function App({ data: injected }: AppProps = {}) {
         {visibleReports.map((report) => (
           <li key={report.id}>
             <button type="button" onClick={() => setOpenReportId(report.id)}>
-              {report.status === 'cleaned' ? 'Cleaned report' : 'Litter reported here'} —{' '}
+              {report.status === 'cleaned' ? 'Cleaned report' : 'Litter reported here'}
+              {report.moderationStatus === 'rejected' ? ' (off the map)' : ''} —{' '}
               {report.voteCount} confirmed
               {filters.origin
                 ? `, ${formatDistance(

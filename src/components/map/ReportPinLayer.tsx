@@ -6,6 +6,12 @@ import type { ReportView } from '../../lib/data/types'
 /** A cleaned spot is not "low severity" — it is a different thing entirely. */
 export const CLEANED_COLOR = '#2f9e6e'
 
+/**
+ * A pin an admin took off the map. Only its reporter and admins are ever sent
+ * one, and it must not look like litter anybody else can see.
+ */
+export const OFF_MAP_COLOR = '#94a3b8'
+
 export const MIN_PIN_RADIUS = 7
 export const MAX_PIN_RADIUS = 16
 
@@ -37,7 +43,11 @@ export interface ReportPinLayerProps {
  * spot — without an image at all.
  */
 export function ReportPinLayer({ reports, onSelect, selectedId }: ReportPinLayerProps) {
-  const open = reports.filter((report) => report.status === 'open')
+  // Off-map pins are not ranked: they add nothing to the colours for anybody
+  // else, so they must not change how the live ones around them look.
+  const open = reports.filter(
+    (report) => report.status === 'open' && report.moderationStatus !== 'rejected',
+  )
 
   // Ranked against the other pins on screen, the same way cells are, so a
   // street with one report does not look identical to one with twenty.
@@ -54,6 +64,7 @@ export function ReportPinLayer({ reports, onSelect, selectedId }: ReportPinLayer
     <>
       {reports.map((report) => {
         const cleaned = report.status === 'cleaned'
+        const offMap = report.moderationStatus === 'rejected'
         const t = tById.get(report.id) ?? 0
         const selected = report.id === selectedId
 
@@ -62,13 +73,14 @@ export function ReportPinLayer({ reports, onSelect, selectedId }: ReportPinLayer
             key={report.id}
             center={[report.lat, report.lng]}
             radius={
-              cleaned
+              cleaned || offMap
                 ? MIN_PIN_RADIUS
                 : MIN_PIN_RADIUS + (MAX_PIN_RADIUS - MIN_PIN_RADIUS) * t
             }
             pathOptions={{
-              fillColor: cleaned ? CLEANED_COLOR : colorForT(pinT(t)),
-              fillOpacity: cleaned ? 0.55 : 0.85,
+              fillColor: offMap ? OFF_MAP_COLOR : cleaned ? CLEANED_COLOR : colorForT(pinT(t)),
+              fillOpacity: offMap ? 0.4 : cleaned ? 0.55 : 0.85,
+              dashArray: offMap ? '3 3' : undefined,
               // Pins get an outline, unlike cells: at this zoom they sit on top
               // of streets and buildings and need to stay distinguishable from
               // the map underneath.

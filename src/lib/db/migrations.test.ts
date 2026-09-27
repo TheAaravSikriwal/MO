@@ -44,6 +44,7 @@ const TABLES = [
   'admins',
   'display_names',
   'post_log',
+  'pin_history',
   'reports',
   'report_photos',
   'votes',

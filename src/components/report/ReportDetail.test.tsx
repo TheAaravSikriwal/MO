@@ -479,3 +479,52 @@ describe('ReportDetail — a name rejected after the page loaded', () => {
     expect(await data.listComments('r1')).toEqual([])
   })
 })
+
+describe('ReportDetail — taking a pin off the map', () => {
+  const setupAs = (isAdmin: boolean, seed: Partial<ReportView> = {}) => {
+    const data = new FakeDataSource({ id: isAdmin ? 'admin-1' : 'u1', isAdmin }, { displayName: 'Sam' })
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12, ...seed })
+    const onChanged = vi.fn()
+    const view = render(
+      <ReportDetail
+        data={data}
+        report={report}
+        signedIn
+        isAdmin={isAdmin}
+        onChanged={onChanged}
+        onClose={vi.fn()}
+      />,
+    )
+    return { data, onChanged, view, user: userEvent.setup() }
+  }
+
+  it('lets an admin take a pin off the map', async () => {
+    const { data, onChanged, user } = setupAs(true)
+    await user.click(screen.getByRole('button', { name: /take off the map/i }))
+    await waitFor(() => expect(onChanged).toHaveBeenCalled())
+    // An admin can still open it; nobody else can.
+    expect((await data.getReport('r1'))!.moderationStatus).toBe('rejected')
+    data.setUser({ id: 'u9', isAdmin: false })
+    expect(await data.getReport('r1')).toBeNull()
+  })
+
+  it('offers an admin the way back, and says the pin is off the map', () => {
+    setupAs(true, { moderationStatus: 'rejected' })
+    expect(screen.getByRole('status')).toHaveTextContent(/off the map/i)
+    expect(screen.getByRole('button', { name: /put back on the map/i })).toBeInTheDocument()
+  })
+
+  it('shows nobody else the control', () => {
+    setupAs(false)
+    expect(screen.queryByRole('button', { name: /off the map/i })).not.toBeInTheDocument()
+  })
+
+  it('tells the person who added it, and offers nothing that would fail', () => {
+    setupAs(false, { moderationStatus: 'rejected', viewerIsReporter: true })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      /taken off the map. Other people can no longer see it/i,
+    )
+    expect(screen.queryByRole('button', { name: /mark as cleaned/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /confirm this is here/i })).not.toBeInTheDocument()
+  })
+})

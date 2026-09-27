@@ -157,7 +157,7 @@ sample reports around central London, so the map is populated and every screen
 works. That is deliberate — see `src/lib/data/createDataSource.ts`.
 
 ```bash
-npm test              # 896 tests, including real Postgres via PGlite
+npm test              # 977 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
 cd worker && npm test # 123 tests
 ```
@@ -292,19 +292,43 @@ Eight things. The first two are blocked on accounts rather than on code:
 
    The comments in `0002`, `0005`, `0006`, `api/README.md` and
    `supabase/README.md` that repeated the false reason are corrected.
-7. **There is no in-app way to take a pin off the map.**
-   `mo.reports.moderation_status` governs whether a pin is visible and defaults
-   to `'approved'`, and nothing ever writes it: the moderation subjects are
-   photo, comment and note, so rejecting a report withholds its picture and its
-   text and leaves the coloured cell exactly where it was. A spam or malicious
-   pin keeps contributing weight forever, and the only remedy is a `delete` or
-   an `update` from the SQL editor.
+7. **Done 2026-09-26: an admin can take a pin off the map, and put it back.**
+   `mo.admin_set_report_on_map` (0005) is the only writer of
+   `reports.moderation_status`. It refuses non-admins, and asking for the
+   state a pin is already in changes nothing, so a double click or two admins
+   at once cannot overwrite who took it off or why.
 
-   Not new — no code path ever set that column — but it was not written down,
-   and the audit gate found it while checking something else. The fix is an
-   admin-gated `security definer` RPC plus a control in the review queue.
-   Deliberately not a column grant: 0003 removed those for letting an admin
-   change content status without writing a verdict.
+   * **What it hides.** A pin off the map is sent only to its reporter and to
+     admins, through its own query (`listOffMapInView`, with the same filters
+     as the live pins), so it never takes a place in the main page of pins or
+     counts as a report on the map. Its photos and comments go with it (the public views check the
+     pin), it drops out of the colours and the counts, and it takes no votes,
+     no "cleaned", no new comments, no new photos and no new upload URLs.
+     Votes, comments, photos and "cleaned" are each refused in words -- the
+     report is off the map -- rather than reading as "choose a name", "you
+     cannot confirm this" or "already cleaned".
+   * **Who can still find it.** Its reporter sees it greyed out and dashed, with
+     a notice that it was taken off, and comments are closed. Admins see it the
+     same way, and the review queue lists the pins off the map, most recently
+     taken off first, fifty at a time and saying so when there are more, each
+     with "Put back on the map". Each queue item carries its pin's state from
+     the database (`pin_on_map` in `admin_moderation_queue`), so an item on a
+     pin that is already off says so however old the removal, and the whole
+     queue is re-read when a pin is changed from a report's screen. On the map,
+     off-map pins are drawn a hundred per viewport; when the database returned
+     more than that, or they failed to load, the map says so rather than
+     showing fewer.
+   * **The record.** `reports.removed_by`, `removed_at` and `removal_reason`
+     describe the current removal. `mo.pin_history` keeps every change,
+     including putting a pin back, which clears the others -- and it holds the
+     report id as a plain value, not a foreign key, so it survives the reporter
+     deleting the report. The reason is what
+     the admin typed on the report, or nothing -- never a stand-in. The queue
+     records none; `pin_history` still says who and when.
+
+   All of it runs against real Postgres in `migrations.run.test.ts` and
+   `pinPhotos.run.test.ts`, and through the whole app in
+   `App.offMap.test.tsx`.
 8. **CSAM scanning is not implemented.** None of the four moderation tiers
    address it, and it is a legal obligation rather than a preference. The plan is
    Cloudflare's free scanning tool applied to the R2 hostname serving the photos,

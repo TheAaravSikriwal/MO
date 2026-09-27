@@ -105,8 +105,27 @@ $$;
 -- anon as well as authenticated: the photo select policy has no `to` clause,
 -- so it applies to every role. For a signed-out visitor auth.uid() is null and
 -- owns_report simply returns false.
+-- Whether a report is on the map, so a comment can be added to it. A pin an
+-- admin took off the map takes no new comments -- they would be a way to keep
+-- talking on a pin nobody else can see, and its existing comments are hidden
+-- too (public_comments in 0003).
+create or replace function mo.report_on_map(report_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = mo, public
+as $$
+  select exists (
+    select 1 from mo.reports r
+    where r.id = report_id
+      and r.moderation_status = 'approved'
+  );
+$$;
+
 grant execute on function mo.owns_report(uuid)          to anon, authenticated;
 grant execute on function mo.report_accepts_votes(uuid)  to anon, authenticated;
+grant execute on function mo.report_on_map(uuid)         to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- The name a person posts under
@@ -685,8 +704,18 @@ begin
      and moderation_status = 'approved'
   returning id into updated_id;
 
+  -- Which reason, rather than all three at once. The combined message read as
+  -- "already cleaned" for a pin an admin had just taken off the map.
   if updated_id is null then
-    raise exception 'report not found, already cleaned, or not yet approved';
+    if not exists (select 1 from mo.reports where id = target_report) then
+      raise exception 'report not found';
+    elsif exists (
+      select 1 from mo.reports where id = target_report and moderation_status = 'rejected'
+    ) then
+      raise exception 'this report is off the map';
+    else
+      raise exception 'this report is already marked cleaned';
+    end if;
   end if;
 end;
 $$;

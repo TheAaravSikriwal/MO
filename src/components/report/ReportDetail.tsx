@@ -8,7 +8,11 @@ export interface ReportDetailProps {
   data: DataSource
   report: ReportView
   signedIn: boolean
+  /** Shows the controls for taking a pin off the map and putting it back. */
+  isAdmin?: boolean
   onChanged: () => void
+  /** Called only when this screen actually moved a pin on or off the map. */
+  onPinChanged?: () => void
   onClose: () => void
 }
 
@@ -16,7 +20,15 @@ export interface ReportDetailProps {
 const confirmLabel = (count: number) =>
   count === 0 ? 'No one else has confirmed this yet' : `${count} confirmed this is here`
 
-export function ReportDetail({ data, report, signedIn, onChanged, onClose }: ReportDetailProps) {
+export function ReportDetail({
+  data,
+  report,
+  signedIn,
+  isAdmin = false,
+  onChanged,
+  onPinChanged,
+  onClose,
+}: ReportDetailProps) {
   const [comments, setComments] = useState<CommentView[]>([])
   const [draft, setDraft] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
@@ -25,6 +37,9 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
   const [justCleaned, setJustCleaned] = useState(false)
   const [reported, setReported] = useState<Set<string>>(new Set())
   const [nameDraft, setNameDraft] = useState('')
+  const [removalReason, setRemovalReason] = useState('')
+  // Set when somebody else moved the pin first, so nothing was recorded here.
+  const [pinNotice, setPinNotice] = useState<string | null>(null)
   const name = useDisplayName(data, signedIn)
 
   useEffect(() => {
@@ -92,6 +107,32 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
   }
 
   const cleaned = report.status === 'cleaned'
+  // Only its reporter and admins can see a pin that is off the map at all.
+  const offMap = report.moderationStatus === 'rejected'
+
+  // The reason is the admin's own words, or nothing. A fixed placeholder would
+  // record which button was pressed and pass it off as why.
+  const onSetOnMap = (onMap: boolean) =>
+    run(async () => {
+      setPinNotice(null)
+      const moved = await data.setReportOnMap(
+        report.id,
+        onMap,
+        onMap ? undefined : removalReason.trim() || undefined,
+      )
+      if (!moved) {
+        // Somebody else got there first, and nothing was recorded. The typed
+        // reason is kept rather than silently thrown away.
+        setPinNotice(
+          onMap
+            ? 'Somebody else already put this pin back on the map.'
+            : 'Somebody else already took this pin off the map. Your reason was not saved.',
+        )
+        return
+      }
+      setRemovalReason('')
+      onPinChanged?.()
+    })
 
   return (
     <section
@@ -111,6 +152,9 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
             {signedIn &&
               report.reporterName &&
               !report.viewerIsReporter &&
+              // flag_report_author refuses a pin off the map: nobody else can
+              // see its name, so there is nothing to complain about.
+              !offMap &&
               (reported.has(`reporter:${report.id}`) ? (
                 <span className="ml-2">Thanks. Someone will look at this name.</span>
               ) : (
@@ -255,8 +299,52 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
         </p>
       )}
 
+      {offMap && (
+        <p role="status" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+          {report.viewerIsReporter
+            ? 'This report has been taken off the map. Other people can no longer see it.'
+            : 'This report is off the map. Other people can no longer see it.'}
+        </p>
+      )}
+
+      {isAdmin && (
+        <div className="mt-3 space-y-2">
+          {pinNotice && (
+            <p role="status" className="text-xs text-slate-600">
+              {pinNotice}
+            </p>
+          )}
+          {offMap && report.removalReason && (
+            <p className="text-xs text-slate-600">Taken off because: {report.removalReason}</p>
+          )}
+          {!offMap && (
+            <>
+              <label htmlFor="removal-reason" className="block text-xs text-slate-600">
+                Why take it off? <span className="text-slate-400">(optional)</span>
+              </label>
+              <input
+                id="removal-reason"
+                type="text"
+                value={removalReason}
+                maxLength={500}
+                onChange={(event) => setRemovalReason(event.target.value)}
+                className="w-full rounded-lg border border-slate-300 p-2 text-sm"
+              />
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => void onSetOnMap(offMap)}
+            disabled={busy}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-800 disabled:opacity-50"
+          >
+            {offMap ? 'Put back on the map' : 'Take off the map'}
+          </button>
+        </div>
+      )}
+
       <div className="mt-3 flex flex-wrap gap-2">
-        {!cleaned && signedIn && !report.viewerIsReporter && (
+        {!cleaned && !offMap && signedIn && !report.viewerIsReporter && (
           <button
             type="button"
             onClick={onToggleVote}
@@ -266,7 +354,7 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
             {report.viewerHasVoted ? 'Remove my confirmation' : 'Confirm this is here'}
           </button>
         )}
-        {!cleaned && signedIn && (
+        {!cleaned && !offMap && signedIn && (
           <button
             type="button"
             onClick={onMarkCleaned}
@@ -344,7 +432,13 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
           </ul>
         )}
 
-        {signedIn ? (
+        {offMap ? (
+          // The database refuses a comment on a pin off the map. Offering the
+          // box anyway meant a refusal that read as "choose a name".
+          <p className="mt-2 text-sm text-slate-600">
+            Comments are closed while this report is off the map.
+          </p>
+        ) : signedIn ? (
           <div className="mt-3">
             {name.needed && (
               <div className="mb-2">

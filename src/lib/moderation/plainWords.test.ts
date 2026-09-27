@@ -243,6 +243,10 @@ describe('plainError — choosing a name', () => {
     ['too many new names today; please try again tomorrow', /several names today/i],
     ['a name must have at least 2 visible characters', /characters that show up/i],
     ['you cannot report your own name', /cannot report your own name/i],
+    ['only an admin may take a pin off the map', /permission to do that/i],
+    ['this report is off the map', /taken off the map/i],
+    ['this report is already marked cleaned', /already been marked cleaned/i],
+    ['report not found', /could not be found/i],
     // The table's own CHECK, should anything reach it past the function.
     [
       'new row for relation "display_names" violates check constraint "display_names_name_check"',

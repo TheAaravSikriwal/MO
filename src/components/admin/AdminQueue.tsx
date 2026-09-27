@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { DataSource, QueueItem } from '../../lib/data/types'
+import type { DataSource, QueueItem, ReportView } from '../../lib/data/types'
 import { plainReason, plainError, summariseScores } from '../../lib/moderation/plainWords'
 
 export interface AdminQueueProps {
@@ -8,6 +8,11 @@ export interface AdminQueueProps {
   onClose: () => void
   /** Called after a decision, so the map can pick up newly approved content. */
   onDecided?: () => void
+  /**
+   * Changes whenever a pin is taken off or put back somewhere else -- from a
+   * report's own screen -- so the list of pins off the map is reloaded.
+   */
+  pinsVersion?: number
 }
 
 const subjectLabel: Record<QueueItem['subjectType'], string> = {
@@ -17,17 +22,39 @@ const subjectLabel: Record<QueueItem['subjectType'], string> = {
   name: 'Name someone chose',
 }
 
-export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProps) {
+export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 }: AdminQueueProps) {
   const [items, setItems] = useState<QueueItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deciding, setDeciding] = useState<string | null>(null)
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
   const [total, setTotal] = useState(0)
+  // What the queue knows about each item's pin: taken off here, or already off.
+  const [pinsOff, setPinsOff] = useState<Map<string, 'now' | 'already'>>(new Map())
+  const [pinBusy, setPinBusy] = useState(false)
+  const [offMap, setOffMap] = useState<ReportView[]>([])
+  const [offMapMore, setOffMapMore] = useState(false)
+  const [offMapError, setOffMapError] = useState<string | null>(null)
+
+  const loadOffMap = useCallback(async () => {
+    try {
+      const { reports, more } = await data.listReportsOffMap()
+      setOffMap(reports)
+      setOffMapMore(more)
+      setOffMapError(null)
+    } catch {
+      setOffMapError('Could not load the pins that are off the map.')
+    }
+  }, [data])
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
+    // Pins off the map live here too, because this is the one screen an admin
+    // always has: without it, a pin taken off by mistake could only be found
+    // again by stumbling on it. Started before the queue and not awaited, so
+    // neither one failing takes the other down.
+    void loadOffMap()
     try {
       const [loaded, waiting] = await Promise.all([
         data.listModerationQueue(),
@@ -40,7 +67,7 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProp
     } finally {
       setLoading(false)
     }
-  }, [data])
+  }, [data, loadOffMap])
 
   useEffect(() => {
     if (!isAdmin) {
@@ -49,6 +76,15 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProp
     }
     void load()
   }, [isAdmin, load])
+
+  // A pin changed on a report's screen while this was open. The whole queue is
+  // re-read, not just the off-map list: each item carries its pin's state, and
+  // what this screen did itself is no longer the latest word on it.
+  useEffect(() => {
+    if (!isAdmin || pinsVersion === 0) return
+    setPinsOff(new Map())
+    void load()
+  }, [isAdmin, pinsVersion, load])
 
   if (!isAdmin) return null
 
@@ -80,6 +116,49 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProp
       setError(message)
     } finally {
       setDeciding(null)
+    }
+  }
+
+  /**
+   * Take the pin this item sits on off the map. Separate from Allow and
+   * Remove, which judge the item itself: a spam note usually means a spam pin,
+   * and rejecting the note alone would leave the pin colouring the map.
+   */
+  const takePinOff = async (item: QueueItem) => {
+    if (!item.reportId || pinBusy) return
+    setPinBusy(true)
+    setError(null)
+    try {
+      // No reason. Anything written here would be which button was pressed,
+      // shown later as "Taken off because". The report's own screen is where an
+      // admin can say why in their own words; pin_history records who and when.
+      const moved = await data.setReportOnMap(item.reportId, false)
+      setPinsOff((current) => new Map(current).set(item.reportId!, moved ? 'now' : 'already'))
+      await loadOffMap()
+      onDecided?.()
+    } catch (cause) {
+      setError(plainError(cause instanceof Error ? cause.message : null))
+    } finally {
+      setPinBusy(false)
+    }
+  }
+
+  const putPinBack = async (reportId: string) => {
+    if (pinBusy) return
+    setPinBusy(true)
+    setError(null)
+    try {
+      await data.setReportOnMap(reportId, true)
+      // Everything re-read, not just dropped locally: when the off-map list was
+      // cut short the next one has to move up into it, and every item on this
+      // pin has to stop saying it is off the map.
+      setPinsOff(new Map())
+      await load()
+      onDecided?.()
+    } catch (cause) {
+      setError(plainError(cause instanceof Error ? cause.message : null))
+    } finally {
+      setPinBusy(false)
     }
   }
 
@@ -201,10 +280,60 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProp
               >
                 Remove
               </button>
+              {item.reportId &&
+                item.pinOnMap !== null &&
+                (pinsOff.get(item.reportId) === 'now' ? (
+                  <span className="self-center text-xs text-slate-500">Pin taken off the map.</span>
+                ) : pinsOff.get(item.reportId) === 'already' || item.pinOnMap === false ? (
+                  <span className="self-center text-xs text-slate-500">This pin is off the map.</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void takePinOff(item)}
+                    disabled={deciding !== null || pinBusy}
+                    className="rounded-lg px-3 py-2 text-sm text-slate-600 underline hover:text-slate-900 disabled:opacity-50"
+                  >
+                    Take the pin off the map
+                  </button>
+                ))}
             </div>
           </li>
         ))}
       </ul>
+
+      {offMapError && <p className="mt-4 text-xs text-slate-600">{offMapError}</p>}
+
+      {offMap.length > 0 && (
+        <div className="mt-5 border-t border-slate-200 pt-4">
+          <h3 className="text-sm font-semibold text-slate-900">Off the map</h3>
+          {offMapMore && (
+            <p className="text-xs text-slate-500">
+              Showing the {offMap.length} most recently taken off.
+            </p>
+          )}
+          <ul className="mt-2 space-y-2">
+            {offMap.map((report) => (
+              <li key={report.id} className="rounded-lg border border-slate-200 p-3 text-sm">
+                <p className="text-slate-800">
+                  Added {new Date(report.createdAt).toLocaleDateString()}
+                  {report.reporterName ? ` by ${report.reporterName}` : ''}
+                </p>
+                {report.removalReason && (
+                  <p className="mt-1 text-xs text-slate-600">Taken off because: {report.removalReason}</p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void putPinBack(report.id)}
+                  disabled={pinBusy}
+                  className="mt-2 rounded-lg border border-slate-300 px-3 py-1 text-sm text-slate-800 disabled:opacity-50"
+                >
+                  Put back on the map
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   )
 }

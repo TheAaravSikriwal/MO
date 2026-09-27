@@ -130,8 +130,13 @@ const ERROR_RULES: Array<[RegExp, string]> = [
   [/tabs or line breaks|display_names_name_check/i, 'Please choose a name without tabs or line breaks.'],
   [/already confirmed|already been decided/i, 'You have already done that.'],
   [/cannot confirm your own/i, 'You cannot confirm your own report.'],
-  [/already cleaned|not found, already cleaned/i, 'This report has already been marked cleaned.'],
+  // Before the "cleaned" rule: a pin off the map can be refused for being
+  // off the map, and that must not read as "already cleaned".
+  [/report is off the map/i, 'This report has been taken off the map.'],
+  [/already cleaned|not found, already cleaned|already marked cleaned/i, 'This report has already been marked cleaned.'],
+  [/^report not found$/i, 'That report could not be found.'],
   [/comment cannot be empty/i, 'Please write something first.'],
+  [/take a pin off the map/i, 'You do not have permission to do that.'],
   [/only an admin/i, 'You do not have permission to review items.'],
   [/permission denied|not authorized|unauthorized|jwt/i, 'You do not have permission to do that.'],
   [/already been decided|decided by someone else/i, 'Someone already dealt with this one.'],

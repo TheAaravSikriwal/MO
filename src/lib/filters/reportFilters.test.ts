@@ -11,6 +11,7 @@ import type { ReportView } from '../data/types'
 
 const report = (over: Partial<ReportView> & { id: string }): ReportView => ({
   reporterName: null,
+  removalReason: null,
   lat: 51.5,
   lng: -0.12,
   note: null,
