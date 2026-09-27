@@ -104,7 +104,7 @@ export async function moderate(subject: Subject, tiers: Tiers): Promise<Decision
   try {
     const result =
       subject.kind === 'text'
-        ? await tiers.judge.judgeText(subject.text)
+        ? await tiers.judge.judgeText(subject.text, subject.purpose)
         : await tiers.judge.judgeImage(subject.url)
 
     tierResults.judge = result

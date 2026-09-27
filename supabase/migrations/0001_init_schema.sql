@@ -94,7 +94,9 @@ grant usage on schema mo to anon, authenticated, service_role;
 -- mo.admins, not a column on somebody else's table.
 create type mo.report_status     as enum ('open', 'cleaned');
 create type mo.moderation_status as enum ('pending', 'approved', 'rejected');
-create type mo.subject_type      as enum ('photo', 'comment', 'note');
+-- 'name' is the display name a person chooses before their first post. It is
+-- free text shown in public, so it is judged like a note or a comment.
+create type mo.subject_type      as enum ('photo', 'comment', 'note', 'name');
 create type mo.job_status        as enum ('pending', 'in_progress', 'done', 'failed');
 
 -- ---------------------------------------------------------------------------
@@ -113,6 +115,120 @@ create type mo.job_status        as enum ('pending', 'in_progress', 'done', 'fai
 create table mo.admins (
   user_id    uuid primary key references public.profiles (id) on delete cascade,
   granted_at timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------------
+-- How much of a name actually shows up
+-- ---------------------------------------------------------------------------
+--
+-- btrim removes only ASCII spaces, and [[:cntrl:]] misses the rest, so a name
+-- of non-breaking spaces, zero-width joiners or Hangul fillers passed every
+-- check and displayed as nothing. This counts the characters left once all of
+-- these are taken out:
+--
+--       32-32      space
+--      160-160     no-break space
+--      173-173     soft hyphen
+--      847-847     combining grapheme joiner
+--     1564-1564    Arabic letter mark
+--     4447-4448    Hangul choseong and jungseong fillers
+--     5760-5760    Ogham space
+--     6068-6069    Khmer inherent vowels
+--     6155-6158    Mongolian selectors and vowel separator
+--     8192-8207    the space block, zero-width space and joiners, direction marks
+--     8232-8239    line and paragraph separators, bidi embeddings, narrow no-break space
+--     8287-8303    medium space, word joiner, invisible operators, bidi isolates
+--    10240-10240   braille blank
+--    12288-12288   ideographic space
+--    12644-12644   Hangul filler
+--    65024-65039   variation selectors
+--    65279-65279   byte-order mark
+--    65440-65440   halfwidth Hangul filler
+--   119155-119162  musical format controls
+--   917505-917505  language tag
+--   917536-917631  tag characters
+--
+-- That is Unicode's default-ignorable characters and its extra spaces, plus the
+-- letters that only LOOK blank. The same ranges are INVISIBLE_RANGES in
+-- src/lib/names/displayName.ts, and a test keeps the two identical. Written as
+-- numbers and chr() so no escape can be mangled on the way in.
+--
+-- Used by the display_names CHECK below and by set_display_name in 0002.
+create or replace function mo.visible_length(t text)
+returns integer
+language sql
+immutable
+parallel safe
+set search_path = mo, public
+as $$
+  select char_length(translate(t, (
+    select string_agg(chr(c), '')
+      from (
+        select generate_series(lo, hi) as c
+          from (values
+      (32, 32),
+      (160, 160),
+      (173, 173),
+      (847, 847),
+      (1564, 1564),
+      (4447, 4448),
+      (5760, 5760),
+      (6068, 6069),
+      (6155, 6158),
+      (8192, 8207),
+      (8232, 8239),
+      (8287, 8303),
+      (10240, 10240),
+      (12288, 12288),
+      (12644, 12644),
+      (65024, 65039),
+      (65279, 65279),
+      (65440, 65440),
+      (119155, 119162),
+      (917505, 917505),
+      (917536, 917631)
+          ) as ranges (lo, hi)
+      ) as points
+  ), ''));
+$$;
+
+-- ---------------------------------------------------------------------------
+-- display_names  --  the name shown on a person's reports and comments
+-- ---------------------------------------------------------------------------
+--
+-- MO's own, and deliberately not chintu's `public.profiles.display_name`.
+--
+-- That column is filled by chintu's handle_new_user, and for a magic-link
+-- signup -- which is every MO signup -- it holds the local part of the email
+-- address. `public.profiles` is readable by anon in that project, so showing it
+-- would sign every comment with the author's email prefix. So a person chooses
+-- a name for MO before their first post, it lives here, and MO never reads the
+-- marketplace's name at all.
+--
+-- A name is free text shown in public, so it is reviewed like any other: the
+-- moderation job's subject_id is `user_id`, and until the name is approved
+-- other people see "someone". Changing it puts it back to pending.
+--
+-- The check is a sanity guard, not the review. No `@`, so an email address
+-- cannot be typed in as a name, and no control characters.
+create table mo.display_names (
+  user_id           uuid primary key references public.profiles (id) on delete cascade,
+  name              text not null check (
+                      name = btrim(name)
+                      and char_length(name) between 2 and 30
+                      and position('@' in name) = 0
+                      and name !~ '[[:cntrl:]]'
+                      -- At least two characters that show up. See
+                      -- mo.visible_length above.
+                      and mo.visible_length(name) >= 2
+                    ),
+  moderation_status moderation_status not null default 'pending',
+  updated_at        timestamptz not null default now(),
+  -- How many names this person has submitted since window_started. Every
+  -- submission is a round of review, so set_display_name caps it per day --
+  -- including after a rejection, which is otherwise an unlimited retry loop.
+  changes_in_window integer     not null default 1 check (changes_in_window >= 0),
+  window_started    timestamptz not null default now()
 );
 
 -- ---------------------------------------------------------------------------

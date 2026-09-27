@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react'
 import { checkText } from '../../lib/moderation/clientGate'
 import { ALLOWED_PHOTO_TYPES, MAX_PHOTOS } from '../../lib/upload/photoLimits'
-import { plainError } from '../../lib/moderation/plainWords'
+import { NAME_NEEDED, plainError } from '../../lib/moderation/plainWords'
 import { screenPhotoWithModel, type PhotoScreener } from '../../lib/moderation/screenPhoto'
 import { PIN_ZOOM_THRESHOLD } from '../../lib/grid/zoomResolution'
 import type { DataSource } from '../../lib/data/types'
+import { NameField, nameProblem, useDisplayName } from './NameField'
 
 export const MAX_NOTE_LENGTH = 500
 
@@ -43,6 +44,8 @@ export function ReportForm({
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
+  const name = useDisplayName(data, signedIn)
 
   const tooFarOut = zoom < PIN_ZOOM_THRESHOLD
 
@@ -120,16 +123,35 @@ export function ReportForm({
       setError('Please add a photo so people can see what is here.')
       return
     }
+    if (name.needed) {
+      const problem = nameProblem(nameDraft)
+      if (problem) {
+        setError(problem)
+        return
+      }
+    }
 
     setBusy(true)
     try {
+      // The name first, and only when one is needed. If the report then fails,
+      // the name is kept -- it was accepted -- and the field goes away, so a
+      // retry does not ask again.
+      if (name.needed) {
+        const chosen = nameDraft.trim()
+        await data.setDisplayName(chosen)
+        name.saved(chosen)
+      }
       const { id } = await data.createReport({ lat, lng, note: note.trim(), photos })
       onSubmitted(id)
     } catch (cause) {
       // Never the raw message: createReport can fail with an RLS violation, a
       // check-constraint name, or the rate-limit trigger's wording, and this is
       // the app's primary write path.
-      setError(plainError(cause instanceof Error ? cause.message : null))
+      const message = plainError(cause instanceof Error ? cause.message : null)
+      // The database refused for want of a name the lookup did not know was
+      // missing -- it failed, or the name was rejected since. Ask for one.
+      if (message === NAME_NEEDED) name.ask()
+      setError(message)
     } finally {
       setBusy(false)
     }
@@ -163,6 +185,17 @@ export function ReportForm({
         <p className="mt-1 text-sm text-slate-600">
           The pin is where you are looking on the map.
         </p>
+      )}
+
+      {name.needed && (
+        <div className="mt-4">
+          <NameField
+            id="report-name"
+            value={nameDraft}
+            onChange={setNameDraft}
+            rejected={name.mine?.status === 'rejected' ? name.mine.name : null}
+          />
+        </div>
       )}
 
       <div className="mt-4">

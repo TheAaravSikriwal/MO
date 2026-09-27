@@ -42,6 +42,7 @@ const allCode = stripComments(Object.values(sql).join('\n'))
 // rather than adding a role column to somebody else's table.
 const TABLES = [
   'admins',
+  'display_names',
   'reports',
   'report_photos',
   'votes',
@@ -275,17 +276,14 @@ describe('migrations — everything MO owns lives in the mo schema', () => {
     }
   })
 
-  it('reads the marketplace profiles table as the caller, not as the owner', () => {
-    // profile_names reads a table MO does not own. As SECURITY DEFINER it
-    // would keep handing names to anon after the marketplace tightened its own
-    // read policy -- silently overriding a decision made by the feature that
-    // owns the data. As invoker it stops working instead, which is the right
-    // direction for that failure to go.
-    const head = allCode.slice(
-      allCode.indexOf('create or replace function mo.profile_names'),
-      allCode.indexOf('as $$', allCode.indexOf('create or replace function mo.profile_names')),
-    )
-    expect(head).not.toContain('security definer')
+  it('reads nothing from the marketplace profiles table', () => {
+    // profile_names used to, and for a magic-link signup the name it found
+    // there was the local part of their email address -- readable by anyone,
+    // on every comment. MO references public.profiles as a foreign-key target
+    // and nothing else.
+    expect(allCode).not.toMatch(/from\s+public\.profiles\b/i)
+    expect(allCode).not.toMatch(/join\s+public\.profiles\b/i)
+    expect(allCode).not.toContain('function mo.profile_names')
   })
 
   it('creates the schema before anything goes in it', () => {
@@ -580,22 +578,17 @@ describe('migrations — unreviewed content stays unreachable', () => {
     expect(flat).toContain('revoke all on function mo.mark_report_cleaned(uuid) from public, anon')
   })
 
-  it('looks profile names up by id instead of listing them', () => {
-    // A listable view let anyone enumerate every account in the database.
-    expect(flat).toContain('create or replace function mo.profile_names(ids uuid[])')
-    expect(flat).not.toContain('create view public.public_profiles')
-  })
-
-  it('is the relation the app actually calls', () => {
-    // The view was replaced by this RPC while the app kept querying the view,
-    // so every comment author silently rendered as "someone" and the error was
-    // discarded. Pin the two together.
+  it('carries the author name in the comments view the app reads', () => {
+    // The app and the schema have drifted apart here before -- a view was
+    // replaced by an RPC while the app kept querying the view, and every
+    // author silently rendered as "someone". Pin the two together.
+    expect(viewOf('public_comments')).toMatch(/\)\s+as\s+author_name/i)
     const source = readFileSync(
       join(process.cwd(), 'src', 'lib', 'data', 'supabaseSource.ts'),
       'utf8',
     )
-    expect(source).toContain("rpc('profile_names'")
-    expect(source).not.toContain("from('public_profiles')")
+    expect(source).toContain('author_name')
+    expect(source).not.toContain("rpc('profile_names'")
   })
 
   it('reports whether an escalation was actually applied', () => {
@@ -648,17 +641,24 @@ describe('migrations — row level security is actually on', () => {
     },
   )
 
-  it.each(['votes', 'flags'])(
-    'scopes %s to your own rows, since it is readable',
-    (table) => {
-      // These two ARE granted, deliberately: neither holds content awaiting
-      // review, and the app needs them. What matters is that the policy stops
-      // you reading anybody else's.
-      expect(flat).toContain('grant select on mo.' + table + ' to authenticated')
-      const policy = flat.slice(flat.indexOf('create policy ' + table.slice(0, -1) + 's_select_own'))
-      expect(policy.slice(0, 300)).toMatch(/auth\.uid\(\)/)
-    },
-  )
+  it('scopes votes to your own rows, since it is readable', () => {
+    // Granted deliberately: it holds no content awaiting review, and the app
+    // needs it. What matters is that the policy stops you reading anybody
+    // else's.
+    expect(flat).toContain('grant select on mo.votes to authenticated')
+    const policy = flat.slice(flat.indexOf('create policy votes_select_own'))
+    expect(policy.slice(0, 300)).toMatch(/auth\.uid\(\)/)
+  })
+
+  it('gives no browser role any way to read flags back, not even your own', () => {
+    // A name flag's subject_id is a person's id. flag_comment_author and
+    // flag_report_author file it so the reader never sees it; a select grant,
+    // even scoped to your own rows, handed it straight back -- and with it,
+    // one lookup away, the author's email prefix.
+    expect(flat).not.toMatch(/grant select[^;]* on mo\.flags to (anon|authenticated)/)
+    expect(flat).not.toMatch(/grant all[^;]* on mo\.flags/)
+    expect(flat).toContain('revoke all on mo.flags from anon, authenticated')
+  })
 
   it('never exposes votes or flags to anonymous visitors', () => {
     // Who voted for what, and who complained about whom, are not public.
@@ -846,10 +846,10 @@ describe('migrations — the admin surface refuses non-admins', () => {
     expect(bodyOf('admin_moderation_queue')).not.toContain('admin_decide_moderation')
     expect(bodyOf('admin_decide_moderation')).not.toContain('admin_queue_size')
     expect(bodyOf('admin_queue_size')).not.toContain('flag_reopens_review')
-    // profile_names is the last function in 0003, so an over-read runs all the
-    // way into 0004 and picks up 0003's grants on the way.
-    expect(bodyOf('profile_names')).not.toContain('grant ')
-    expect(bodyOf('profile_names').length).toBeLessThan(600)
+    // set_display_name is followed directly by its grants, so an over-read
+    // picks them up.
+    expect(bodyOf('set_display_name(')).not.toContain('grant ')
+    expect(bodyOf('has_display_name(')).not.toContain('my_display_name')
   })
 
   it('closes the double-decide race', () => {
@@ -879,16 +879,24 @@ describe('migrations — nothing hands out unreviewed content', () => {
     expect(allCode).not.toMatch(/grant\s+\w+\s+on\s+public\.profiles/i)
   })
 
-  it('keeps the moderator list out of the name lookup', () => {
-    // profile_names is reachable by anon. It must not be a way to find out who
-    // moderates the map, which `mo.admins` otherwise keeps unreadable.
-    expect(bodyOf('profile_names').toLowerCase()).not.toContain('admins')
+  // Both ids are the key of the marketplace's public.profiles, which anon can
+  // read and where a magic-link signup's name is their email prefix. So a
+  // published id is a published email prefix, one request away.
+  it.each([
+    ['public_reports', 'reporter_id'],
+    ['public_comments', 'author_id'],
+  ])('%s gives %s to its owner and admins only', (view, column) => {
+    const definition = viewOf(view).replace(/\s+/g, ' ')
+    expect(definition).toContain(
+      `case when ${column === 'reporter_id' ? 'r' : 'c'}.${column} = auth.uid() or mo.is_admin() then ${column === 'reporter_id' ? 'r' : 'c'}.${column} else null end as ${column}`,
+    )
   })
 
-  it('bounds the name lookup so it cannot be used to page through accounts', () => {
-    const body = bodyOf('profile_names')
-    expect(body).toMatch(/where\s+p\.id\s*=\s*any\(ids\)/i)
-    expect(body).toMatch(/limit\s+\d+/i)
+  it('shows a chosen name to others only once it is approved', () => {
+    const definition = viewOf('public_comments').replace(/\s+/g, ' ')
+    const name = definition.slice(definition.indexOf('select d.name'))
+    expect(name).toContain("d.moderation_status = 'approved'")
+    expect(name).toContain('d.user_id = c.author_id')
   })
 
   it('still lets the app find out whether YOU are an admin', () => {
@@ -1451,5 +1459,278 @@ describe('the test sources themselves', () => {
 
     for (const root of roots) walk(root)
     expect(offenders).toEqual([])
+  })
+})
+
+describe('migrations — the name a person posts under', () => {
+  // A chosen name is free text shown in public. Everything else a person
+  // writes is withheld until reviewed, and a name is no exception -- it is
+  // also the thing that replaced publishing an email prefix, so the ways it
+  // could leak one again are pinned here too.
+
+  it('is a kind of thing that can be reviewed', () => {
+    expect(flat).toContain("create type mo.subject_type as enum ('photo', 'comment', 'note', 'name')")
+  })
+
+  it('refuses an email address as a name in the table itself', () => {
+    const table = flat.slice(flat.indexOf('create table mo.display_names'))
+    const definition = table.slice(0, table.indexOf(');'))
+    expect(definition).toContain("position('@' in name) = 0")
+    expect(definition).toContain("moderation_status moderation_status not null default 'pending'")
+  })
+
+  it('is not readable or writable by either browser role directly', () => {
+    expect(flat).toContain('revoke all on mo.display_names from anon, authenticated')
+    expect(flat).not.toMatch(/grant \w+[^;]* on mo\.display_names to (anon|authenticated)/)
+  })
+
+  it('is readable by the worker, which has to judge it', () => {
+    expect(flat).toContain('grant select on mo.display_names to service_role')
+  })
+
+  it.each(['reports_insert_own', 'comments_insert_own'])(
+    'requires a name before %s lets anything be posted',
+    (policy) => {
+      const text = flat.slice(flat.indexOf('create policy ' + policy))
+      expect(text.slice(0, text.indexOf(';'))).toContain('mo.has_display_name()')
+    },
+  )
+
+  it('does not count a rejected name as having one', () => {
+    expect(bodyOf('has_display_name(')).toMatch(/moderation_status\s*<>\s*'rejected'/)
+    expect(bodyOf('has_display_name(')).toMatch(/security\s+definer/)
+  })
+
+  it.each(['has_display_name()', 'my_display_name()', 'set_display_name(text)'])(
+    'keeps %s from signed-out visitors',
+    (fn) => {
+      expect(flat).toContain('revoke all on function mo.' + fn + ' from public, anon')
+      expect(flat).toContain('grant execute on function mo.' + fn + ' to authenticated')
+    },
+  )
+
+  it('acts only on the caller’s own name', () => {
+    for (const fn of ['has_display_name(', 'my_display_name(', 'set_display_name(']) {
+      expect(bodyOf(fn)).toContain('auth.uid()')
+    }
+    expect(bodyOf('set_display_name(')).toMatch(/where\s+user_id\s*=\s*me/)
+  })
+
+  it('sends every new name back through review, under a NEW job', () => {
+    // Resetting the old job row let a decision made about the OLD text land on
+    // the new one: admin_decide_moderation only checks that the verdict is
+    // null. A fresh job id means anything holding the old one names a job that
+    // no longer exists.
+    const body = bodyOf('set_display_name(')
+    expect(body).toMatch(/moderation_status\s*=\s*'pending'/)
+    const flatBody = body.replace(/\s+/g, ' ')
+    expect(flatBody).toContain("delete from mo.moderation_jobs where subject_type = 'name' and subject_id = me;")
+    expect(flatBody).toContain("insert into mo.moderation_jobs (subject_type, subject_id) values ('name', me);")
+    expect(flatBody.indexOf('delete from mo.moderation_jobs')).toBeLessThan(
+      flatBody.indexOf('insert into mo.moderation_jobs'),
+    )
+    expect(flatBody).not.toContain('on conflict (subject_type, subject_id) do update')
+  })
+
+  it('refuses, rather than errors, when the job a worker holds has vanished', () => {
+    // A renamed name's old job is deleted under the worker. That is the same
+    // situation as another worker finishing first, and gets the same answer.
+    const body = bodyOf('record_moderation_verdict').replace(/\s+/g, ' ')
+    expect(body).toContain('if not found then')
+    const branch = body.slice(body.indexOf('if not found then'))
+    expect(branch.slice(0, branch.indexOf('end if;'))).toContain('return false;')
+    expect(body).not.toContain("raise exception 'no such moderation job")
+  })
+
+  it('refuses an email address and the exact name that was rejected', () => {
+    const body = bodyOf('set_display_name(')
+    expect(body).toContain("position('@' in chosen) > 0")
+    expect(body).toMatch(/existing\.moderation_status\s*=\s*'rejected'[\s\S]*existing\.name\s*=\s*chosen[\s\S]*raise exception/)
+  })
+
+  it('names a pasted tab or line break itself, rather than leaving it to the CHECK', () => {
+    // The CHECK's failure arrives as a constraint name, which reads as "please
+    // try again" for input that can never succeed.
+    expect(bodyOf('set_display_name(')).toContain("if chosen ~ '[[:cntrl:]]' then")
+  })
+
+  it('limits how often a name can change, since each change is review work', () => {
+    expect(bodyOf('set_display_name(')).toMatch(/updated_at\s*>\s*now\(\)\s*-\s*interval\s*'1 day'/)
+  })
+
+  it.each(['record_moderation_verdict', 'admin_decide_moderation'])(
+    '%s applies a verdict on a name to that person’s name',
+    (fn) => {
+      // By user_id: a name has no id of its own, and `where id = ...` would
+      // not even compile against this table.
+      expect(bodyOf(fn)).toMatch(
+        /elsif job\.subject_type = 'name' then\s+update mo\.display_names set moderation_status = new_verdict where user_id = job\.subject_id/,
+      )
+    },
+  )
+
+  it('shows the admin the name, and never labels a person’s id as a report', () => {
+    const body = bodyOf('admin_moderation_queue')
+    expect(body).toMatch(/when 'name'\s+then \(select d\.name from mo\.display_names d where d\.user_id = j\.subject_id\)/)
+    // The report_id column used to end `else j.subject_id`, which for a name
+    // is a user id.
+    const reportColumn = body.slice(body.indexOf("when 'photo'   then (select p.report_id"))
+    expect(reportColumn.slice(0, reportColumn.indexOf('end'))).not.toMatch(/else\s+j\.subject_id/)
+  })
+
+  it('validates a complaint about a name, and refuses any kind it does not know', () => {
+    const body = bodyOf('validate_flag_subject')
+    expect(body).toMatch(/elsif new\.subject_type = 'name' then/)
+    expect(body).toMatch(/else\s+raise exception/)
+  })
+
+  it('withholds a name again when two people complain, like anything else', () => {
+    expect(bodyOf('flag_withholds_content')).toMatch(
+      /update mo\.display_names set moderation_status = 'pending'\s+where user_id = new\.subject_id and moderation_status = 'approved'/,
+    )
+  })
+
+  it('leaves no review job behind when a name is deleted', () => {
+    expect(triggerFor('cleanup_moderation_on_name_delete')).toContain('on mo.display_names')
+    expect(bodyOf('cleanup_moderation_for_deleted_name')).toMatch(/subject_id\s*=\s*old\.user_id/)
+  })
+})
+
+describe('migrations — a reader can complain about a name', () => {
+  // public_comments withholds author ids, so a reader has nothing to put in a
+  // 'name' flag's subject_id. flag_comment_author takes the comment instead.
+
+  it('is signed-in only, and hands nothing back', () => {
+    expect(flat).toContain('revoke all on function mo.flag_comment_author(uuid, text) from public, anon')
+    expect(flat).toContain('grant execute on function mo.flag_comment_author(uuid, text) to authenticated')
+    expect(bodyOf('flag_comment_author')).toMatch(/returns\s+void/)
+  })
+
+  it('files an ordinary flag, so every trigger on flags still applies', () => {
+    const body = bodyOf('flag_comment_author').replace(/\s+/g, ' ')
+    expect(body).toContain(
+      "insert into mo.flags (subject_type, subject_id, flagger_id, reason) values ('name', author, auth.uid(),",
+    )
+  })
+
+  it('only reaches a name other people can actually see', () => {
+    const body = bodyOf('flag_comment_author').replace(/\s+/g, ' ')
+    expect(body).toContain("c.moderation_status = 'approved'")
+    expect(body).toContain("d.user_id = author and d.moderation_status = 'approved'")
+    expect(body).toContain('if author = auth.uid() then')
+  })
+
+  it('tells the app whether you wrote a comment without giving it the id', () => {
+    expect(viewOf('public_comments').replace(/\s+/g, ' ')).toContain(
+      'coalesce(c.author_id = auth.uid(), false) as viewer_is_author',
+    )
+  })
+})
+
+describe('migrations — the name on a report', () => {
+  it('shows the reporter’s name on the same terms as a comment author’s', () => {
+    const definition = viewOf('public_reports').replace(/\s+/g, ' ')
+    expect(definition).toContain('as reporter_name')
+    const name = definition.slice(definition.indexOf('select d.name'))
+    expect(name).toContain('d.user_id = r.reporter_id')
+    expect(name).toContain("d.moderation_status = 'approved'")
+  })
+})
+
+describe('migrations — complaining about the name on a report', () => {
+  it('is signed-in only, and hands nothing back', () => {
+    expect(flat).toContain('revoke all on function mo.flag_report_author(uuid, text) from public, anon')
+    expect(flat).toContain('grant execute on function mo.flag_report_author(uuid, text) to authenticated')
+    expect(bodyOf('flag_report_author')).toMatch(/returns\s+void/)
+  })
+
+  it('files an ordinary name flag, only for a visible approved name, never your own', () => {
+    const body = bodyOf('flag_report_author').replace(/\s+/g, ' ')
+    expect(body).toContain(
+      "insert into mo.flags (subject_type, subject_id, flagger_id, reason) values ('name', author, auth.uid(),",
+    )
+    expect(body).toContain("r.moderation_status <> 'rejected'")
+    expect(body).toContain("d.user_id = author and d.moderation_status = 'approved'")
+    expect(body).toContain('if author = auth.uid() then')
+  })
+})
+
+describe('migrations — naming cannot be turned into unlimited review work', () => {
+  it('caps names a day whatever became of them, rejection included', () => {
+    const body = bodyOf('set_display_name(').replace(/\s+/g, ' ')
+    expect(body).toContain(
+      "if existing.window_started > now() - interval '1 day' and existing.changes_in_window >= 3 then",
+    )
+    // After the rejected/accepted branch, so a rejection cannot skip it.
+    expect(body.indexOf('changes_in_window >= 3')).toBeGreaterThan(
+      body.indexOf("if existing.moderation_status = 'rejected' then"),
+    )
+    expect(body).toContain('changes_in_window = case')
+  })
+
+  it('keeps the count in the table, where the client cannot reset it', () => {
+    const table = flat.slice(flat.indexOf('create table mo.display_names'))
+    const definition = table.slice(0, table.indexOf(');'))
+    expect(definition).toContain('changes_in_window integer not null default 1')
+    expect(definition).toContain('window_started timestamptz not null default now()')
+  })
+
+  it('never lets a name be flagged by a direct insert', () => {
+    const policy = flat.slice(flat.indexOf('create policy flags_insert_own'))
+    expect(policy.slice(0, policy.indexOf(';'))).toContain("and subject_type <> 'name'")
+  })
+
+  it('refuses a complaint about your own name, whatever the route', () => {
+    expect(bodyOf('validate_flag_subject')).toMatch(
+      /if new\.subject_id = new\.flagger_id then\s+raise exception 'you cannot report your own name'/,
+    )
+  })
+})
+
+describe('migrations — a name has to be visible, and pending names are not shown around', () => {
+  it('refuses invisible names in the table and in the function, with the same ranges as the app', async () => {
+    const { INVISIBLE_RANGES } = await import('../names/displayName')
+    const body = bodyOf('visible_length(')
+    const pairs = [...body.matchAll(/\((\d+), (\d+)\)/g)].map((m) => [Number(m[1]), Number(m[2])])
+    expect(pairs).toEqual(INVISIBLE_RANGES.map(([lo, hi]) => [lo, hi]))
+    expect(body).toMatch(/immutable/)
+
+    const table = flat.slice(flat.indexOf('create table mo.display_names'))
+    expect(table.slice(0, table.indexOf('moderation_status moderation_status'))).toContain(
+      'mo.visible_length(name) >= 2',
+    )
+    expect(bodyOf('set_display_name(')).toContain('if mo.visible_length(chosen) < 2 then')
+  })
+
+  it.each([
+    ['public_reports', 'reporter_name'],
+    ['public_comments', 'author_name'],
+  ])('%s shows a pending %s to its owner only, not to admins', (view, column) => {
+    const definition = viewOf(view).replace(/\s+/g, ' ')
+    const end = definition.indexOf('as ' + column)
+    const subquery = definition.slice(definition.lastIndexOf('select d.name', end), end)
+    expect(subquery).toContain("d.moderation_status = 'approved'")
+    expect(subquery).toContain('d.user_id = auth.uid()')
+    expect(subquery).not.toContain('is_admin')
+  })
+})
+
+describe('migrations — a renamed name can be reported afresh', () => {
+  it('deletes complaints about the old name, since flags allow one per person per subject', () => {
+    const body = bodyOf('set_display_name(').replace(/\s+/g, ' ')
+    expect(body).toContain("delete from mo.flags where subject_type = 'name' and subject_id = me;")
+    expect(body).not.toMatch(/update mo\.flags set resolved_at/)
+  })
+})
+
+describe('migrations — a rename and a decision cannot deadlock', () => {
+  it('takes the review job before the name, the same order the decision paths use', () => {
+    const body = bodyOf('set_display_name(').replace(/\s+/g, ' ')
+    const jobLock = body.indexOf(
+      "perform 1 from mo.moderation_jobs where subject_type = 'name' and subject_id = me for update;",
+    )
+    const nameLock = body.indexOf('select * into existing from mo.display_names where user_id = me for update;')
+    expect(jobLock).toBeGreaterThan(-1)
+    expect(nameLock).toBeGreaterThan(jobLock)
   })
 })

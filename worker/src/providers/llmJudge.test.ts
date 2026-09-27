@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { parseJudgeResponse, createLlmJudge, JUDGE_RUBRIC } from './llmJudge.js'
+import { parseJudgeResponse, createLlmJudge, JUDGE_RUBRIC, NAME_JUDGE_RUBRIC } from './llmJudge.js'
 
 const reply = (content: string) => ({
   ok: true,
@@ -72,7 +72,7 @@ describe('createLlmJudge', () => {
 
   it('calls the configured endpoint and text model', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
-    expect((await createLlmJudge(options).judgeText('rubbish by the bins')).verdict).toBe('safe')
+    expect((await createLlmJudge(options).judgeText('rubbish by the bins', 'report')).verdict).toBe('safe')
 
     const [url, init] = vi.mocked(fetch).mock.calls[0]
     expect(String(url)).toBe('http://localhost:11434/v1/chat/completions')
@@ -89,7 +89,7 @@ describe('createLlmJudge', () => {
 
   it('switching model is configuration, not code', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
-    await createLlmJudge({ ...options, textModel: 'llama-guard3:8b' }).judgeText('x')
+    await createLlmJudge({ ...options, textModel: 'llama-guard3:8b' }).judgeText('x', 'report')
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string).model).toBe(
       'llama-guard3:8b',
     )
@@ -97,7 +97,7 @@ describe('createLlmJudge', () => {
 
   it('switching machine is configuration, not code', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
-    await createLlmJudge({ ...options, endpoint: 'http://192.168.1.40:11434/v1' }).judgeText('x')
+    await createLlmJudge({ ...options, endpoint: 'http://192.168.1.40:11434/v1' }).judgeText('x', 'report')
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(
       'http://192.168.1.40:11434/v1/chat/completions',
     )
@@ -105,7 +105,7 @@ describe('createLlmJudge', () => {
 
   it('tolerates a trailing slash on the endpoint', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
-    await createLlmJudge({ ...options, endpoint: 'http://localhost:11434/v1/' }).judgeText('x')
+    await createLlmJudge({ ...options, endpoint: 'http://localhost:11434/v1/' }).judgeText('x', 'report')
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(
       'http://localhost:11434/v1/chat/completions',
     )
@@ -113,13 +113,13 @@ describe('createLlmJudge', () => {
 
   it('omits the auth header when no key is configured', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
-    await createLlmJudge(options).judgeText('x')
+    await createLlmJudge(options).judgeText('x', 'report')
     expect(vi.mocked(fetch).mock.calls[0][1]!.headers).not.toHaveProperty('Authorization')
   })
 
   it('sends the auth header when a key is configured', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
-    await createLlmJudge({ ...options, apiKey: 'sk-test' }).judgeText('x')
+    await createLlmJudge({ ...options, apiKey: 'sk-test' }).judgeText('x', 'report')
     expect(vi.mocked(fetch).mock.calls[0][1]!.headers).toMatchObject({
       Authorization: 'Bearer sk-test',
     })
@@ -127,17 +127,62 @@ describe('createLlmJudge', () => {
 
   it('asks for deterministic output', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
-    await createLlmJudge(options).judgeText('x')
+    await createLlmJudge(options).judgeText('x', 'report')
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string).temperature).toBe(0)
   })
 
   it('returns uncertain when the model sends no content', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }))
-    expect((await createLlmJudge(options).judgeText('x')).verdict).toBe('uncertain')
+    expect((await createLlmJudge(options).judgeText('x', 'report')).verdict).toBe('uncertain')
   })
 
   it('throws when the endpoint errors, so the pipeline escalates', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
-    await expect(createLlmJudge(options).judgeText('x')).rejects.toThrow('503')
+    await expect(createLlmJudge(options).judgeText('x', 'report')).rejects.toThrow('503')
+  })
+})
+
+describe('createLlmJudge — names', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const options = {
+    endpoint: 'http://localhost:11434/v1',
+    textModel: 'qwen3:8b',
+    visionModel: 'qwen2.5vl:7b',
+  }
+
+  const sent = () => JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)
+
+  it('judges a name by the name rules, and says it is a name', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
+    await createLlmJudge(options).judgeText('Sam', 'name')
+
+    expect(sent().messages[0].content).toBe(NAME_JUDGE_RUBRIC)
+    expect(sent().messages[1].content).toContain('display name')
+    expect(sent().messages[1].content).toContain('Sam')
+  })
+
+  it('judges a note by the report rules', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
+    await createLlmJudge(options).judgeText('rubbish by the bins', 'report')
+    expect(sent().messages[0].content).toBe(JUDGE_RUBRIC)
+  })
+})
+
+describe('the name rubric', () => {
+  it('does not turn a name down for being unrelated to litter', () => {
+    // The report rubric does, and every name is. Judged by it, "Sam" is
+    // rejected and that person can never post.
+    expect(JUDGE_RUBRIC).toContain('unrelated to litter or pollution')
+    expect(NAME_JUDGE_RUBRIC).not.toContain('unrelated to litter')
+    expect(NAME_JUDGE_RUBRIC).toContain('does not need to mention litter')
+  })
+
+  it('keeps the house rule about places and the people in them', () => {
+    expect(NAME_JUDGE_RUBRIC).toContain('a place, a neighbourhood, or the people who live there')
+  })
+
+  it('turns down an email address used as a name', () => {
+    expect(NAME_JUDGE_RUBRIC).toContain('email address')
   })
 })

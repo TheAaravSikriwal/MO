@@ -30,6 +30,8 @@ import type {
   CommentView,
   CurrentUser,
   DataSource,
+  DirectFlagSubject,
+  MyDisplayName,
   NewReport,
   PhotoView,
   QueueItem,
@@ -124,6 +126,32 @@ export class SupabaseDataSource implements DataSource {
 
   async signOut(): Promise<void> {
     await this.client.auth.signOut()
+  }
+
+  // --- the name you post under ----------------------------------------------
+
+  /**
+   * Through RPCs, because mo.display_names is revoked from both browser roles.
+   * Both act on the caller's own row only.
+   *
+   * Throws rather than returning null on failure: null means "has not chosen
+   * one", and reading a failed lookup that way would ask somebody who already
+   * has a name to choose again -- and then refuse the new one as too soon.
+   */
+  async getMyDisplayName(): Promise<MyDisplayName | null> {
+    const { data, error } = await this.client.rpc('my_display_name')
+    if (error) throw new Error(error.message)
+    const row = ((data ?? []) as Array<{ name: string; moderation_status: string }>)[0]
+    if (!row) return null
+    return {
+      name: String(row.name),
+      status: row.moderation_status as MyDisplayName['status'],
+    }
+  }
+
+  async setDisplayName(name: string): Promise<void> {
+    const { error } = await this.client.rpc('set_display_name', { new_name: name })
+    if (error) throw new Error(error.message)
   }
 
   // --- reports ------------------------------------------------------------
@@ -241,6 +269,9 @@ export class SupabaseDataSource implements DataSource {
         photos: photosByReport.get(id) ?? [],
         viewerHasVoted: votedIds.has(id),
         viewerIsReporter: viewerId !== null && row.reporter_id === viewerId,
+        // From public_reports, which only fills it once the name is approved
+        // (or for the reporter themselves). Never looked up from an id.
+        reporterName: (row.reporter_name as string | null) ?? null,
       }
     })
   }
@@ -460,45 +491,25 @@ export class SupabaseDataSource implements DataSource {
   }
 
   async listComments(reportId: string): Promise<CommentView[]> {
+    // The name comes with the comment. public_comments carries the author's
+    // chosen name once it is approved, and withholds author_id from everybody
+    // but the author: that id is the key of the marketplace's profiles table,
+    // where a magic-link signup's name is their email prefix. There used to be
+    // a second call here resolving ids to exactly those names.
     const { data, error } = await this.client
       .from('public_comments')
-      .select('id, body, author_id, created_at, moderation_status')
+      .select('id, body, author_name, viewer_is_author, created_at, moderation_status')
       .eq('report_id', reportId)
       .order('created_at', { ascending: true })
     if (error) throw new Error(error.message)
-    const rows = data ?? []
-    if (rows.length === 0) return []
 
-    // Names come from the profile_names RPC, which takes the ids you already
-    // hold and returns id and display_name only.
-    //
-    // Not a privacy control, and it should not be described as one: in this
-    // database `public.profiles` is readable by anon anyway, because the
-    // marketplace grants that. It is here because it is the right shape -- one
-    // bounded call for names MO already holds ids for -- and because it does
-    // not depend on the marketplace's read policy staying open.
-    const authorIds = [...new Set(rows.map((row) => String(row.author_id)))]
-    const { data: profiles, error: nameError } = await this.client.rpc('profile_names', {
-      ids: authorIds,
-    })
-    if (nameError) {
-      // Names are a nicety; the comments still matter. Say so rather than
-      // silently rendering everyone as "someone" forever.
-      console.error('[mo] could not load comment author names:', nameError.message)
-    }
-
-    const nameById = new Map(
-      ((profiles ?? []) as Array<{ id: string; display_name: string | null }>).map((p) => [
-        String(p.id),
-        p.display_name ?? null,
-      ]),
-    )
-
-    return rows.map((row) => ({
+    return (data ?? []).map((row) => ({
       id: String(row.id),
       body: String(row.body),
-      // Nobody is required to set a name, so "someone" is the honest fallback.
-      authorName: nameById.get(String(row.author_id)) ?? 'someone',
+      // Null until the author's name has been approved.
+      authorName: (row.author_name as string | null) ?? 'someone',
+      authorNamed: typeof row.author_name === 'string',
+      viewerIsAuthor: row.viewer_is_author === true,
       createdAt: String(row.created_at),
       moderationStatus: row.moderation_status as CommentView['moderationStatus'],
     }))
@@ -520,13 +531,31 @@ export class SupabaseDataSource implements DataSource {
     if (error) throw new Error(error.message)
   }
 
-  async flag(subjectType: QueueSubject, subjectId: string, reason: string): Promise<void> {
+  async flag(subjectType: DirectFlagSubject, subjectId: string, reason: string): Promise<void> {
     const user = await this.getCurrentUser()
     if (!user) throw new Error('Please sign in to report this.')
     const { error } = await this.client.from('flags').insert({
       subject_type: subjectType,
       subject_id: subjectId,
       flagger_id: user.id,
+      reason,
+    })
+    if (error) throw new Error(error.message)
+  }
+
+  async flagCommentAuthorName(commentId: string, reason: string): Promise<void> {
+    // Through the RPC: the flag's subject is the author's id, which this
+    // client is never given. The function files it and returns nothing.
+    const { error } = await this.client.rpc('flag_comment_author', {
+      target_comment: commentId,
+      reason,
+    })
+    if (error) throw new Error(error.message)
+  }
+
+  async flagReporterName(reportId: string, reason: string): Promise<void> {
+    const { error } = await this.client.rpc('flag_report_author', {
+      target_report: reportId,
       reason,
     })
     if (error) throw new Error(error.message)

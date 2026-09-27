@@ -13,7 +13,10 @@ const photo = (name = 'litter.jpg', type = 'image/jpeg', size = 1024) => {
 }
 
 const setup = (overrides: Partial<Parameters<typeof ReportForm>[0]> = {}) => {
-  const data = new FakeDataSource({ id: 'u1', email: 'a@b.com', isAdmin: false })
+  const data = new FakeDataSource(
+    { id: 'u1', email: 'a@b.com', isAdmin: false },
+    { displayName: 'Sam' },
+  )
   const onSubmitted = vi.fn()
   const onCancel = vi.fn()
   render(
@@ -266,6 +269,7 @@ describe('ReportForm — sending', () => {
 
   it('shows a plain message if sending fails', async () => {
     const failing = {
+      getMyDisplayName: vi.fn().mockResolvedValue({ name: 'Sam', status: 'approved' }),
       createReport: vi.fn().mockRejectedValue(new Error('network is down')),
     } as never
     const { user } = setup({ data: failing })
@@ -353,5 +357,166 @@ describe('ReportForm — the photo model gate', () => {
     const { user } = setup({ screenPhoto })
     await user.upload(screen.getByLabelText(/^photo$/i), [photo('a.jpg'), photo('b.jpg')])
     await waitFor(() => expect(screenPhoto).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('ReportForm — choosing a name', () => {
+  /** A signed-in user who has never chosen a name, as on a first sign-in. */
+  const setupNameless = (data = new FakeDataSource({ id: 'u2', email: 'sam.jones@example.com', isAdmin: false })) => {
+    const onSubmitted = vi.fn()
+    render(
+      <ReportForm
+        data={data}
+        lat={51.5007}
+        lng={-0.1246}
+        zoom={16}
+        signedIn
+        onSubmitted={onSubmitted}
+        onCancel={vi.fn()}
+        screenPhoto={screenPhotoFileOnly}
+      />,
+    )
+    return { data, onSubmitted, user: userEvent.setup() }
+  }
+
+  it('asks for a name before a first report', async () => {
+    setupNameless()
+    expect(await screen.findByLabelText(/your name/i)).toBeInTheDocument()
+  })
+
+  it('does not ask somebody who already has one', async () => {
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
+    const lookup = vi.spyOn(data, 'getMyDisplayName')
+    setupNameless(data)
+    // Wait for the form's OWN lookup to have resolved before asserting the
+    // field is absent -- asserting straight away passes before it has run.
+    await waitFor(() => expect(lookup).toHaveBeenCalled())
+    await lookup.mock.results[0].value
+    await waitFor(() => expect(screen.queryByLabelText(/your name/i)).not.toBeInTheDocument())
+    expect(screen.getByLabelText(/^photo$/i)).toBeInTheDocument()
+  })
+
+  it('will not send without one', async () => {
+    const { user, onSubmitted } = setupNameless()
+    await screen.findByLabelText(/your name/i)
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    await user.click(screen.getByRole('button', { name: /add report/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/between 2 and 30 characters/i)
+    expect(onSubmitted).not.toHaveBeenCalled()
+  })
+
+  it('refuses an email address as a name, before sending anything', async () => {
+    const { user, data, onSubmitted } = setupNameless()
+    await user.type(await screen.findByLabelText(/your name/i), 'sam@example.com')
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    await user.click(screen.getByRole('button', { name: /add report/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/rather than an email address/i)
+    expect(onSubmitted).not.toHaveBeenCalled()
+    expect(await data.getMyDisplayName()).toBeNull()
+  })
+
+  it('saves the name, then sends the report', async () => {
+    const { user, data, onSubmitted } = setupNameless()
+    await user.type(await screen.findByLabelText(/your name/i), '  Sam  ')
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    await user.click(screen.getByRole('button', { name: /add report/i }))
+
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1))
+    // Trimmed, and pending: nothing a person types is approved on arrival.
+    expect(await data.getMyDisplayName()).toEqual({ name: 'Sam', status: 'pending' })
+  })
+
+  it('asks again, and says why, when the last name was rejected', async () => {
+    const data = new FakeDataSource(
+      { id: 'u3', isAdmin: false },
+      { displayName: 'Rude Name' },
+    )
+    data.decideName('u3', 'rejected')
+    setupNameless(data)
+
+    expect(await screen.findByLabelText(/your name/i)).toBeInTheDocument()
+    expect(screen.getByText(/"Rude Name" was not accepted/)).toBeInTheDocument()
+  })
+
+  it('asks for a name when the database refuses a post for want of one', async () => {
+    // The lookup failed, so the form could not know. The database is the
+    // judge, and its refusal must turn into a question rather than a dead end.
+    const refusing = {
+      getMyDisplayName: vi.fn().mockRejectedValue(new Error('network is down')),
+      createReport: vi
+        .fn()
+        .mockRejectedValue(new Error('new row violates row-level security policy for table "reports"')),
+    } as never
+    const { user } = setup({ data: refusing })
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    expect(screen.queryByLabelText(/your name/i)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /add report/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/choose a name before posting/i)
+    expect(await screen.findByLabelText(/your name/i)).toBeInTheDocument()
+  })
+})
+
+describe('ReportForm — a name with a tab in it', () => {
+  it('says what is wrong, instead of "please try again"', async () => {
+    const data = new FakeDataSource({ id: 'u2', isAdmin: false })
+    const onSubmitted = vi.fn()
+    render(
+      <ReportForm
+        data={data}
+        lat={51.5007}
+        lng={-0.1246}
+        zoom={16}
+        signedIn
+        onSubmitted={onSubmitted}
+        onCancel={vi.fn()}
+        screenPhoto={screenPhotoFileOnly}
+      />,
+    )
+    const field = await screen.findByLabelText(/your name/i)
+    // fireEvent, because typing a tab moves focus rather than entering one.
+    fireEvent.change(field, { target: { value: 'Sam' + String.fromCharCode(9) + 'J' } })
+    const user = userEvent.setup()
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    await user.click(screen.getByRole('button', { name: /add report/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/without tabs or line breaks/i)
+    expect(onSubmitted).not.toHaveBeenCalled()
+  })
+})
+
+describe('ReportForm — a name rejected after the page loaded', () => {
+  it('says the name was not accepted, rather than asking as if it was never given', async () => {
+    const data = new FakeDataSource({ id: 'u5', isAdmin: false }, { displayName: 'Rude Name' })
+    const onSubmitted = vi.fn()
+    render(
+      <ReportForm
+        data={data}
+        lat={51.5007}
+        lng={-0.1246}
+        zoom={16}
+        signedIn
+        onSubmitted={onSubmitted}
+        onCancel={vi.fn()}
+        screenPhoto={screenPhotoFileOnly}
+      />,
+    )
+    const user = userEvent.setup()
+    await user.upload(screen.getByLabelText(/^photo$/i), photo())
+    await screen.findByText('litter.jpg')
+    // Rejected while the form was open.
+    data.decideName('u5', 'rejected')
+    await user.click(screen.getByRole('button', { name: /add report/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/choose a name before posting/i)
+    expect(await screen.findByText(/"Rude Name" was not accepted/)).toBeInTheDocument()
+    expect(onSubmitted).not.toHaveBeenCalled()
   })
 })

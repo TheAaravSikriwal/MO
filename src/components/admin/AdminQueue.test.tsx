@@ -9,7 +9,7 @@ const setup = (
   seeds: Array<Partial<QueueItem> & { jobId: string }> = [],
   { isAdmin = true }: { isAdmin?: boolean } = {},
 ) => {
-  const data = new FakeDataSource({ id: 'admin-1', email: 'a@b.com', isAdmin })
+  const data = new FakeDataSource({ id: 'admin-1', email: 'a@b.com', isAdmin }, { displayName: 'Sam' })
   for (const seed of seeds) data.seedQueueItem(seed)
   const onDecided = vi.fn()
   const onClose = vi.fn()
@@ -19,7 +19,7 @@ const setup = (
 
 describe('AdminQueue — who can see it', () => {
   it('renders nothing at all for a non-admin', () => {
-    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
     const { container } = render(
       <AdminQueue data={data} isAdmin={false} onClose={vi.fn()} />,
     )
@@ -27,7 +27,7 @@ describe('AdminQueue — who can see it', () => {
   })
 
   it('does not even ask the server for the queue when not an admin', () => {
-    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
     const spy = vi.spyOn(data, 'listModerationQueue')
     render(<AdminQueue data={data} isAdmin={false} onClose={vi.fn()} />)
     expect(spy).not.toHaveBeenCalled()
@@ -36,7 +36,7 @@ describe('AdminQueue — who can see it', () => {
   it('shows the error rather than an empty queue if the server refuses', async () => {
     // A non-admin getting "nothing to review" would read as "all clear", which
     // is the opposite of the truth.
-    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
     render(<AdminQueue data={data} isAdmin onClose={vi.fn()} />)
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(/permission/i)
@@ -57,7 +57,7 @@ describe('AdminQueue — what it shows', () => {
   })
 
   it('says when more are waiting than it is showing', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seedQueueItem({ jobId: 'j1' })
     vi.spyOn(data, 'getModerationQueueSize').mockResolvedValue(200)
     render(<AdminQueue data={data} isAdmin onClose={vi.fn()} />)
@@ -169,7 +169,7 @@ describe('AdminQueue — deciding', () => {
   })
 
   it('actually applies the decision to the photo it judged', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     const report = data.seed({
       id: 'r1',
       lat: 51.5,
@@ -196,7 +196,7 @@ describe('AdminQueue — deciding', () => {
   })
 
   it('withholds the photo again when it is removed', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seed({
       id: 'r1',
       lat: 51.5,
@@ -224,7 +224,7 @@ describe('AdminQueue — deciding', () => {
 
   it('applies the decision to the comment it judged, not just the job', async () => {
     // Comments are the default subject type and were previously never applied.
-    const data = new FakeDataSource({ id: 'admin-1', email: 'a@b.com', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', email: 'a@b.com', isAdmin: true }, { displayName: 'Sam' })
     data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
     await data.addComment('r1', 'a comment awaiting review')
     const posted = (await data.listComments('r1'))[0]
@@ -247,7 +247,7 @@ describe('AdminQueue — deciding', () => {
   })
 
   it('makes an approved note readable again', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seed({ id: 'r1', lat: 51.5, lng: -0.12, note: null, noteStatus: 'pending' })
     data.seedQueueItem({
       jobId: 'j1',
@@ -269,7 +269,7 @@ describe('AdminQueue — deciding', () => {
   })
 
   it('surfaces a failed decision instead of pretending it worked', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seedQueueItem({ jobId: 'j1', text: 'something' })
     vi.spyOn(data, 'decideModerationItem').mockRejectedValue(
       new Error('permission denied for function admin_decide_moderation'),
@@ -287,7 +287,7 @@ describe('AdminQueue — deciding', () => {
   })
 
   it('says when someone else decided it first', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seedQueueItem({ jobId: 'j1', text: 'something' })
     vi.spyOn(data, 'decideModerationItem').mockRejectedValue(
       new Error('this item was decided by someone else a moment ago'),
@@ -300,7 +300,7 @@ describe('AdminQueue — deciding', () => {
   })
 
   it('disables both buttons while a decision is in flight, so it cannot be sent twice', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seedQueueItem({ jobId: 'j1', text: 'once' })
     let release: (() => void) | undefined
     const decide = vi
@@ -344,7 +344,7 @@ describe('AdminQueue — language', () => {
 
 describe('AdminQueue — a complaint reaches a person', () => {
   it('puts flagged content into the queue even after it was already allowed', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', email: 'a@b.com', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', email: 'a@b.com', isAdmin: true }, { displayName: 'Sam' })
     data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
     await data.addComment('r1', 'a comment that was let through')
     const posted = (await data.listComments('r1'))[0]
@@ -363,7 +363,7 @@ describe('AdminQueue — a complaint reaches a person', () => {
 
   it('does not let one person alone unpublish content', async () => {
     // Otherwise a single account could walk the map and take down every photo.
-    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
     data.seed({
       id: 'r1',
       lat: 51.5,
@@ -379,7 +379,7 @@ describe('AdminQueue — a complaint reaches a person', () => {
   })
 
   it('refuses a second complaint from the same person', async () => {
-    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
     data.seed({
       id: 'r1',
       lat: 51.5,
@@ -391,7 +391,7 @@ describe('AdminQueue — a complaint reaches a person', () => {
   })
 
   it('withholds content once a second person complains', async () => {
-    const data = new FakeDataSource({ id: 'u1', isAdmin: false })
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
     data.seed({
       id: 'r1',
       lat: 51.5,
@@ -408,7 +408,7 @@ describe('AdminQueue — a complaint reaches a person', () => {
   })
 
   it('brings an already-decided item back for a second look', async () => {
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
     await data.addComment('r1', 'borderline')
     const posted = (await data.listComments('r1'))[0]
@@ -443,7 +443,7 @@ describe('AdminQueue — a complaint reaches a person', () => {
 describe('AdminQueue — the header never lies about what is left', () => {
   it('does not say "nothing to review" while more are still queued', async () => {
     // The page is capped, so clearing the visible items is not an empty queue.
-    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true })
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seedQueueItem({ jobId: 'j1', text: 'the only one shown' })
     vi.spyOn(data, 'getModerationQueueSize').mockResolvedValue(150)
     vi.spyOn(data, 'listModerationQueue').mockResolvedValue([
@@ -489,3 +489,49 @@ async function user_click_allow() {
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: /allow/i }))
 }
+
+describe('AdminQueue — a name someone chose', () => {
+  const setupName = () => {
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
+    data.seedName('u9', 'Litter Picker')
+    data.seedQueueItem({ jobId: 'j1', subjectType: 'name', subjectId: 'u9', text: 'Litter Picker' })
+    render(<AdminQueue data={data} isAdmin onClose={vi.fn()} />)
+    return { data, user: userEvent.setup() }
+  }
+
+  it('shows the name and says what it is', async () => {
+    setupName()
+    expect(await screen.findByText('Litter Picker')).toBeInTheDocument()
+    expect(screen.getByText('Name someone chose')).toBeInTheDocument()
+  })
+
+  it('approves that person’s name when allowed', async () => {
+    const { data, user } = setupName()
+    await user.click(await screen.findByRole('button', { name: /allow/i }))
+    await waitFor(() => expect(data.nameOf('u9')).toEqual({ name: 'Litter Picker', status: 'approved' }))
+  })
+
+  it('rejects it when removed, so they are asked for another', async () => {
+    const { data, user } = setupName()
+    await user.click(await screen.findByRole('button', { name: /remove/i }))
+    await waitFor(() => expect(data.nameOf('u9')?.status).toBe('rejected'))
+  })
+})
+
+describe('AdminQueue — a name changed while it was on screen', () => {
+  it('refuses the decision rather than applying it to the new name', async () => {
+    // The admin is looking at "Sam". The owner renames it. Approving what the
+    // admin saw must not approve text they never saw.
+    const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
+    data.seedQueueItem({ jobId: 'j1', subjectType: 'name', subjectId: 'admin-1', text: 'Sam' })
+    render(<AdminQueue data={data} isAdmin onClose={vi.fn()} />)
+    const user = userEvent.setup()
+    const allow = await screen.findByRole('button', { name: /allow/i })
+
+    await data.setDisplayName('Something Else')
+    await user.click(allow)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be found/i)
+    expect(data.nameOf('admin-1')).toEqual({ name: 'Something Else', status: 'pending' })
+  })
+})

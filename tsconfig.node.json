@@ -23,6 +23,8 @@
   "include": [
     "vite.config.ts",
     "src/lib/db/migrations.test.ts",
+    "src/lib/db/migrations.run.test.ts",
+    "src/lib/db/pgHarness.ts",
     "src/components/map/CellLayer.test.tsx"
   ]
 }

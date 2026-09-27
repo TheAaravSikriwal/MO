@@ -1,4 +1,4 @@
-import type { Judge, JudgeResult } from '../types.js'
+import type { Judge, JudgeResult, TextPurpose } from '../types.js'
 
 /**
  * Tier 3 — the only tier that knows MO's own house rules.
@@ -39,6 +39,35 @@ Important context, so you do not over-flag:
 
 Use UNCERTAIN when you genuinely cannot tell. A person will review those, so an honest "uncertain" is more useful than a guess.`
 
+/**
+ * For the name a person chooses to show next to their comments.
+ *
+ * Separate from RUBRIC because that one rejects anything "unrelated to litter
+ * or pollution", and a name always is. The house rule about places and the
+ * people in them still applies: a handle can disparage a neighbourhood as
+ * easily as a note can.
+ */
+const NAME_RUBRIC = `You review display names on MO, a community map where people report litter and pollution in real places. A display name is shown next to the comments a person posts. It is NOT a litter report and does not need to mention litter.
+
+Answer with a JSON object only, in this exact shape:
+{"verdict": "safe" | "unsafe" | "uncertain", "reason": "<one short sentence>"}
+
+Mark UNSAFE if the name:
+- is sexual or obscene
+- is a slur, or targets a person or group by race, religion, nationality, gender, disability, or similar
+- attacks, demeans, or stereotypes a place, a neighbourhood, or the people who live there
+- harasses, threatens, or insults a person
+- pretends to be an official body, such as the council, the police, or the people who run MO
+- is an email address, a phone number, a web address, or advertising
+
+Mark SAFE if it is an ordinary name, nickname, initials, or a harmless handle, such as "Sam", "J. Okafor", "Riverside Litter Picker" or "binbag_hero". Most names are safe.
+
+Important context, so you do not over-flag:
+- Real names from any culture or language are safe.
+- Names sometimes contain letter sequences that look like rude words. Judge the meaning, not the letters.
+
+Use UNCERTAIN when you genuinely cannot tell. A person will review those, so an honest "uncertain" is more useful than a guess.`
+
 interface ChatMessageContent {
   type: string
   text?: string
@@ -74,7 +103,11 @@ export interface JudgeOptions {
 }
 
 export function createLlmJudge(options: JudgeOptions): Judge {
-  const chat = async (model: string, content: string | ChatMessageContent[]): Promise<JudgeResult> => {
+  const chat = async (
+    model: string,
+    content: string | ChatMessageContent[],
+    rubric: string = RUBRIC,
+  ): Promise<JudgeResult> => {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
     try {
@@ -88,7 +121,7 @@ export function createLlmJudge(options: JudgeOptions): Judge {
           model,
           temperature: 0,
           messages: [
-            { role: 'system', content: RUBRIC },
+            { role: 'system', content: rubric },
             { role: 'user', content },
           ],
         }),
@@ -114,7 +147,10 @@ export function createLlmJudge(options: JudgeOptions): Judge {
 
   return {
     name: `llm-judge:${options.textModel}/${options.visionModel}`,
-    judgeText: (text) => chat(options.textModel, `Review this text submission:\n\n${text}`),
+    judgeText: (text: string, purpose: TextPurpose) =>
+      purpose === 'name'
+        ? chat(options.textModel, `Review this display name:\n\n${text}`, NAME_RUBRIC)
+        : chat(options.textModel, `Review this text submission:\n\n${text}`),
     judgeImage: (imageUrl) =>
       chat(options.visionModel, [
         { type: 'text', text: 'Review this photo submitted as a litter report.' },
@@ -124,3 +160,4 @@ export function createLlmJudge(options: JudgeOptions): Judge {
 }
 
 export const JUDGE_RUBRIC = RUBRIC
+export const NAME_JUDGE_RUBRIC = NAME_RUBRIC

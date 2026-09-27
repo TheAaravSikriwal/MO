@@ -312,7 +312,12 @@ declare
 begin
   select * into job from mo.moderation_jobs where id = job_id;
   if not found then
-    raise exception 'no such moderation job: %', job_id;
+    -- A refusal, not an error. The job can legitimately vanish while a worker
+    -- is judging it: its subject was deleted, or a name was changed and given
+    -- a fresh job (see set_display_name in 0002). Raising made the worker log
+    -- a failure and try to mark a row that no longer exists; false is the
+    -- same answer as "someone else got there first", which is what happened.
+    return false;
   end if;
 
   -- `status = 'in_progress'` is what stops the worker overwriting a job that a
@@ -372,6 +377,9 @@ begin
     -- permanently hidden with no job left to release it, and drop a rejected
     -- one's pin off the map entirely.
     update mo.reports set note_status = new_verdict where id = job.subject_id;
+  elsif job.subject_type = 'name' then
+    -- A name's subject_id is the person's id, not a row id of its own.
+    update mo.display_names set moderation_status = new_verdict where user_id = job.subject_id;
   end if;
 
   return true;

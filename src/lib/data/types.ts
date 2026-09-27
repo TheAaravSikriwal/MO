@@ -25,7 +25,12 @@ export interface PhotoView {
 export interface CommentView {
   id: string
   body: string
+  /** The author's chosen name, or "someone" while it is still being checked. */
   authorName: string
+  /** Whether a real name is shown, as opposed to the "someone" fallback. */
+  authorNamed: boolean
+  /** Whether the signed-in person wrote this. */
+  viewerIsAuthor: boolean
   createdAt: string
   moderationStatus: ModerationStatus
 }
@@ -47,9 +52,29 @@ export interface ReportView {
   /** Whether the signed-in person has already confirmed this one. */
   viewerHasVoted: boolean
   viewerIsReporter: boolean
+  /** The reporter's chosen name, or null while it is still being checked. */
+  reporterName: string | null
 }
 
-export type QueueSubject = 'photo' | 'comment' | 'note'
+export type QueueSubject = 'photo' | 'comment' | 'note' | 'name'
+
+/**
+ * What a reader may flag directly. Not a name: its subject is a person's id,
+ * and the only one a client knows is its own. Names go through
+ * flagCommentAuthorName and flagReporterName instead.
+ */
+export type DirectFlagSubject = Exclude<QueueSubject, 'name'>
+
+/**
+ * The name you post under, and where its review has got to.
+ *
+ * Other people see it only once it is approved. A rejected name has to be
+ * replaced before you can post again.
+ */
+export interface MyDisplayName {
+  name: string
+  status: ModerationStatus
+}
 
 /** One item a person has to judge, because no machine tier could. */
 export interface QueueItem {
@@ -57,7 +82,7 @@ export interface QueueItem {
   subjectType: QueueSubject
   subjectId: string
   reportId: string | null
-  /** The comment body or report note. Null for photos. */
+  /** The comment body, report note or chosen name. Null for photos. */
   text: string | null
   /** The actual image. Admins see it even while it is withheld from everyone else. */
   photoUrl: string | null
@@ -118,6 +143,15 @@ export interface DataSource {
   signInWithEmail(email: string): Promise<void>
   signOut(): Promise<void>
 
+  /** Null when you have not chosen one yet. */
+  getMyDisplayName(): Promise<MyDisplayName | null>
+  /**
+   * Choose or change the name shown next to your comments. Required before
+   * your first report or comment, so nothing is ever signed with a name
+   * derived from your email address.
+   */
+  setDisplayName(name: string): Promise<void>
+
   listReportsInView(bounds: ViewBounds, filters: RollupFilters): Promise<ReportView[]>
 
   /**
@@ -151,7 +185,14 @@ export interface DataSource {
 
   markCleaned(reportId: string): Promise<void>
 
-  flag(subjectType: QueueSubject, subjectId: string, reason: string): Promise<void>
+  flag(subjectType: DirectFlagSubject, subjectId: string, reason: string): Promise<void>
+  /**
+   * Complain about the name shown on a comment. Takes the comment, because a
+   * reader is never given the author's id to complain about directly.
+   */
+  flagCommentAuthorName(commentId: string, reason: string): Promise<void>
+  /** The same, for the name shown on a report. */
+  flagReporterName(reportId: string, reason: string): Promise<void>
 
   // --- tier 4: admin only -------------------------------------------------
 

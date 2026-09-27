@@ -6,6 +6,7 @@ import {
   summariseScores,
   DEFAULT_REASON,
   DEFAULT_ERROR,
+  NAME_NEEDED,
 } from './plainWords'
 
 /** Words that must never reach a person, wherever the string came from. */
@@ -226,5 +227,43 @@ describe('plainError — actionable causes stay distinct', () => {
 
   it('still falls back for anything genuinely unrecognised', () => {
     expect(plainError('ERR_8004: segmentation fault')).toBe(DEFAULT_ERROR)
+  })
+})
+
+describe('plainError — choosing a name', () => {
+  it.each([
+    ['new row violates row-level security policy for table "reports"', /choose a name before posting/i],
+    ['new row violates row-level security policy for table "comments"', /choose a name before posting/i],
+    ['a name must be between 2 and 30 characters', /between 2 and 30 characters/i],
+    ['a name cannot contain @', /rather than an email address/i],
+    ['that name was not accepted; please choose a different one', /not accepted.*different one/i],
+    ['a name can be changed once a day', /once a day/i],
+    ['your name could not be saved; please try again', /could not be saved/i],
+    ['a name cannot contain tabs or line breaks', /without tabs or line breaks/i],
+    ['too many new names today; please try again tomorrow', /several names today/i],
+    ['a name must have at least 2 visible characters', /characters that show up/i],
+    ['you cannot report your own name', /cannot report your own name/i],
+    // The table's own CHECK, should anything reach it past the function.
+    [
+      'new row for relation "display_names" violates check constraint "display_names_name_check"',
+      /without tabs or line breaks/i,
+    ],
+  ])('turns %j into something a person can act on', (raw, expected) => {
+    const sentence = plainError(raw)
+    expect(sentence).toMatch(expected)
+    expect(sentence).not.toBe(DEFAULT_ERROR)
+    expect(sentence.toLowerCase()).not.toContain('row-level')
+  })
+
+  it('exports the "needs a name" sentence the forms react to', () => {
+    expect(plainError('new row violates row-level security policy for table "reports"')).toBe(
+      NAME_NEEDED,
+    )
+  })
+
+  it('still tells a refused vote apart from a post that needs a name', () => {
+    expect(plainError('new row violates row-level security policy for table "votes"')).not.toBe(
+      NAME_NEEDED,
+    )
   })
 })

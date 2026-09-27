@@ -22,8 +22,7 @@ So everything MO owns is `mo.*`, and two things follow:
    must be one of the following", whatever the client sends.
 2. **MO does not own profiles.** chintu's `handle_new_user` trigger already
    inserts a `public.profiles` row for every auth user, so MO references that
-   table and creates nothing. Its `display_name` is nullable there, so
-   `mo.profile_names()` falls back to `username`.
+   table and creates nothing. MO never reads a name from it — see below.
 
 **PostGIS has to be enabled, and NOT in `public`.** `0001` installs it `with
 schema extensions`, which is where Supabase keeps extensions and where the
@@ -58,61 +57,55 @@ an RPC. `0003` grants it `update` on four named columns — deliberately not
 `verdict`, so the worker cannot overwrite a decision a machine or a person
 already made.
 
-**Sharing accounts publishes a name derived from the reporter's email address.
-Decide this before applying `0003`.**
+**Names: each person chooses one for MO, and it is reviewed.**
 
-`public_reports` exposes `reporter_id` to anon, which it always did. What
-changed is what that id resolves to. The chain, all of it verifiable in the two
-repositories:
+Sharing accounts would otherwise have published a name derived from each
+reporter's email address. MO signs people in with a magic link, and chintu's
+`handle_new_user` sets `display_name = split_part(NEW.email, '@', 1)` for
+exactly that case, in a table anon can read. Three things close it:
 
-1. MO signs people in with a magic link, so there is no OAuth metadata.
-2. chintu's `handle_new_user` sets, for exactly that case,
-   `display_name = split_part(NEW.email, '@', 1)` — the local part of the email
-   address — and `username` to the same thing plus four characters of the uuid.
-3. `public.profiles` is readable by anon in that project:
-   `CREATE POLICY "profiles readable" ... USING (true)` and
-   `GRANT SELECT ... TO anon`.
-4. `mo.profile_names` returns `coalesce(display_name, username)` and is granted
-   to anon.
+1. **MO reads no name from `public.profiles`.** `mo.profile_names` is gone.
+   Before someone's first report or comment the app asks them to choose a name,
+   stored in `mo.display_names` (0001), written only through
+   `mo.set_display_name` (0002). The report and comment insert policies require
+   one that has not been rejected (`mo.has_display_name()`).
+2. **A name is reviewed like a note.** It is a moderation subject (`'name'`,
+   keyed by the person's id). Other people see "someone" until it is approved.
+   Tier 2 never approves text, so a name is settled by the tier 3 judge or by a
+   person. Changing it sends it back to review, so it is limited: an accepted
+   or pending name once a day, and at most three new names a day in all, so a
+   rejected name can be fixed straight away but not retried endlessly. Names
+   are never flagged by a direct insert (`flags_insert_own` refuses them), and
+   nobody can complain about their own.
+3. **The ids are masked.** `public_reports.reporter_id` and
+   `public_comments.author_id` come back only to their owner and to admins,
+   and null to everyone else. Either id is the key of `public.profiles`, so
+   publishing it would publish the email prefix one request away, whatever MO
+   itself displays. `public_reports.reporter_name` and
+   `public_comments.author_name` carry the approved name instead.
 
-So every report and comment ends up signed with the author's email prefix, and
-any signed-out visitor can read it off the map. On MO's own database a reporter
-id resolved to nothing public at all.
+**Complaints about a name** go through `mo.flag_comment_author` or
+`mo.flag_report_author` (0005), depending on where the name was seen. A reader
+never has the author's id, so they name the comment or the report instead, and
+the function files an ordinary `'name'` flag against its author — validated, rate
+limited, reopened for review, and withheld after two people, like any other
+flag. It returns nothing, and neither browser role can select from
+`mo.flags` at all, so the id never leaves the database. (A select grant scoped
+to your own rows would hand it back: that was how it leaked before.)
 
-This is a consequence of "one project and one set of user accounts" rather than
-a defect in either project, and nothing has been applied yet, so nothing is
-exposed. It is also not a default to accept silently. The options, cheapest
-first:
+**Renaming gets a new review job**, not a reset of the old one. A name is the
+only content that changes after it is queued, and a reset job let a decision
+about the old text land on the new one: `admin_decide_moderation` checks only
+that the verdict is null. With a new job id, an admin's open queue or a
+worker mid-judgement is holding a job that no longer exists, and both refuse.
 
-- **Mask the identity columns in the views rather than dropping them.** That
-  is `reporter_id` on `mo.public_reports` and `author_id` on
-  `mo.public_comments`: return them only when the row is the caller's own, or
-  the caller is an admin, and null otherwise — the same `case when` shape the
-  views already use for `note` and `storage_path`. (`cleaned_by` was a third
-  and has already been dropped outright: nothing in the app read it, so it was
-  publishing an identity for nobody's benefit.)
+**The judge has separate rules for names** (`NAME_RUBRIC` in
+`worker/src/providers/llmJudge.ts`). The report rules reject anything
+"unrelated to litter", which every name is.
 
-  **Mask, do not drop.** `supabaseSource.ts` computes `viewerIsReporter` from
-  `reporter_id`, so removing the column would quietly break "this is your
-  report" in the UI instead of merely anonymising it.
-
-  Do both columns. Each resolves to the same email prefix through
-  `mo.profile_names`, so leaving either in place leaves the leak open.
-
-  And be clear what it costs: a comment's `authorName` is derived entirely from
-  `author_id`, so masking it means every comment reads as unattributed to a
-  signed-out visitor. For anonymous readers this option and the next are the
-  same thing; they differ only for signed-in ones.
-- **Stop showing author names in MO at all.** Drop `mo.profile_names`, and
-  comments are unattributed for everybody, signed in or not.
-- **Have the marketplace ask for a real display name at signup**, and treat the
-  email-derived default as a bug there rather than a constraint here.
-
-Until one of those is chosen, assume applying `0003` publishes email prefixes.
-
-**A marketplace account deletion would take litter data with it.** Six MO
+**A marketplace account deletion would take litter data with it.** Seven MO
 tables reference `public.profiles` with `on delete cascade`: `reports`,
-`comments`, `votes`, `flags`, `upload_grants` and `admins`. So a "delete my
+`comments`, `votes`, `flags`, `upload_grants`, `admins` and `display_names`. So a "delete my
 account" feature on the marketplace side — which does not exist today — would
 remove that person's reports from the map rather than merely detach them, and
 could delete the last row of `mo.admins`, which `0004` says there is no in-app
@@ -315,6 +308,14 @@ answering, each of which should FAIL:
   report, or with a `user_id` that is not their own?
 - Can a user read `mo.admins`, or add themselves to it? Both must fail: the
   table is revoked from both browser roles and has no policy at all.
+- Can a signed-out visitor get a `reporter_id` or `author_id` that is not null
+  from `public_reports` or `public_comments`? Can they see a name that is still
+  pending?
+- Can a user post a report or a comment before choosing a name, or after it is
+  rejected?
+- Can a user read or write another person's row in `mo.display_names`?
+- After "Report this name", can the reporter read back the flag's
+  `subject_id`? They must not: it is the author's id.
 - Does anything in `mo` resolve to a table in `public`? `mo.reports` and
   `public.reports` are different tables owned by different features, and the
   only thing keeping them apart is the schema.

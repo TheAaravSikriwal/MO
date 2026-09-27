@@ -29,7 +29,7 @@ const brokenJudge = (): Judge => ({
   judgeImage: vi.fn().mockRejectedValue(new Error('connection refused')),
 })
 
-const cleanText = { kind: 'text', text: 'Bags of rubbish by the bus stop' } as const
+const cleanText = { kind: 'text', text: 'Bags of rubbish by the bus stop', purpose: 'report' } as const
 const photo = { kind: 'image', url: 'https://img.example.com/a.jpg' } as const
 
 describe('moderate — tier 2 settles the confident cases', () => {
@@ -92,7 +92,7 @@ describe('moderate — tier 3 handles the middle', () => {
     const j = judge('safe', 'a real place name, not an insult')
     const classifier = textClassifier({ toxicity: 0.0 })
     const decision = await moderate(
-      { kind: 'text', text: 'Litter near Penistone Road' },
+      { kind: 'text', text: 'Litter near Penistone Road', purpose: 'report' },
       { textClassifier: classifier, judge: j, thresholds },
     )
     expect(decision.action).toBe('approve')
@@ -103,7 +103,7 @@ describe('moderate — tier 3 handles the middle', () => {
 
   it('catches a house-rule violation no classifier would flag', async () => {
     const decision = await moderate(
-      { kind: 'text', text: 'this whole neighbourhood is a slum' },
+      { kind: 'text', text: 'this whole neighbourhood is a slum', purpose: 'report' },
       {
         // A generic toxicity classifier scores this clean, which is the point.
         textClassifier: textClassifier({ toxicity: 0.05 }),
@@ -237,5 +237,17 @@ describe('moderate — tier 2 may approve images but never text', () => {
     expect(decision.action).toBe('approve')
     expect(decision.decidedBy).toContain('tier2')
     expect(j.judgeImage).not.toHaveBeenCalled()
+  })
+})
+
+describe('moderate — names', () => {
+  it('tells the judge a name is a name', async () => {
+    const j = judge('safe', 'an ordinary name')
+    const decision = await moderate(
+      { kind: 'text', text: 'Sam', purpose: 'name' },
+      { judge: j, thresholds: { nsfw: { rejectAbove: 0.85, approveBelow: 0.15 }, toxicity: { rejectAbove: 0.8, approveBelow: 0.2 } } },
+    )
+    expect(j.judgeText).toHaveBeenCalledWith('Sam', 'name')
+    expect(decision.action).toBe('approve')
   })
 })

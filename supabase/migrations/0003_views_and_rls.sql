@@ -69,7 +69,19 @@ set search_path = mo, public;
 create view mo.public_reports as
 select
   r.id,
-  r.reporter_id,
+  -- Yours, or nobody's. The id is the key of chintu's `public.profiles`,
+  -- which anon can read, and for a magic-link signup that row carries the
+  -- email address's local part as display_name. Publishing reporter_id to
+  -- everybody was publishing that, one join away.
+  --
+  -- Masked rather than dropped: the app compares it with the signed-in user
+  -- to know "this is your report", and that still works for the one person
+  -- it is about.
+  case
+    when r.reporter_id = auth.uid() or mo.is_admin()
+    then r.reporter_id
+    else null
+  end as reporter_id,
   r.lat,
   r.lng,
   r.cell_r1,
@@ -91,15 +103,26 @@ select
   r.note_status,
   r.moderation_status,
   r.status,
-  -- No `cleaned_by`. It resolves to a person through mo.profile_names the
-  -- same way reporter_id does, and nothing in the app ever read it -- so it
+  -- No `cleaned_by`. It is a profile id, one join away from a person's
+  -- email prefix in `public.profiles` just as reporter_id is, and nothing in the app ever read it -- so it
   -- was an identity column published to anon for no one's benefit. Who cleaned
   -- a spot is recorded on mo.reports for the audit trail; it is not part of
   -- the public read surface. Add it back with a consumer, and with a decision
   -- about attribution, not before.
   r.cleaned_at,
   r.vote_count,
-  r.created_at
+  r.created_at,
+  -- The name the reporter chose, on the same terms as public_comments below:
+  -- everybody once it is approved, the reporter straight away.
+  -- Appended at the end so the column order of the view is otherwise unchanged.
+  (
+    select d.name from mo.display_names d
+    where d.user_id = r.reporter_id
+      and (
+        d.moderation_status = 'approved'
+        or d.user_id = auth.uid()
+      )
+  ) as reporter_name
 from mo.reports r
 where r.moderation_status <> 'rejected'
    or r.reporter_id = auth.uid()
@@ -137,54 +160,44 @@ where p.moderation_status <> 'rejected'
      where r.id = p.report_id and r.reporter_id = auth.uid()
    );
 
--- Names are looked up BY ID, never listed.
+-- There is no mo.profile_names any more.
 --
--- The original reason for this was anti-enumeration: a plain view granted to
--- anon would let anyone GET every row and list every account. That reason no
--- longer applies, and saying so matters more than keeping the function looking
--- clever. In the wearechintu database `public.profiles` is readable by anon
--- already -- `CREATE POLICY "profiles readable" ... USING (true)` and
--- `GRANT SELECT ... TO anon` in that project's 001 -- so anybody can list
--- every account whatever MO does.
---
--- It is kept because it is still the right shape: MO asks for names it already
--- holds ids for, in one bounded call, and does not depend on the marketplace's
--- read policy staying open. It is not a privacy control, and nothing in MO
--- should be written as though it were.
--- SECURITY INVOKER, deliberately, and it used to be DEFINER.
---
--- This reads a table MO does not own. As definer it would keep handing names
--- to anon even if the marketplace later tightened its own read policy or
--- dropped `grant select on public.profiles to anon` — silently overriding a
--- decision made by the feature that owns the data. As invoker it tracks that
--- decision: if they close it, this stops working, which is the correct
--- direction for a failure to go.
-create or replace function mo.profile_names(ids uuid[])
-returns table (id uuid, display_name text)
-language sql
-stable
-set search_path = mo, public
-as $$
-  -- `coalesce` on paper only. chintu's handle_new_user always sets
-  -- display_name -- to `raw_user_meta_data->>'name'` if there is one, and
-  -- otherwise to the email local part -- so for anybody who signed in with a
-  -- magic link the fallback never fires and this returns their email prefix.
-  -- See the note on attribution in supabase/README.md before assuming that is
-  -- acceptable.
-  select p.id, coalesce(p.display_name, p.username) as display_name
-  from public.profiles p
-  where p.id = any(ids)
-  limit 200;
-$$;
-
-revoke all on function mo.profile_names(uuid[]) from public;
-grant execute on function mo.profile_names(uuid[]) to anon, authenticated;
+-- It looked names up in chintu's `public.profiles`, where a magic-link signup's
+-- display_name is the local part of their email address. So every comment was
+-- signed with its author's email prefix, readable by anyone. MO now asks each
+-- person to choose a name (mo.display_names, 0001), and the comments view below
+-- carries that name itself -- so there is nothing left to look up by id, and MO
+-- reads nothing from the marketplace's profiles at all.
 
 create view mo.public_comments as
 select
   c.id,
   c.report_id,
-  c.author_id,
+  -- Masked for the same reason as reporter_id above: it is one join away
+  -- from the author's email prefix in `public.profiles`.
+  case
+    when c.author_id = auth.uid() or mo.is_admin()
+    then c.author_id
+    else null
+  end as author_id,
+  -- The name the author chose, and only once it has been approved. Until then
+  -- other people see no name and the app says "someone"; the author sees their
+  -- own straight away, so posting does not look like it lost their name.
+  --
+  -- Not admins. They judge pending names in the review queue, where they are
+  -- labelled as pending; shown here they looked like any approved name, and
+  -- the "report this name" button on them could only ever fail.
+  (
+    select d.name from mo.display_names d
+    where d.user_id = c.author_id
+      and (
+        d.moderation_status = 'approved'
+        or d.user_id = auth.uid()
+      )
+  ) as author_name,
+  -- So the app can offer "report this name" on everybody's comments but your
+  -- own, without being handed the author's id to compare.
+  coalesce(c.author_id = auth.uid(), false) as viewer_is_author,
   c.body,
   c.moderation_status,
   c.created_at
@@ -198,6 +211,7 @@ where c.moderation_status = 'approved'
 -- ---------------------------------------------------------------------------
 
 alter table mo.admins          enable row level security;
+alter table mo.display_names   enable row level security;
 alter table mo.reports         enable row level security;
 alter table mo.report_photos   enable row level security;
 alter table mo.votes           enable row level security;
@@ -225,6 +239,15 @@ alter table mo.moderation_jobs enable row level security;
 -- note at the bottom of 0004.
 
 -- ---------------------------------------------------------------------------
+-- display_names
+-- ---------------------------------------------------------------------------
+
+-- No policies, like admins, and for the same reason. The table is revoked from
+-- both browser roles below; a person's own name comes through
+-- mo.my_display_name(), writes go through mo.set_display_name(), and everybody
+-- else's reaches them only through public_comments, once approved.
+
+-- ---------------------------------------------------------------------------
 -- reports
 -- ---------------------------------------------------------------------------
 
@@ -244,6 +267,10 @@ create policy reports_insert_own
   to authenticated
   with check (
     reporter_id = auth.uid()
+    -- A name first, so nothing is ever posted under the marketplace's
+    -- email-derived one. Through the definer helper: this policy runs as the
+    -- caller, who cannot read mo.display_names.
+    and mo.has_display_name()
     -- The pin is public on arrival; the note and photos are not, and their
     -- status columns are set by triggers rather than by the client.
     and status = 'open'
@@ -358,6 +385,7 @@ create policy comments_insert_own
   to authenticated
   with check (
     author_id = auth.uid()
+    and mo.has_display_name()
     and moderation_status = 'pending'
   );
 
@@ -372,8 +400,11 @@ create policy comments_delete_own
 -- flags
 -- ---------------------------------------------------------------------------
 
--- Flags are write-mostly: you can raise one and see your own, but the pile of
--- complaints about a given item is admin-only.
+-- Flags are write-only from a browser. This policy is unreachable -- there is no
+-- select grant on mo.flags (see the grants below for why) -- and is kept so
+-- that if a grant is ever added back, it still cannot read anybody else's
+-- complaints. It would read back the ids behind your own name flags, which is
+-- why the grant must stay out.
 create policy flags_select_own
   on mo.flags for select
   to authenticated
@@ -382,7 +413,17 @@ create policy flags_select_own
 create policy flags_insert_own
   on mo.flags for insert
   to authenticated
-  with check (flagger_id = auth.uid());
+  with check (
+    flagger_id = auth.uid()
+    -- Never a name directly. A name's subject_id is a person's id, which a
+    -- reader is never given -- except their OWN, which the client knows. A
+    -- direct insert let somebody report their own name, and an unresolved
+    -- complaint discards the machine verdict and puts the name at the top of
+    -- the human queue. Names are reported through flag_comment_author and
+    -- flag_report_author (0005), which refuse your own and run as owner, so
+    -- this policy does not apply to them.
+    and subject_type <> 'name'
+  );
 
 -- No flags_delete_admin policy.
 --
@@ -419,14 +460,11 @@ create policy flags_insert_own
 -- MO's migrations. Redundant on Supabase, which grants it to both browser
 -- roles already, so nothing is lost by dropping it.
 --
--- Not because MO does not need it, though — an earlier version of this comment
--- said `profile_names` was SECURITY DEFINER and therefore needed no usage
--- grant, and that is wrong twice over. It is SECURITY INVOKER (see the note on
--- the function), so a signed-out read of an author name needs `anon` to hold
--- both `usage on schema public` and `select on public.profiles`. Both exist,
--- and both exist because the marketplace granted them. That is a real
--- dependency on somebody else's decisions, and it is the point of using
--- invoker rather than something to paper over.
+-- MO does not need it either. The only thing in `public` MO touches is
+-- `public.profiles`, as the target of foreign keys, and those are checked with
+-- the table owner's privileges rather than the caller's. Author names used to
+-- be read from that table as the caller, which did depend on the marketplace's
+-- grants; they now come from mo.display_names through the definer views.
 
 -- REVOKE, not merely "do not grant".
 --
@@ -455,6 +493,7 @@ revoke all on mo.comments        from anon, authenticated;
 revoke all on mo.votes           from anon, authenticated;
 revoke all on mo.flags           from anon, authenticated;
 revoke all on mo.admins          from anon, authenticated;
+revoke all on mo.display_names   from anon, authenticated;
 revoke all on mo.moderation_jobs from anon, authenticated;
 
 
@@ -480,13 +519,14 @@ grant select on mo.public_comments      to anon, authenticated;
 --
 -- The moderation worker connects with the service role key. It writes through
 -- the RPCs in 0004, which are SECURITY DEFINER, but it reads these four
--- directly: the queue, a photo's storage path, and the text of a note or a
--- comment. Named one by one rather than `grant all on all tables`, so adding a
+-- directly: the queue, a photo's storage path, and the text of a note, a
+-- comment or a chosen name. Named one by one rather than `grant all on all tables`, so adding a
 -- table to this schema does not silently widen what the worker can reach.
 grant select on mo.moderation_jobs to service_role;
 grant select on mo.report_photos   to service_role;
 grant select on mo.reports         to service_role;
 grant select on mo.comments        to service_role;
+grant select on mo.display_names   to service_role;
 
 -- One direct write, and only one: `Queue.fail()` marks a job failed without an
 -- RPC in front of it. Every other write the worker makes goes through
@@ -501,7 +541,15 @@ grant update (status, reason, locked_at, locked_by)
                                    on mo.moderation_jobs to service_role;
 
 grant select on mo.votes to authenticated;
-grant select on mo.flags to authenticated;
+
+-- No select on mo.flags for either browser role, not even your own rows.
+--
+-- It used to be granted, scoped by flags_select_own to rows you raised. But a
+-- complaint about a NAME has the person's id as its subject_id -- filed for you
+-- by flag_comment_author or flag_report_author precisely so you are never given
+-- it -- and reading your own flag back handed it over anyway, one lookup away
+-- from their email prefix in public.profiles. Nothing in the app reads flags:
+-- raising one is a plain `.insert()` with no RETURNING, which needs no select.
 
 -- `createReport` chains `.select('id')` onto its insert, which PostgREST sends
 -- as `Prefer: return=representation` and Postgres executes as
@@ -517,10 +565,8 @@ grant select on mo.flags to authenticated;
 -- exists to keep shut.
 grant select (id) on mo.reports to authenticated;
 
--- Nothing is granted on public.profiles. It is chintu's table: its own
--- migrations decide who may read or write it, and MO only ever reaches it
--- through mo.profile_names(), which runs as the CALLER -- so MO's access is
--- exactly whatever the marketplace has granted, and stops when they stop it.
+-- Nothing is granted on public.profiles, and nothing in MO reads it. It is
+-- chintu's table; MO references it only as the target of foreign keys.
 
 grant insert (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7,
               cell_r9, cell_r12, note)

@@ -1,4 +1,4 @@
-export type SubjectType = 'photo' | 'comment' | 'note'
+export type SubjectType = 'photo' | 'comment' | 'note' | 'name'
 export type ModerationStatus = 'pending' | 'approved' | 'rejected'
 export type JobStatus = 'pending' | 'in_progress' | 'done' | 'failed'
 
@@ -34,9 +34,19 @@ export interface ModerationJob {
   attempts: number
 }
 
+/**
+ * What a piece of text is, because the judge's rules depend on it.
+ *
+ * A note or a comment is about litter, and "unrelated to litter" is a fair
+ * reason to turn one down. A name is not about litter at all -- judged by the
+ * same rubric, "Sam" is unrelated to litter and gets rejected, which locks
+ * that person out of posting.
+ */
+export type TextPurpose = 'report' | 'name'
+
 /** Content pulled from the database for a job. */
 export type Subject =
-  | { kind: 'text'; text: string }
+  | { kind: 'text'; text: string; purpose: TextPurpose }
   | { kind: 'image'; url: string }
 
 // --- Provider interfaces ---------------------------------------------------
@@ -64,6 +74,6 @@ export interface JudgeResult {
 /** Tier 3. The only tier that knows MO's own house rules. */
 export interface Judge {
   readonly name: string
-  judgeText(text: string): Promise<JudgeResult>
+  judgeText(text: string, purpose: TextPurpose): Promise<JudgeResult>
   judgeImage(imageUrl: string): Promise<JudgeResult>
 }

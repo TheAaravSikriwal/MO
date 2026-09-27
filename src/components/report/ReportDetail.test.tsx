@@ -11,6 +11,7 @@ const setup = (
 ) => {
   const data = new FakeDataSource(
     signedIn ? { id: 'u1', email: 'a@b.com', isAdmin: false } : null,
+    { displayName: 'Sam' },
   )
   const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12, ...seed })
   const onChanged = vi.fn()
@@ -233,7 +234,10 @@ describe('ReportDetail — reporting a comment', () => {
     body: string,
     moderationStatus: 'pending' | 'approved' | 'rejected',
   ) => {
-    const data = new FakeDataSource({ id: 'u1', email: 'a@b.com', isAdmin: false })
+    const data = new FakeDataSource(
+      { id: 'u1', email: 'a@b.com', isAdmin: false },
+      { displayName: 'Sam' },
+    )
     const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
     await data.addComment('r1', body)
     ;(await data.listComments('r1'))[0].moderationStatus = moderationStatus
@@ -321,5 +325,157 @@ describe('ReportDetail — reporting a note', () => {
   it('does not tell other people that a note was removed', () => {
     setup({ note: null, noteStatus: 'rejected', viewerIsReporter: false })
     expect(screen.queryByText(/removed/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ReportDetail — the name next to a comment', () => {
+  const setupNameless = () => {
+    const data = new FakeDataSource({ id: 'u2', email: 'sam.jones@example.com', isAdmin: false })
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    render(
+      <ReportDetail data={data} report={report} signedIn onChanged={vi.fn()} onClose={vi.fn()} />,
+    )
+    return { data, user: userEvent.setup() }
+  }
+
+  it('signs a comment with the chosen name, never the email address', async () => {
+    const { user } = setup()
+    await user.type(screen.getByLabelText(/add a comment/i), 'Still here this morning')
+    await user.click(screen.getByRole('button', { name: /post comment/i }))
+
+    await screen.findByText('Still here this morning')
+    expect(screen.getByText('Sam')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('a@b.com')
+  })
+
+  it('asks for a name before a first comment, then posts under it', async () => {
+    const { user, data } = setupNameless()
+    await user.type(await screen.findByLabelText(/your name/i), 'Sam J')
+    await user.type(screen.getByLabelText(/add a comment/i), 'Still here this morning')
+    await user.click(screen.getByRole('button', { name: /post comment/i }))
+
+    expect(await screen.findByText('Still here this morning')).toBeInTheDocument()
+    expect(screen.getByText('Sam J')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('sam.jones')
+    expect(await data.getMyDisplayName()).toEqual({ name: 'Sam J', status: 'pending' })
+    // Asked once. The field goes away once a name is saved.
+    expect(screen.queryByLabelText(/your name/i)).not.toBeInTheDocument()
+  })
+
+  it('will not post a first comment without a name', async () => {
+    const { user, data } = setupNameless()
+    await screen.findByLabelText(/your name/i)
+    await user.type(screen.getByLabelText(/add a comment/i), 'Still here this morning')
+    await user.click(screen.getByRole('button', { name: /post comment/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/between 2 and 30 characters/i)
+    expect(await data.listComments('r1')).toEqual([])
+  })
+})
+
+describe('ReportDetail — reporting a name', () => {
+  const setupOthers = () => {
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    data.seedName('u7', 'Bad Handle', 'approved')
+    data.seedName('u8', 'Still Checking', 'pending')
+    data.seedComment('r1', { authorId: 'u7', body: 'first comment' })
+    data.seedComment('r1', { authorId: 'u8', body: 'second comment' })
+    render(
+      <ReportDetail data={data} report={report} signedIn onChanged={vi.fn()} onClose={vi.fn()} />,
+    )
+    return { data, user: userEvent.setup() }
+  }
+
+  it('offers it on a name somebody else chose, and files it against that person', async () => {
+    const { data, user } = setupOthers()
+    expect(await screen.findByText('Bad Handle')).toBeInTheDocument()
+    const buttons = screen.getAllByRole('button', { name: /report this name/i })
+    // One: the pending name reads "someone", which is not a name to report.
+    expect(buttons).toHaveLength(1)
+    await user.click(buttons[0])
+
+    expect(await screen.findByText(/someone will look at this name/i)).toBeInTheDocument()
+    expect(data.raisedFlags).toContainEqual(
+      expect.objectContaining({ subjectType: 'name', subjectId: 'u7', flaggerId: 'u1' }),
+    )
+  })
+
+  it('does not offer it on your own comment', async () => {
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    await data.addComment('r1', 'mine')
+    ;(await data.listComments('r1'))[0].moderationStatus = 'approved'
+    data.decideName('u1', 'approved')
+    render(
+      <ReportDetail data={data} report={report} signedIn onChanged={vi.fn()} onClose={vi.fn()} />,
+    )
+    expect(await screen.findByText('mine')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /report this name/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('ReportDetail — the name on a report', () => {
+  it('shows the reporter’s approved name', () => {
+    setup({ reporterName: 'Sam' })
+    expect(screen.getByText(/^Added /).textContent).toMatch(/ by Sam/)
+  })
+
+  it('shows no name, and no email, while it is still being checked', () => {
+    setup({ reporterName: null })
+    // The header line alone: the seeded note says "by the bus stop".
+    const header = screen.getByText(/^Added /)
+    expect(header.textContent).not.toContain(' by ')
+    expect(document.body.textContent).not.toContain('a@b.com')
+  })
+})
+
+describe('ReportDetail — reporting the name on a report', () => {
+  it('files a complaint against whoever filed the report', async () => {
+    const data = new FakeDataSource({ id: 'u1', isAdmin: false }, { displayName: 'Sam' })
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12, reporterName: 'Bad Handle' })
+    data.seedReporter('r1', 'u7')
+    data.seedName('u7', 'Bad Handle', 'approved')
+    render(
+      <ReportDetail data={data} report={report} signedIn onChanged={vi.fn()} onClose={vi.fn()} />,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /report this name/i }))
+
+    expect(await screen.findByText(/someone will look at this name/i)).toBeInTheDocument()
+    expect(data.raisedFlags).toContainEqual(
+      expect.objectContaining({ subjectType: 'name', subjectId: 'u7', flaggerId: 'u1' }),
+    )
+  })
+
+  it('does not offer it on your own report, or when no name is shown', () => {
+    setup({ reporterName: 'Sam', viewerIsReporter: true })
+    expect(screen.queryByRole('button', { name: /report this name/i })).not.toBeInTheDocument()
+  })
+
+  it('does not offer it when the reporter has no approved name', () => {
+    setup({ reporterName: null })
+    expect(screen.queryByRole('button', { name: /report this name/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('ReportDetail — a name rejected after the page loaded', () => {
+  it('asks again and says why, rather than leaving no field to type in', async () => {
+    const data = new FakeDataSource({ id: 'u5', isAdmin: false }, { displayName: 'Rude Name' })
+    const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
+    render(
+      <ReportDetail data={data} report={report} signedIn onChanged={vi.fn()} onClose={vi.fn()} />,
+    )
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText(/add a comment/i), 'Still here')
+    expect(screen.queryByLabelText(/your name/i)).not.toBeInTheDocument()
+    // Rejected while the report was open.
+    data.decideName('u5', 'rejected')
+    await user.click(screen.getByRole('button', { name: /post comment/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/choose a name before posting/i)
+    expect(await screen.findByLabelText(/your name/i)).toBeInTheDocument()
+    expect(await screen.findByText(/"Rude Name" was not accepted/)).toBeInTheDocument()
+    expect(await data.listComments('r1')).toEqual([])
   })
 })

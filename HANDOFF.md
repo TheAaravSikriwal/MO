@@ -65,24 +65,34 @@ custom domain attached to the bucket. The existing setup does not satisfy it.
   `alter default privileges`, no `grant usage`. Both reached outside MO, and
   `migrations.test.ts` refuses either.
 
-### Decide this before applying the migrations
+### Decided 2026-09-26: people choose a name for MO
 
-**Sharing accounts publishes a name derived from each reporter's email
-address.** MO signs people in with a magic link, so there is no OAuth
-metadata — and chintu's `handle_new_user` sets `display_name` to
-`split_part(email, '@', 1)` for exactly that case. `public.profiles` is
-readable by anon in that project, `mo.profile_names` is granted to anon, and
-`public_reports` hands `reporter_id` to anon. So every report and comment ends
-up signed with the author's email prefix, readable by any visitor.
+Sharing accounts would have signed every report and comment with the author's
+email prefix: a magic-link signup's `public.profiles.display_name` is
+`split_part(email, '@', 1)`, and that table is readable by anon. The user chose
+**"pick a name on first post"**, and it is built:
 
-Nothing is applied yet, so nothing is exposed. It is not a default to accept
-silently either. `supabase/README.md` lists the three ways out; the cheapest is
-to stop returning `reporter_id` to anon from `mo.public_reports` — one column,
-one view.
+* Before a first report or comment the app asks for a name, kept in
+  `mo.display_names` and written only through `mo.set_display_name`. The insert
+  policies on reports and comments refuse anybody without one that has not been
+  rejected.
+* A name is reviewed like a note (moderation subject `'name'`). Once approved
+  it is shown on that person's reports ("Added … by Sam") and comments; until
+  then reports show no name and comments say "someone".
+* `reporter_id` and `author_id` are masked in the public views, because either
+  is the key of `public.profiles` and so one request from the email prefix.
+  `mo.profile_names` is gone; MO reads nothing from `public.profiles`.
 
-Three more consequences of one shared account set, all in
+* Readers can report a name from the comment or report it is on
+  (`mo.flag_comment_author`, `mo.flag_report_author`), a rename gets a new review job so a stale
+  decision cannot land on it, and the judge has its own rules for names.
+  `supabase/README.md` has the detail.
+
+### Still open from sharing one account set
+
+Three more consequences, all in
 `supabase/README.md`. Two are MO's problem: a marketplace account deletion
-would cascade litter reports off the map (six MO tables reference
+would cascade litter reports off the map (seven MO tables reference
 `public.profiles` with `on delete cascade`), and a marketplace ban does not
 stop anybody using MO (nothing in `mo` reads `publish_tier`).
 
@@ -147,22 +157,19 @@ sample reports around central London, so the map is populated and every screen
 works. That is deliberate — see `src/lib/data/createDataSource.ts`.
 
 ```bash
-npm test              # 725 tests
+npm test              # 877 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
-cd worker && npm test # 113 tests
+cd worker && npm test # 123 tests
 ```
 
 ## What is done
 
-Everything below is built and tested. The upload signing endpoint and
-migration `0006` are the newest part and are not committed yet. `git status` is
-the list to trust, but at the time of writing the untracked entries are `api/`,
-`src/lib/upload/`, `src/lib/data/supabaseSource.createReport.test.ts`,
-`src/lib/data/schema.ts`, `worker/src/schema.ts`, `worker/src/schema.test.ts`,
-`supabase/migrations/0006_upload_grants.sql` and `tsconfig.node.json`. The
-`createReport` test is easy to miss and is the only cover on the app's primary
-write; the three `schema` files are what point each of the three clients at
-`mo`.
+Everything below is built and tested. `git status` is the list to trust for
+what is not committed yet. The upload endpoint, migration `0006` and the move to
+the `mo` schema were committed in `a03272a`. When committing new work, check for
+untracked files as well as modified ones: several pieces of this project are
+new files that a `git commit -a` would leave behind, and the build breaks
+without them.
 
 | Area | Where |
 |---|---|
@@ -185,11 +192,16 @@ write; the three `schema` files are what point each of the three clients at
 
 Eight things. The first two are blocked on accounts rather than on code:
 
-1. **The database has never been run.** Every migration in `supabase/migrations/`
-   is a careful draft that has never touched Postgres. `src/lib/db/migrations.test.ts`
-   pins invariants by reading the SQL as text — useful, but it proves nothing
-   about whether the schema works. `supabase/README.md` lists the specific RLS
-   questions to answer once a project exists.
+1. **The database has run, but only in PGlite, never on Supabase.** Since
+   2026-09-26, `src/lib/db/migrations.run.test.ts` applies all the migrations
+   to a real Postgres in process (PGlite, `src/lib/db/pgHarness.ts`) and
+   exercises them as `anon`, `authenticated` and `service_role`. They applied
+   cleanly first time. What that does NOT cover: PostGIS (a small stand-in
+   provides `st_dwithin` and friends), Supabase's own `auth` schema (a stand-in
+   `auth.uid()`), PostgREST, and the exposed-schemas setting. So apply them to
+   the real project before trusting them, and work through the RLS questions in
+   `supabase/README.md` there. `migrations.test.ts` still reads the SQL as text
+   for invariants that are about wording rather than behaviour.
 2. **Photo upload is written but has never reached R2.** The endpoint exists:
    `api/sign-upload` verifies the caller with Supabase, decides the object key
    itself, and signs a two-minute PUT with the type and the exact byte length
@@ -370,7 +382,7 @@ nothing.
   that override the parent's exclude list dropped those two test files straight
   back out, leaving them typechecked by NEITHER config while both still passed.
   It was silent until an audit went looking. `npx tsc -p tsconfig.node.json
-  --listFiles` should list eight files, not one.
+  --listFiles` should list twelve of the project's own files, not one.
 - **The bundle is ~887 KB** (~266 KB gzipped), mostly `h3-js`. Fine for now, but
   it will want code-splitting before this is a serious mobile app. The NSFW model
   is deliberately loaded from a CDN at runtime rather than bundled — bundling it

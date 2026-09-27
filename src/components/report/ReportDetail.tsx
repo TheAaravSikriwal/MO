@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { checkText } from '../../lib/moderation/clientGate'
-import { plainError } from '../../lib/moderation/plainWords'
+import { NAME_NEEDED, plainError } from '../../lib/moderation/plainWords'
 import type { CommentView, DataSource, ReportView } from '../../lib/data/types'
+import { NameField, nameProblem, useDisplayName } from './NameField'
 
 export interface ReportDetailProps {
   data: DataSource
@@ -23,6 +24,8 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
   const [busy, setBusy] = useState(false)
   const [justCleaned, setJustCleaned] = useState(false)
   const [reported, setReported] = useState<Set<string>>(new Set())
+  const [nameDraft, setNameDraft] = useState('')
+  const name = useDisplayName(data, signedIn)
 
   useEffect(() => {
     let live = true
@@ -61,8 +64,27 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
 
   const onComment = async () => {
     if (draft.trim() === '') return
+    if (name.needed) {
+      const problem = nameProblem(nameDraft)
+      if (problem) {
+        setError(problem)
+        return
+      }
+    }
     await run(async () => {
-      await data.addComment(report.id, draft.trim())
+      try {
+        if (name.needed) {
+          const chosen = nameDraft.trim()
+          await data.setDisplayName(chosen)
+          name.saved(chosen)
+        }
+        await data.addComment(report.id, draft.trim())
+      } catch (cause) {
+        // Refused for want of a name the lookup did not know was missing.
+        // Rethrown so run() still shows the plain sentence.
+        if (plainError(cause instanceof Error ? cause.message : null) === NAME_NEEDED) name.ask()
+        throw cause
+      }
       setDraft('')
       setNotice(null)
       setComments(await data.listComments(report.id))
@@ -83,6 +105,29 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
           </h2>
           <p className="text-xs text-slate-500">
             Added {new Date(report.createdAt).toLocaleDateString()}
+            {/* Null until the name is approved. No "by someone": saying nothing
+                reads better than a placeholder on every new report. */}
+            {report.reporterName && <> by {report.reporterName}</>}
+            {signedIn &&
+              report.reporterName &&
+              !report.viewerIsReporter &&
+              (reported.has(`reporter:${report.id}`) ? (
+                <span className="ml-2">Thanks. Someone will look at this name.</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void run(async () => {
+                      await data.flagReporterName(report.id, 'reported by a reader')
+                      setReported((current) => new Set(current).add(`reporter:${report.id}`))
+                    })
+                  }
+                  disabled={busy}
+                  className="ml-2 underline hover:text-slate-800"
+                >
+                  Report this name
+                </button>
+              ))}
           </p>
         </div>
         <button
@@ -242,7 +287,32 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
           <ul className="mt-2 space-y-2">
             {comments.map((comment) => (
               <li key={comment.id} className="rounded-lg bg-slate-50 p-3 text-sm">
-                <p className="text-xs text-slate-500">{comment.authorName}</p>
+                <p className="text-xs text-slate-500">
+                  {comment.authorName}
+                  {/* Only a real name someone else chose: "someone" is not a
+                      name, and your own is yours to change. */}
+                  {signedIn &&
+                    comment.moderationStatus === 'approved' &&
+                    comment.authorNamed &&
+                    !comment.viewerIsAuthor &&
+                    (reported.has(`name:${comment.id}`) ? (
+                      <span className="ml-2">Thanks. Someone will look at this name.</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void run(async () => {
+                            await data.flagCommentAuthorName(comment.id, 'reported by a reader')
+                            setReported((current) => new Set(current).add(`name:${comment.id}`))
+                          })
+                        }
+                        disabled={busy}
+                        className="ml-2 underline hover:text-slate-800"
+                      >
+                        Report this name
+                      </button>
+                    ))}
+                </p>
                 <p className="text-slate-800">{comment.body}</p>
                 {comment.moderationStatus === 'pending' && (
                   <p className="mt-1 text-xs text-slate-500">Being checked before it appears.</p>
@@ -276,6 +346,16 @@ export function ReportDetail({ data, report, signedIn, onChanged, onClose }: Rep
 
         {signedIn ? (
           <div className="mt-3">
+            {name.needed && (
+              <div className="mb-2">
+                <NameField
+                  id="comment-name"
+                  value={nameDraft}
+                  onChange={setNameDraft}
+                  rejected={name.mine?.status === 'rejected' ? name.mine.name : null}
+                />
+              </div>
+            )}
             <label htmlFor="comment-body" className="sr-only">
               Add a comment
             </label>

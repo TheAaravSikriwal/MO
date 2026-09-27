@@ -63,6 +63,7 @@ begin
     case j.subject_type
       when 'comment' then (select c.body from mo.comments c where c.id = j.subject_id)
       when 'note'    then (select r.note from mo.reports  r where r.id = j.subject_id)
+      when 'name'    then (select d.name from mo.display_names d where d.user_id = j.subject_id)
       else null
     end,
     case j.subject_type
@@ -72,7 +73,11 @@ begin
     case j.subject_type
       when 'photo'   then (select p.report_id from mo.report_photos p where p.id = j.subject_id)
       when 'comment' then (select c.report_id from mo.comments      c where c.id = j.subject_id)
-      else j.subject_id
+      when 'note'    then j.subject_id
+      -- A name belongs to a person, not to a report. Falling through to
+      -- subject_id here would hand the admin screen a user id labelled as a
+      -- report id.
+      else null
     end,
     (select count(*) from mo.flags f
       where f.subject_type = j.subject_type and f.subject_id = j.subject_id
@@ -185,6 +190,8 @@ begin
     -- note_status, NOT moderation_status. Rejecting one offensive sentence must
     -- withhold the sentence, not erase a legitimate litter report from the map.
     update mo.reports set note_status = new_verdict where id = job.subject_id;
+  elsif job.subject_type = 'name' then
+    update mo.display_names set moderation_status = new_verdict where user_id = job.subject_id;
   end if;
 end;
 $$;
@@ -346,6 +353,9 @@ begin
     -- 'pending' would violate that constraint and roll the whole flag back.
     update mo.reports set note_status = 'pending'
      where id = new.subject_id and note_status = 'approved' and note is not null;
+  elsif new.subject_type = 'name' then
+    update mo.display_names set moderation_status = 'pending'
+     where user_id = new.subject_id and moderation_status = 'approved';
   end if;
   return null;
 end;
@@ -385,6 +395,20 @@ begin
     ) then
       raise exception 'no such note';
     end if;
+  elsif new.subject_type = 'name' then
+    if not exists (select 1 from mo.display_names where user_id = new.subject_id) then
+      raise exception 'no such name';
+    end if;
+    -- Belt to flags_insert_own's braces: whatever the route, nobody complains
+    -- about their own name. That would only buy their name a place at the top
+    -- of the human queue.
+    if new.subject_id = new.flagger_id then
+      raise exception 'you cannot report your own name';
+    end if;
+  else
+    -- Every kind is handled above. Without this, a kind added to the enum
+    -- later would pass validation with no check at all.
+    raise exception 'cannot report this kind of thing';
   end if;
   return new;
 end;
@@ -488,6 +512,133 @@ create trigger cleanup_moderation_on_photo_delete
 create trigger cleanup_moderation_on_comment_delete
   after delete on mo.comments
   for each row execute function mo.cleanup_moderation_for_deleted();
+
+-- A name is keyed by user_id rather than id, so it gets its own function
+-- rather than a branch in the shared one above -- reaching `old.user_id` there
+-- would fail on the three tables that have no such column, for the reason
+-- enqueue_moderation in 0002 spells out. Names are only ever deleted by the
+-- cascade from public.profiles, but an orphaned job would sit in the human
+-- queue forever all the same.
+create or replace function mo.cleanup_moderation_for_deleted_name()
+returns trigger
+language plpgsql
+security definer
+set search_path = mo, public
+as $$
+begin
+  delete from mo.moderation_jobs
+   where subject_type = 'name' and subject_id = old.user_id;
+  delete from mo.flags
+   where subject_type = 'name' and subject_id = old.user_id;
+  return old;
+end;
+$$;
+
+create trigger cleanup_moderation_on_name_delete
+  after delete on mo.display_names
+  for each row execute function mo.cleanup_moderation_for_deleted_name();
+
+-- ---------------------------------------------------------------------------
+-- Complaining about a name, from the comment it is shown on
+-- ---------------------------------------------------------------------------
+
+-- A name's subject_id is its owner's id, and public_comments withholds that id
+-- from everybody but the author -- it is one request away from their email
+-- prefix in public.profiles. So a reader cannot raise a 'name' flag directly;
+-- they have nothing to put in subject_id. Without this, a name the machines
+-- wrongly approved could only ever be taken down from the SQL editor.
+--
+-- The caller names the COMMENT, which they can see, and this files the flag
+-- against its author's name. It returns nothing, so the id never leaves the
+-- database. The insert goes through every trigger on mo.flags as usual --
+-- validation, the rate limit, reopening review, and withholding after two
+-- people -- so this adds no route around any of them.
+--
+-- Only an approved comment carrying an approved name: that is the name other
+-- people can see, and so the only one a reader could be complaining about.
+create or replace function mo.flag_comment_author(target_comment uuid, reason text default null)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = mo, public
+as $$
+declare
+  author uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'you must be signed in to report this';
+  end if;
+
+  select c.author_id into author
+    from mo.comments c
+   where c.id = target_comment
+     and c.moderation_status = 'approved';
+
+  if author is null
+     or not exists (
+       select 1 from mo.display_names d
+        where d.user_id = author and d.moderation_status = 'approved'
+     )
+  then
+    raise exception 'no such name';
+  end if;
+
+  if author = auth.uid() then
+    raise exception 'you cannot report your own name';
+  end if;
+
+  insert into mo.flags (subject_type, subject_id, flagger_id, reason)
+  values ('name', author, auth.uid(), left(flag_comment_author.reason, 500));
+end;
+$$;
+
+revoke all on function mo.flag_comment_author(uuid, text) from public, anon;
+grant execute on function mo.flag_comment_author(uuid, text) to authenticated;
+
+-- The same, from a report. public_reports shows the reporter's approved name,
+-- and withholds reporter_id for the same reason, so somebody who reports
+-- litter but never comments would otherwise have a name nobody could complain
+-- about. The pin itself stays on the map regardless: this is about the name.
+create or replace function mo.flag_report_author(target_report uuid, reason text default null)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = mo, public
+as $$
+declare
+  author uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'you must be signed in to report this';
+  end if;
+
+  select r.reporter_id into author
+    from mo.reports r
+   where r.id = target_report
+     and r.moderation_status <> 'rejected';
+
+  if author is null
+     or not exists (
+       select 1 from mo.display_names d
+        where d.user_id = author and d.moderation_status = 'approved'
+     )
+  then
+    raise exception 'no such name';
+  end if;
+
+  if author = auth.uid() then
+    raise exception 'you cannot report your own name';
+  end if;
+
+  insert into mo.flags (subject_type, subject_id, flagger_id, reason)
+  values ('name', author, auth.uid(), left(flag_report_author.reason, 500));
+end;
+$$;
+
+revoke all on function mo.flag_report_author(uuid, text) from public, anon;
+grant execute on function mo.flag_report_author(uuid, text) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Put the session back

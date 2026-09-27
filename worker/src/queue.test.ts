@@ -176,3 +176,58 @@ describe('Queue.claim', () => {
     expect(await new Queue(config, '', client).claim(5)).toEqual([])
   })
 })
+
+describe('Queue.fetchSubject', () => {
+  /** Records the table, column and filter a text lookup used. */
+  const makeReadClient = (row: Record<string, unknown> | null) => {
+    const calls: Array<{ table: string; column: string; key: string; value: unknown }> = []
+    const client = {
+      from: (table: string) => ({
+        select: (column: string) => ({
+          eq: (key: string, value: unknown) => ({
+            maybeSingle: async () => {
+              calls.push({ table, column, key, value })
+              return { data: row, error: null }
+            },
+          }),
+        }),
+      }),
+    }
+    return { client: client as never, calls }
+  }
+
+  it.each([
+    ['comment', 'comments', 'id', 'body'],
+    ['note', 'reports', 'id', 'note'],
+    // A name is keyed by the person's id. Looking it up by `id` in reports --
+    // what the old ternary did for anything that was not a comment -- finds
+    // nothing, and the job is discarded as deleted with the name left pending.
+    ['name', 'display_names', 'user_id', 'name'],
+  ] as const)('reads a %s from %s by %s', async (subjectType, table, key, column) => {
+    const { client, calls } = makeReadClient({ [column]: 'some words' })
+    const subject = await new Queue(config, '', client).fetchSubject({
+      id: 'job-9',
+      subject_type: subjectType,
+      subject_id: 'subject-9',
+      attempts: 1,
+    })
+    expect(calls).toEqual([{ table, column, key, value: 'subject-9' }])
+    // Names are judged by different rules, so the judge has to be told which.
+    expect(subject).toEqual({
+      kind: 'text',
+      text: 'some words',
+      purpose: subjectType === 'name' ? 'name' : 'report',
+    })
+  })
+
+  it('treats a vanished name as deleted', async () => {
+    const { client } = makeReadClient(null)
+    const subject = await new Queue(config, '', client).fetchSubject({
+      id: 'job-9',
+      subject_type: 'name',
+      subject_id: 'user-9',
+      attempts: 1,
+    })
+    expect(subject).toBeNull()
+  })
+})

@@ -46,6 +46,13 @@ export function plainReason(reason: string | null | undefined): string {
  */
 const MAX_PHOTO_MB = MAX_PHOTO_BYTES / 1024 / 1024
 
+/**
+ * What a post refused for want of a name turns into. Exported because the
+ * forms react to it by asking for a name, and matching a copy of the sentence
+ * would break silently the day this wording changes.
+ */
+export const NAME_NEEDED = 'Please choose a name before posting.'
+
 const ERROR_RULES: Array<[RegExp, string]> = [
   // Actionable causes come first. Collapsing these into "please try again"
   // told someone to retry the one thing guaranteed to keep failing, and left
@@ -104,6 +111,23 @@ const ERROR_RULES: Array<[RegExp, string]> = [
   // is not your own report, and the report is open and approved. The wording
   // covers all three rather than guessing which failed.
   [/row-level security policy for table "votes"/i, 'You cannot confirm this one.'],
+  // reports_insert_own and comments_insert_own both require a name that has
+  // not been rejected. The app asks for one before posting, so reaching this
+  // means the name lookup failed or the name was rejected in the meantime.
+  [
+    /row-level security policy for table "(reports|comments)"/i,
+    NAME_NEEDED,
+  ],
+  // set_display_name in 0002. Each is something the person can fix.
+  [/name must be between/i, 'Please choose a name between 2 and 30 characters.'],
+  [/name cannot contain @/i, 'Please choose a name rather than an email address.'],
+  [/name was not accepted/i, 'That name was not accepted. Please choose a different one.'],
+  [/name can be changed once a day/i, 'You can change your name once a day.'],
+  [/too many new names today/i, 'You have chosen several names today. Please try again tomorrow.'],
+  [/cannot report your own name/i, 'You cannot report your own name.'],
+  [/name could not be saved/i, 'Your name could not be saved. Please try again.'],
+  [/at least 2 visible characters/i, 'Please choose a name with at least 2 characters that show up.'],
+  [/tabs or line breaks|display_names_name_check/i, 'Please choose a name without tabs or line breaks.'],
   [/already confirmed|already been decided/i, 'You have already done that.'],
   [/cannot confirm your own/i, 'You cannot confirm your own report.'],
   [/already cleaned|not found, already cleaned/i, 'This report has already been marked cleaned.'],

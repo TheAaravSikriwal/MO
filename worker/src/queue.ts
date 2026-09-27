@@ -25,6 +25,24 @@ function createMoClient(url: string, serviceRoleKey: string) {
 export type MoClient = ReturnType<typeof createMoClient>
 
 /**
+ * Where each kind of text lives.
+ *
+ * A table, not a ternary. The ternary this replaced sent everything that was
+ * not a comment to `reports.note`, so a name job would have looked up a
+ * person's id among report ids, found nothing, and been discarded as deleted
+ * -- leaving the name pending forever with nothing in any queue to say so.
+ * A name is keyed by `user_id`, which is why `key` is here too.
+ */
+const TEXT_SOURCES: Record<
+  Exclude<ModerationJob['subject_type'], 'photo'>,
+  { table: string; key: string; column: string }
+> = {
+  comment: { table: 'comments', key: 'id', column: 'body' },
+  note: { table: 'reports', key: 'id', column: 'note' },
+  name: { table: 'display_names', key: 'user_id', column: 'name' },
+}
+
+/**
  * The worker's whole relationship with the database.
  *
  * It talks to Supabase over ordinary outbound HTTPS. No inbound port, no
@@ -73,20 +91,19 @@ export class Queue {
       return { kind: 'image', url: `${this.photoBaseUrl}/${String(data.storage_path).replace(/^\//, '')}` }
     }
 
-    const table = job.subject_type === 'comment' ? 'comments' : 'reports'
-    const column = job.subject_type === 'comment' ? 'body' : 'note'
+    const { table, key, column } = TEXT_SOURCES[job.subject_type]
 
     const { data, error } = await this.client
       .from(table)
       .select(column)
-      .eq('id', job.subject_id)
+      .eq(key, job.subject_id)
       .maybeSingle()
     if (error) throw new Error(`could not load ${job.subject_type}: ${error.message}`)
     if (!data) return null
 
-    const text = (data as Record<string, unknown>)[column]
+    const text = (data as unknown as Record<string, unknown>)[column]
     if (typeof text !== 'string') return null
-    return { kind: 'text', text }
+    return { kind: 'text', text, purpose: job.subject_type === 'name' ? 'name' : 'report' }
   }
 
   /**

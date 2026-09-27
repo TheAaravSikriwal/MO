@@ -108,6 +108,198 @@ $$;
 grant execute on function mo.owns_report(uuid)          to anon, authenticated;
 grant execute on function mo.report_accepts_votes(uuid)  to anon, authenticated;
 
+-- ---------------------------------------------------------------------------
+-- The name a person posts under
+-- ---------------------------------------------------------------------------
+--
+-- mo.display_names is revoked from both browser roles (0003), so these three
+-- are the whole interface to it. Each is SECURITY DEFINER and acts on the
+-- caller's own row only; there is no way to read or write anybody else's.
+
+-- Whether you may post. Called from the report and comment insert policies,
+-- which run with the caller's privileges and so cannot read the table
+-- themselves -- the same reason owns_report exists.
+--
+-- A rejected name does not count: the person is asked to choose another, rather
+-- than carrying on posting under a name nobody else will ever see.
+create or replace function mo.has_display_name()
+returns boolean
+language sql
+stable
+security definer
+set search_path = mo, public
+as $$
+  select exists (
+    select 1 from mo.display_names d
+    where d.user_id = auth.uid()
+      and d.moderation_status <> 'rejected'
+  );
+$$;
+
+-- Your own name and where its review has got to, so the app knows whether to
+-- ask for one and can tell you when it was not accepted.
+create or replace function mo.my_display_name()
+returns table (name text, moderation_status moderation_status)
+language sql
+stable
+security definer
+set search_path = mo, public
+as $$
+  select d.name, d.moderation_status
+  from mo.display_names d
+  where d.user_id = auth.uid();
+$$;
+
+-- Choose or change your name.
+--
+-- Every change goes back to pending and back through review, because the name
+-- is what gets shown. That makes renaming a way to generate review work, so it
+-- is limited twice over:
+--
+--   * An accepted or pending name can be changed once a day.
+--   * Whatever the status, at most three names a day. A rejected name can be
+--     replaced straight away -- asking somebody to wait a day to fix a name
+--     that was turned down would be unhelpful -- but not endlessly: without
+--     this cap, submit-rejected-resubmit was an unbounded loop, and each
+--     round costs a model call.
+--
+-- Resubmitting the exact name that was rejected is refused outright: it would
+-- only buy the same answer again.
+--
+-- The moderation job is replaced here rather than by a trigger because this
+-- function is the only way anything is ever written to mo.display_names. The
+-- job's subject_id is the user's id.
+--
+-- REPLACED, not reset, and the difference is the point. A name is the only
+-- content that can change after it has been queued, so a decision somebody
+-- made about the OLD text must not land on the new one. Resetting the same job
+-- row did not prevent that: admin_decide_moderation checks only that the
+-- verdict is null, so an admin who had the old name open could approve the
+-- renamed one without ever seeing it; and a second worker re-claiming the reset
+-- job would put it back in progress for the first worker's stale verdict too.
+-- Deleting the job and inserting a new one gives the new text a new job id.
+-- Anything still holding the old id -- an admin's open queue, a worker
+-- mid-judgement -- now names a job that does not exist, and both paths refuse
+-- rather than apply it.
+create or replace function mo.set_display_name(new_name text)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = mo, public
+as $$
+declare
+  me       uuid := auth.uid();
+  chosen   text := btrim(new_name);
+  existing mo.display_names;
+begin
+  if me is null then
+    raise exception 'you must be signed in to choose a name';
+  end if;
+
+  if chosen is null or char_length(chosen) < 2 or char_length(chosen) > 30 then
+    raise exception 'a name must be between 2 and 30 characters';
+  end if;
+  if position('@' in chosen) > 0 then
+    raise exception 'a name cannot contain @';
+  end if;
+  -- Checked here as well as by the table's CHECK, so a pasted tab or line
+  -- break is told what is wrong instead of hitting a constraint name that
+  -- only reads as "please try again" -- for input that can never succeed.
+  if chosen ~ '[[:cntrl:]]' then
+    raise exception 'a name cannot contain tabs or line breaks';
+  end if;
+  -- The table's CHECK refuses these too; saying so here gives a sentence the
+  -- person can act on rather than a constraint name.
+  if mo.visible_length(chosen) < 2 then
+    raise exception 'a name must have at least 2 visible characters';
+  end if;
+
+  -- The review job first, and only then the name. admin_decide_moderation and
+  -- record_moderation_verdict take the job and then write the name; taking
+  -- them the other way round here let a rename and a decision each hold the
+  -- lock the other wanted, and Postgres would abort one of them. Locking the
+  -- job first makes the second of the two simply wait.
+  perform 1 from mo.moderation_jobs
+   where subject_type = 'name' and subject_id = me
+     for update;
+
+  select * into existing from mo.display_names where user_id = me for update;
+
+  if found then
+    if existing.moderation_status = 'rejected' then
+      if existing.name = chosen then
+        raise exception 'that name was not accepted; please choose a different one';
+      end if;
+    else
+      if existing.name = chosen then
+        return;
+      end if;
+      if existing.updated_at > now() - interval '1 day' then
+        raise exception 'a name can be changed once a day';
+      end if;
+    end if;
+
+    -- The daily cap, over every submission whatever became of it. A window
+    -- older than a day starts afresh.
+    if existing.window_started > now() - interval '1 day'
+       and existing.changes_in_window >= 3 then
+      raise exception 'too many new names today; please try again tomorrow';
+    end if;
+
+    update mo.display_names
+       set name              = chosen,
+           moderation_status = 'pending',
+           updated_at        = now(),
+           changes_in_window = case
+                                 when window_started > now() - interval '1 day'
+                                 then changes_in_window + 1
+                                 else 1
+                               end,
+           window_started    = case
+                                 when window_started > now() - interval '1 day'
+                                 then window_started
+                                 else now()
+                               end
+     where user_id = me;
+  else
+    -- `on conflict do nothing` for two first choices racing each other. The
+    -- loser is told to try again rather than shown a duplicate-key error.
+    insert into mo.display_names (user_id, name)
+    values (me, chosen)
+    on conflict (user_id) do nothing;
+    if not found then
+      raise exception 'your name could not be saved; please try again';
+    end if;
+  end if;
+
+  -- Complaints were about the old name, which no longer exists. DELETED, not
+  -- marked resolved: a name flag's subject is the person's id, which does not
+  -- change on a rename, and flags allow one per person per subject. Resolved
+  -- rows would stop everybody who objected to the old name from ever reporting
+  -- the new one -- the very people likeliest to notice it -- and tell them
+  -- they had "already reported this" about a name they had never seen.
+  delete from mo.flags
+   where subject_type = 'name'
+     and subject_id   = me;
+
+  delete from mo.moderation_jobs
+   where subject_type = 'name' and subject_id = me;
+
+  insert into mo.moderation_jobs (subject_type, subject_id)
+  values ('name', me);
+end;
+$$;
+
+-- Signed-in only. `has_display_name` is called from insert policies that are
+-- `to authenticated`, so anon never needs it.
+revoke all on function mo.has_display_name()      from public, anon;
+revoke all on function mo.my_display_name()       from public, anon;
+revoke all on function mo.set_display_name(text)  from public, anon;
+grant execute on function mo.has_display_name()     to authenticated;
+grant execute on function mo.my_display_name()      to authenticated;
+grant execute on function mo.set_display_name(text) to authenticated;
+
 create or replace function mo.touch_updated_at()
 returns trigger
 language plpgsql

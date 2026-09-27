@@ -2,10 +2,19 @@ import { cellsForPoint } from '../grid/cells'
 import { weighCells } from '../severity/weight'
 import { applyFilters, DEFAULT_FILTERS } from '../filters/reportFilters'
 import { containsPoint } from '../geo/bounds'
+import {
+  MAX_NAME_LENGTH,
+  MIN_NAME_LENGTH,
+  hasControlCharacter,
+  nameLength,
+  visibleLength,
+} from '../names/displayName'
 import type {
   CommentView,
+  DirectFlagSubject,
   CurrentUser,
   DataSource,
+  MyDisplayName,
   NewReport,
   QueueItem,
   QueueSubject,
@@ -14,6 +23,8 @@ import type {
   RollupFilters,
   ViewBounds,
 } from './types'
+
+const DAY = 24 * 60 * 60 * 1000
 
 /**
  * An in-memory DataSource.
@@ -27,12 +38,40 @@ export class FakeDataSource implements DataSource {
   private user: CurrentUser | null
   private reports = new Map<string, ReportView>()
   private comments = new Map<string, CommentView[]>()
+  /** Who wrote each comment. Kept aside, as the real view withholds it. */
+  private commentAuthors = new Map<string, string>()
+  /** Who filed each report, for the same reason. */
+  private reportAuthors = new Map<string, string>()
   private listeners = new Set<(user: CurrentUser | null) => void>()
+  private names = new Map<
+    string,
+    MyDisplayName & { changedAt: number; changesInWindow: number; windowStarted: number }
+  >()
   private nextId = 1
 
-  constructor(user: CurrentUser | null = null) {
+  /**
+   * `displayName` gives the starting user a name already, so a test about
+   * something else does not have to walk through choosing one. Without it the
+   * user has none, exactly like a first sign-in against the real database.
+   */
+  constructor(
+    user: CurrentUser | null = null,
+    options: { displayName?: string; now?: () => number } = {},
+  ) {
     this.user = user
+    this.now = options.now ?? (() => Date.now())
+    if (user && options.displayName) {
+      this.names.set(user.id, {
+        name: options.displayName,
+        status: 'approved',
+        changedAt: -Infinity,
+        changesInWindow: 0,
+        windowStarted: -Infinity,
+      })
+    }
   }
+
+  private readonly now: () => number
 
   // --- auth ---------------------------------------------------------------
 
@@ -54,6 +93,115 @@ export class FakeDataSource implements DataSource {
     this.setUser(null)
   }
 
+  // --- the name you post under ----------------------------------------------
+
+  async getMyDisplayName() {
+    if (!this.user) return null
+    const found = this.names.get(this.user.id)
+    return found ? { name: found.name, status: found.status } : null
+  }
+
+  /** The same rules, and the same wording, as set_display_name in 0002. */
+  async setDisplayName(name: string) {
+    if (!this.user) throw new Error('you must be signed in to choose a name')
+    const chosen = name.trim()
+    if (nameLength(chosen) < MIN_NAME_LENGTH || nameLength(chosen) > MAX_NAME_LENGTH) {
+      throw new Error('a name must be between 2 and 30 characters')
+    }
+    if (chosen.includes('@')) throw new Error('a name cannot contain @')
+    if (hasControlCharacter(chosen)) {
+      throw new Error('a name cannot contain tabs or line breaks')
+    }
+    if (visibleLength(chosen) < MIN_NAME_LENGTH) {
+      throw new Error('a name must have at least 2 visible characters')
+    }
+
+    const existing = this.names.get(this.user.id)
+    if (existing) {
+      if (existing.status === 'rejected') {
+        if (existing.name === chosen) {
+          throw new Error('that name was not accepted; please choose a different one')
+        }
+      } else {
+        if (existing.name === chosen) return
+        if (existing.changedAt > this.now() - DAY) {
+          throw new Error('a name can be changed once a day')
+        }
+      }
+    }
+    // The daily cap on submissions, whatever became of them, as in 0002.
+    const windowOpen = existing !== undefined && existing.windowStarted > this.now() - DAY
+    if (existing && windowOpen && existing.changesInWindow >= 3) {
+      throw new Error('too many new names today; please try again tomorrow')
+    }
+    // Pending, as on the real backend: nothing a person types is approved on
+    // arrival.
+    this.names.set(this.user.id, {
+      name: chosen,
+      status: 'pending',
+      changedAt: this.now(),
+      changesInWindow: existing && windowOpen ? existing.changesInWindow + 1 : 1,
+      windowStarted: existing && windowOpen ? existing.windowStarted : this.now(),
+    })
+    // A new name gets a new job, as set_display_name does: anybody still
+    // holding the old one is deciding about text that is no longer the name.
+    const me = this.user.id
+    this.queue = this.queue.filter((item) => !(item.subjectType === 'name' && item.subjectId === me))
+    // And complaints about the old name go, as set_display_name deletes them,
+    // so the people who objected to it can object to the new one too.
+    for (let i = this.raisedFlags.length - 1; i >= 0; i -= 1) {
+      const f = this.raisedFlags[i]
+      if (f.subjectType === 'name' && f.subjectId === me) this.raisedFlags.splice(i, 1)
+    }
+    this.queue.push({
+      jobId: `name-job-${this.nextId++}`,
+      subjectType: 'name',
+      subjectId: me,
+      reportId: null,
+      text: chosen,
+      photoUrl: null,
+      reason: 'The automatic checks could not decide this one.',
+      tierResults: {},
+      flagCount: 0,
+      createdAt: new Date(this.now()).toISOString(),
+    })
+  }
+
+  /** Test seam: somebody else's name, as it would already be in the table. */
+  seedName(userId: string, name: string, status: MyDisplayName['status'] = 'pending') {
+    this.names.set(userId, {
+      name,
+      status,
+      changedAt: -Infinity,
+      changesInWindow: 0,
+      windowStarted: -Infinity,
+    })
+  }
+
+  /** Test seam: read anybody's name, which no real client can do. */
+  nameOf(userId: string): MyDisplayName | null {
+    const found = this.names.get(userId)
+    return found ? { name: found.name, status: found.status } : null
+  }
+
+  /** Test seam: what an admin or the worker would decide about a name. */
+  decideName(userId: string, status: MyDisplayName['status']) {
+    const existing = this.names.get(userId)
+    if (existing) existing.status = status
+  }
+
+  /**
+   * The rule reports_insert_own and comments_insert_own apply, refused in
+   * Postgres's own words so the UI has to handle the message it will really get.
+   */
+  private requireName(table: 'reports' | 'comments') {
+    const found = this.user ? this.names.get(this.user.id) : undefined
+    if (!found || found.status === 'rejected') {
+      throw new Error(`new row violates row-level security policy for table "${table}"`)
+    }
+    return found
+  }
+
   setUser(user: CurrentUser | null) {
     this.user = user
     for (const listener of this.listeners) listener(user)
@@ -65,9 +213,9 @@ export class FakeDataSource implements DataSource {
     // containsPoint, not a plain between: a viewport straddling the dateline
     // arrives as minLng > maxLng, and a range test returns nothing there. The
     // fake has to match the real source or it hides that bug from every test.
-    const inView = [...this.reports.values()].filter((r) =>
-      containsPoint(bounds, r.lat, r.lng),
-    )
+    const inView = [...this.reports.values()]
+      .filter((r) => containsPoint(bounds, r.lat, r.lng))
+      .map((r) => this.present(r))
     if (!filters) return inView
 
     return applyFilters(inView, {
@@ -121,14 +269,33 @@ export class FakeDataSource implements DataSource {
     )
   }
 
+  /**
+   * The reporter's name, worked out at read time as public_reports does it:
+   * shown once approved, and always to the reporter. Storing it once at
+   * creation would keep showing a name after it was rejected, or show a
+   * pending one to everybody. A seeded report with no known reporter keeps
+   * whatever it was seeded with. Updated in place, like listComments.
+   */
+  private present(report: ReportView): ReportView {
+    const authorId = this.reportAuthors.get(report.id)
+    if (authorId !== undefined) {
+      const name = this.names.get(authorId)
+      const own = authorId === this.user?.id
+      report.reporterName = name && (name.status === 'approved' || own) ? name.name : null
+    }
+    return report
+  }
+
   async getReport(id: string) {
-    return this.reports.get(id) ?? null
+    const report = this.reports.get(id)
+    return report ? this.present(report) : null
   }
 
   async createReport(report: NewReport) {
     if (!this.user) throw new Error('you must be signed in to add a report')
     if (report.photos.length === 0) throw new Error('a report needs at least one photo')
     if (report.photos.length > 3) throw new Error('a report may have at most 3 photos')
+    const reporter = this.requireName('reports')
 
     const id = `report-${this.nextId++}`
     this.reports.set(id, {
@@ -150,7 +317,10 @@ export class FakeDataSource implements DataSource {
       })),
       viewerHasVoted: false,
       viewerIsReporter: true,
+      // The reporter sees their own name at once, as public_reports shows it.
+      reporterName: reporter.name,
     })
+    this.reportAuthors.set(id, this.user.id)
     return { id }
   }
 
@@ -175,23 +345,68 @@ export class FakeDataSource implements DataSource {
   // --- comments -----------------------------------------------------------
 
   async listComments(reportId: string) {
-    return this.comments.get(reportId) ?? []
+    const list = this.comments.get(reportId) ?? []
+    // Resolved at read time, the way public_comments does it: a name shows
+    // once approved, and always to its owner. Updated in place, because tests
+    // adjust a comment's status through the objects this returns.
+    for (const comment of list) {
+      const authorId = this.commentAuthors.get(comment.id)
+      const name = authorId ? this.names.get(authorId) : undefined
+      const own = authorId !== undefined && authorId === this.user?.id
+      const shown = name && (name.status === 'approved' || own) ? name.name : null
+      comment.authorName = shown ?? 'someone'
+      comment.authorNamed = shown !== null
+      comment.viewerIsAuthor = own
+    }
+    return list
+  }
+
+  /** Test seam: a comment by somebody else, with the name they chose. */
+  seedComment(
+    reportId: string,
+    comment: {
+      authorId: string
+      body: string
+      moderationStatus?: CommentView['moderationStatus']
+    },
+  ): string {
+    const id = `comment-${this.nextId++}`
+    const existing = this.comments.get(reportId) ?? []
+    existing.push({
+      id,
+      body: comment.body,
+      authorName: 'someone',
+      authorNamed: false,
+      viewerIsAuthor: false,
+      createdAt: new Date().toISOString(),
+      moderationStatus: comment.moderationStatus ?? 'approved',
+    })
+    this.comments.set(reportId, existing)
+    this.commentAuthors.set(id, comment.authorId)
+    return id
   }
 
   async addComment(reportId: string, body: string) {
     if (!this.user) throw new Error('you must be signed in to comment')
     if (body.trim() === '') throw new Error('a comment cannot be empty')
     this.requireReport(reportId)
+    const author = this.requireName('comments')
 
     const existing = this.comments.get(reportId) ?? []
+    const id = `comment-${this.nextId++}`
     existing.push({
-      id: `comment-${this.nextId++}`,
+      id,
       body,
-      authorName: this.user.email ?? 'someone',
+      // Never the email address. The author sees their own name at once, as
+      // public_comments shows it to them.
+      authorName: author.name,
+      authorNamed: true,
+      viewerIsAuthor: true,
       createdAt: new Date().toISOString(),
       moderationStatus: 'pending',
     })
     this.comments.set(reportId, existing)
+    this.commentAuthors.set(id, this.user.id)
   }
 
   // --- cleaning -----------------------------------------------------------
@@ -210,8 +425,21 @@ export class FakeDataSource implements DataSource {
     flaggerId: string
   }> = []
 
-  async flag(subjectType: QueueSubject, subjectId: string, reason: string) {
+  async flag(subjectType: DirectFlagSubject, subjectId: string, reason: string) {
+    // As flags_insert_own: never a name directly. The type already says so;
+    // this is for callers that cast their way past it.
+    if ((subjectType as QueueSubject) === 'name') {
+      throw new Error('new row violates row-level security policy for table "flags"')
+    }
+    return this.raiseFlag(subjectType, subjectId, reason)
+  }
+
+  /** Every trigger on mo.flags, whichever route the flag came by. */
+  private async raiseFlag(subjectType: QueueSubject, subjectId: string, reason: string) {
     if (!this.user) throw new Error('you must be signed in to report this')
+    if (subjectType === 'name' && subjectId === this.user.id) {
+      throw new Error('you cannot report your own name')
+    }
     // Matching the unique constraint on flags: one PERSON, one complaint --
     // not one complaint in total, which would stop a second person reporting
     // the same thing and make the two-person withholding rule unreachable.
@@ -281,6 +509,48 @@ export class FakeDataSource implements DataSource {
         report.note = null
       }
     }
+    if (subjectType === 'name') {
+      const found = this.names.get(subjectId)
+      if (found && found.status === 'approved') found.status = 'pending'
+    }
+  }
+
+  /** The same checks, and the same wording, as flag_comment_author in 0005. */
+  async flagCommentAuthorName(commentId: string, reason: string) {
+    if (!this.user) throw new Error('you must be signed in to report this')
+    let approved = false
+    for (const list of this.comments.values()) {
+      const comment = list.find((c) => c.id === commentId)
+      if (comment) approved = comment.moderationStatus === 'approved'
+    }
+    const authorId = this.commentAuthors.get(commentId)
+    if (!approved || !authorId || this.names.get(authorId)?.status !== 'approved') {
+      throw new Error('no such name')
+    }
+    if (authorId === this.user.id) throw new Error('you cannot report your own name')
+    await this.raiseFlag('name', authorId, reason)
+  }
+
+  /** Test seam: say who filed a seeded report. */
+  seedReporter(reportId: string, userId: string) {
+    this.reportAuthors.set(reportId, userId)
+  }
+
+  /** The same checks, and the same wording, as flag_report_author in 0005. */
+  async flagReporterName(reportId: string, reason: string) {
+    if (!this.user) throw new Error('you must be signed in to report this')
+    const report = this.reports.get(reportId)
+    const authorId = this.reportAuthors.get(reportId)
+    if (
+      !report ||
+      report.moderationStatus === 'rejected' ||
+      !authorId ||
+      this.names.get(authorId)?.status !== 'approved'
+    ) {
+      throw new Error('no such name')
+    }
+    if (authorId === this.user.id) throw new Error('you cannot report your own name')
+    await this.raiseFlag('name', authorId, reason)
   }
 
   /** A complaint from somebody else, for tests that need a second one. */
@@ -308,6 +578,7 @@ export class FakeDataSource implements DataSource {
 
   private findTextFor(subjectType: QueueSubject, subjectId: string): string | null {
     if (subjectType === 'note') return this.reports.get(subjectId)?.note ?? null
+    if (subjectType === 'name') return this.names.get(subjectId)?.name ?? null
     if (subjectType === 'comment') {
       for (const list of this.comments.values()) {
         const comment = list.find((c) => c.id === subjectId)
@@ -371,6 +642,9 @@ export class FakeDataSource implements DataSource {
         report.note = verdict === 'approved' ? (item.text ?? report.note) : null
       }
     }
+
+    // A name's subject is the person, as in admin_decide_moderation.
+    if (item.subjectType === 'name') this.decideName(item.subjectId, verdict)
   }
 
   /** Seed a queue item directly. */
@@ -402,6 +676,7 @@ export class FakeDataSource implements DataSource {
   /** Seed a report directly, bypassing the submit rules. */
   seed(report: Partial<ReportView> & { id: string; lat: number; lng: number }): ReportView {
     const full: ReportView = {
+      reporterName: null,
       note: 'Bags of rubbish by the bus stop',
       noteStatus: 'approved',
       moderationStatus: 'approved',

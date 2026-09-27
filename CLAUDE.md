@@ -20,7 +20,7 @@ the situation.
 | `src/components/` | Map, report, auth UI |
 | `src/lib/data/` | The `DataSource` seam; UI never touches Supabase directly |
 | `worker/` | Standalone moderation worker, its own package and deps |
-| `supabase/migrations/` | Schema, RLS, RPCs — **not yet applied to any database** |
+| `supabase/migrations/` | Schema, RLS, RPCs — **applied only in the PGlite tests, never to Supabase** |
 | `docs/superpowers/` | Design spec and implementation plans |
 | `.claude/agents/` | The blind auditor. See the audit gate below |
 

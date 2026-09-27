@@ -14,6 +14,7 @@ const subjectLabel: Record<QueueItem['subjectType'], string> = {
   photo: 'Photo',
   comment: 'Comment',
   note: 'Report note',
+  name: 'Name someone chose',
 }
 
 export function AdminQueue({ data, isAdmin, onClose, onDecided }: AdminQueueProps) {

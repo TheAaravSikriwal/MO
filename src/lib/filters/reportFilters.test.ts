@@ -10,6 +10,7 @@ import { distanceMetres, formatDistance } from '../geo/distance'
 import type { ReportView } from '../data/types'
 
 const report = (over: Partial<ReportView> & { id: string }): ReportView => ({
+  reporterName: null,
   lat: 51.5,
   lng: -0.12,
   note: null,
