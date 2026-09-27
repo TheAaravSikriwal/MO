@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
   largeDemoReports,
-  largeDemoCountFromSearch,
+  ideaCountFromSearch,
   DEFAULT_LARGE_COUNT,
   MAX_LARGE_COUNT,
 } from './largeDemo'
-import { createDemoSource } from './createDataSource'
+import { createDataSource, createIdeaSource } from './createDataSource'
+import { REPORT_PAGE_LIMIT } from './types'
 
 const WORLD = { minLat: -85, maxLat: 85, minLng: -180, maxLng: 180 }
 const NOW = Date.parse('2026-09-27T12:00:00Z')
@@ -40,29 +41,41 @@ describe('largeDemoReports', () => {
   })
 })
 
-describe('largeDemoCountFromSearch', () => {
-  it('is off unless the address asks for it', () => {
-    expect(largeDemoCountFromSearch('')).toBeNull()
-    expect(largeDemoCountFromSearch('?demo=small')).toBeNull()
-  })
-
+describe('ideaCountFromSearch', () => {
   it('uses the default count, or the one asked for within the limit', () => {
-    expect(largeDemoCountFromSearch('?demo=large')).toBe(DEFAULT_LARGE_COUNT)
-    expect(largeDemoCountFromSearch('?demo=large&count=abc')).toBe(DEFAULT_LARGE_COUNT)
-    expect(largeDemoCountFromSearch('?demo=large&count=-5')).toBe(DEFAULT_LARGE_COUNT)
-    expect(largeDemoCountFromSearch('?demo=large&count=300')).toBe(300)
-    expect(largeDemoCountFromSearch('?demo=large&count=9999999')).toBe(MAX_LARGE_COUNT)
+    expect(ideaCountFromSearch('')).toBe(DEFAULT_LARGE_COUNT)
+    expect(ideaCountFromSearch('?count=abc')).toBe(DEFAULT_LARGE_COUNT)
+    expect(ideaCountFromSearch('?count=-5')).toBe(DEFAULT_LARGE_COUNT)
+    expect(ideaCountFromSearch('?world=idea&count=300')).toBe(300)
+    expect(ideaCountFromSearch('?count=9999999')).toBe(MAX_LARGE_COUNT)
   })
 })
 
-describe('createDemoSource', () => {
-  it('keeps the ordinary five reports without the switch', async () => {
-    const source = createDemoSource('')
-    expect(await source.countReportsInView(WORLD)).toBe(5)
+describe('the demo sources', () => {
+  it('keeps made-up reports out of the real side when no database is connected', async () => {
+    const chosen = createDataSource({})
+    expect(chosen.demo).toBe(true)
+    expect(await chosen.source.countReportsInView(WORLD)).toBe(0)
   })
 
-  it('loads the large set with ?demo=large', async () => {
-    const source = createDemoSource('?demo=large&count=300')
-    expect(await source.countReportsInView(WORLD)).toBe(300)
+  it('fills "The idea" with the large set, at the count the address asks for', async () => {
+    expect(await createIdeaSource('?count=300').countReportsInView(WORLD)).toBe(300)
+  })
+})
+
+describe('the in-memory source at scale', () => {
+  const ALL = { status: 'all', minConfirmations: 0, since: null, origin: null, withinMetres: null } as const
+
+  it('hands back one page of reports, most confirmed first, as the real source does', async () => {
+    const reports = await createIdeaSource('?count=2000').listReportsInView(WORLD, ALL)
+    expect(reports).toHaveLength(REPORT_PAGE_LIMIT)
+    for (let i = 1; i < reports.length; i++) {
+      expect(reports[i - 1].voteCount).toBeGreaterThanOrEqual(reports[i].voteCount)
+    }
+  })
+
+  it('still colours the map from every report, not just that page', async () => {
+    const cells = await createIdeaSource('?count=2000').getRollup(WORLD, 1, ALL)
+    expect(cells.reduce((sum, cell) => sum + cell.reportCount, 0)).toBe(2000)
   })
 })

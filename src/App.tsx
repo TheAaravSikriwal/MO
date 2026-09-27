@@ -18,7 +18,10 @@ import { AdminQueue } from './components/admin/AdminQueue'
 import { resolutionForZoom, PIN_ZOOM_THRESHOLD } from './lib/grid/zoomResolution'
 import { normaliseWeights, type NormalisedCell } from './lib/severity/percentile'
 import { createDebouncedSearch, type Place } from './lib/geo/nominatim'
-import { createDataSource } from './lib/data/createDataSource'
+import { createDataSource, createIdeaSource } from './lib/data/createDataSource'
+import { FakeDataSource } from './lib/data/fakeSource'
+import { worldFromSearch, searchWithWorld, type World } from './lib/data/worlds'
+import { WorldSwitch } from './components/WorldSwitch'
 import { plainError } from './lib/moderation/plainWords'
 import type { CurrentUser, DataSource, ReportView, RollupCell } from './lib/data/types'
 
@@ -26,6 +29,12 @@ import type { CurrentUser, DataSource, ReportView, RollupCell } from './lib/data
 const NO_CELLS: NormalisedCell[] = []
 
 const WORLD_VIEW = { center: [20, 0] as [number, number], zoom: 3 }
+
+/**
+ * Who you are when you try the idea signed in. Made up, like everything else
+ * on that side: nobody is asked for a real email address to try a pretend map.
+ */
+export const IDEA_VISITOR_EMAIL = 'visitor@the-idea.example'
 const PLACE_ZOOM = 16
 
 export interface AppProps {
@@ -34,8 +43,70 @@ export interface AppProps {
 }
 
 export default function App({ data: injected }: AppProps = {}) {
+  // An injected source is a test's: the bare map, with no switch above it.
+  if (injected) return <MapScreen data={injected} />
+  return <Worlds />
+}
+
+/**
+ * The map, under the switch between "The idea" and "Real world".
+ *
+ * Each side has its own source, and the map below is keyed on the side, so
+ * switching starts it fresh: an open report, a signed-in person or a list of
+ * pins from one side can never be shown against the other's data.
+ */
+function Worlds() {
   const chosen = useMemo(() => createDataSource(import.meta.env), [])
-  const data = injected ?? chosen.source
+  const realConnected = !chosen.demo
+  const [world, setWorld] = useState<World>(() =>
+    worldFromSearch(globalThis.location?.search ?? '', realConnected),
+  )
+  // Built on first use and then kept. Seeding thousands of reports is not
+  // free, and anything added while trying the idea out is still there after a
+  // look at the real map.
+  const [built] = useState(() => new Map<World, DataSource>())
+  const sourceFor = (side: World): DataSource => {
+    const existing = built.get(side)
+    if (existing) return existing
+    // Not connected: an empty map that says so, never the idea's reports.
+    // Here chosen.source is already empty then, but realConnected can be
+    // false with a database configured (wearechintu shares its Supabase keys
+    // with the store before the map's tables exist), and that database must
+    // not be asked for reports it does not have.
+    const made =
+      side === 'idea'
+        ? createIdeaSource()
+        : realConnected
+          ? chosen.source
+          : new FakeDataSource(null)
+    built.set(side, made)
+    return made
+  }
+
+  useEffect(() => {
+    const { pathname, search, hash } = window.location
+    window.history.replaceState(null, '', `${pathname}${searchWithWorld(search, world)}${hash}`)
+  }, [world])
+
+  return (
+    <MapScreen
+      key={world}
+      data={sourceFor(world)}
+      worlds={{ value: world, onChange: setWorld, realConnected }}
+    />
+  )
+}
+
+interface MapScreenProps {
+  data: DataSource
+  /** The switch above the map. Absent when a test renders the map bare. */
+  worlds?: { value: World; onChange: (world: World) => void; realConnected: boolean }
+}
+
+function MapScreen({ data, worlds }: MapScreenProps) {
+  // "Real world" with no database behind it. Nothing can be read, and nothing
+  // may be written: a report added here would look real and go nowhere.
+  const unconnected = worlds?.value === 'real' && !worlds.realConnected
 
   const [view, setView] = useState<MapView2>({ ...WORLD_VIEW, bounds: WHOLE_WORLD })
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null)
@@ -314,7 +385,28 @@ export default function App({ data: injected }: AppProps = {}) {
 
   return (
     <main className="relative h-full w-full">
+      {worlds && (
+        // A frame round the whole map in the side's colour, so which one this
+        // is stays plain even with every panel scrolled out of view.
+        <div
+          aria-hidden="true"
+          data-testid="world-frame"
+          data-world={worlds.value}
+          className={`pointer-events-none absolute inset-0 z-[1001] border-[6px] ${
+            worlds.value === 'idea' ? 'border-violet-500/70' : 'border-emerald-500/70'
+          }`}
+        />
+      )}
       <div className="pointer-events-none absolute inset-0 z-[1000] flex flex-col gap-3 p-4">
+        {worlds && (
+          <div className="pointer-events-auto w-[min(26rem,calc(100vw-2rem))] xl:absolute xl:left-1/2 xl:top-4 xl:-translate-x-1/2">
+            <WorldSwitch
+              value={worlds.value}
+              onChange={worlds.onChange}
+              realConnected={worlds.realConnected}
+            />
+          </div>
+        )}
         <div className="pointer-events-auto w-[min(24rem,calc(100vw-2rem))] space-y-2">
           <input
             type="search"
@@ -344,9 +436,26 @@ export default function App({ data: injected }: AppProps = {}) {
             </ul>
           )}
 
-          <div className="rounded-lg bg-white p-3 shadow-md">
-            <SignInPanel data={data} user={user} />
-          </div>
+          {worlds?.value === 'idea' && !user ? (
+            <div className="space-y-2 rounded-lg bg-white p-3 shadow-md">
+              <p className="text-sm text-slate-700">
+                No account needed to try the idea. Nothing you add here is sent anywhere.
+              </p>
+              <button
+                type="button"
+                onClick={() => void data.signInWithEmail(IDEA_VISITOR_EMAIL)}
+                className="w-full rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white"
+              >
+                Try it signed in
+              </button>
+            </div>
+          ) : (
+            !unconnected && (
+              <div className="rounded-lg bg-white p-3 shadow-md">
+                <SignInPanel data={data} user={user} />
+              </div>
+            )
+          )}
 
           <FilterPanel
             filters={filters}
@@ -386,9 +495,17 @@ export default function App({ data: injected }: AppProps = {}) {
             </p>
           )}
 
-          {chosen.demo && !injected && (
-            <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
-              Showing sample reports. Connect a database to see real ones.
+          {worlds?.value === 'idea' && (
+            <p role="status" className="rounded-lg bg-violet-50 p-3 text-xs text-violet-900">
+              <strong>The idea.</strong> Every report on this map is made up, to show how
+              it works. None of them are real.
+            </p>
+          )}
+
+          {unconnected && (
+            <p role="status" className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-900">
+              <strong>Real world.</strong> This map is not connected to the real reports
+              yet, so there are none to show. Switch to The idea to see how it works.
             </p>
           )}
         </div>
@@ -430,7 +547,7 @@ export default function App({ data: injected }: AppProps = {}) {
             />
           )}
 
-          {adding ? (
+          {unconnected ? null : adding ? (
             <ReportForm
               data={data}
               lat={view.center[0]}

@@ -1,5 +1,5 @@
 import { FakeDataSource } from './fakeSource'
-import { largeDemoCountFromSearch, largeDemoReports } from './largeDemo'
+import { ideaCountFromSearch, largeDemoReports } from './largeDemo'
 import { SupabaseDataSource } from './supabaseSource'
 import type { DataSource } from './types'
 
@@ -10,12 +10,13 @@ export interface DataSourceChoice {
 }
 
 /**
- * Pick a backend.
+ * The real backend, if there is one.
  *
- * With Supabase configured, use it. Without, fall back to an in-memory source
- * seeded with a few reports, so `npm run dev` gives you a working map instead
- * of a blank error screen. The UI cannot tell the difference — that is the
- * whole point of the DataSource interface.
+ * With Supabase configured, use it. Without, an empty in-memory source, with
+ * `demo` set so the app can say so: the "Real world" side of the switch shows
+ * that empty map and explains it isn't connected. Made-up reports are the
+ * other side's alone ("The idea", createIdeaSource below) -- never mixed into
+ * this one, where they could be taken for real.
  */
 export function createDataSource(env: Record<string, string | undefined>): DataSourceChoice {
   const url = env.VITE_SUPABASE_URL?.trim()
@@ -28,35 +29,20 @@ export function createDataSource(env: Record<string, string | undefined>): DataS
     }
   }
 
-  return { source: createDemoSource(), demo: true }
+  return { source: new FakeDataSource(null), demo: true }
 }
 
 /**
- * A handful of reports around central London, purely so the map is not empty.
- * With `?demo=large` in the address, thousands around the world instead, to
- * see how the map looks at scale (see largeDemo.ts).
+ * "The idea": thousands of made-up reports around the world, to show how the
+ * map looks at scale (see largeDemo.ts). `?count=` in the address changes how
+ * many.
  */
-export function createDemoSource(
+export function createIdeaSource(
   search: string = globalThis.location?.search ?? '',
 ): FakeDataSource {
   const source = new FakeDataSource(null)
-  const large = largeDemoCountFromSearch(search)
-  if (large !== null) {
-    for (const report of largeDemoReports(large)) {
-      source.seed({ ...report, noteStatus: 'approved' })
-    }
-    return source
-  }
-  const seeds: Array<[string, number, number, string, number, 'open' | 'cleaned']> = [
-    ['demo-1', 51.5074, -0.1278, 'Bags of rubbish by the bus stop', 4, 'open'],
-    ['demo-2', 51.5081, -0.1265, 'Broken glass along the path', 1, 'open'],
-    ['demo-3', 51.5069, -0.1291, 'Fly-tipping behind the shops', 9, 'open'],
-    ['demo-4', 51.5055, -0.1301, 'Litter around the benches', 0, 'cleaned'],
-    ['demo-5', 51.5102, -0.1249, 'Cans and bottles in the hedge', 2, 'open'],
-  ]
-
-  for (const [id, lat, lng, note, voteCount, status] of seeds) {
-    source.seed({ id, lat, lng, note, voteCount, status, noteStatus: 'approved' })
+  for (const report of largeDemoReports(ideaCountFromSearch(search))) {
+    source.seed({ ...report, noteStatus: 'approved' })
   }
   return source
 }

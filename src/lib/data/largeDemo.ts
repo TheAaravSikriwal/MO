@@ -1,10 +1,10 @@
 /**
  * A large, made-up set of reports, for seeing how the map looks at scale.
  *
- * Only for the in-memory demo, and only when asked for: open the app with
- * `?demo=large` (and optionally `&count=50000`). Without a database the map
- * otherwise shows five reports in one London street, which says nothing about
- * how the colours, pins and zoom levels behave across a city or the world.
+ * This is "The idea" side of the switch at the top of the map (worlds.ts).
+ * `&count=50000` in the address changes how many. Five reports in one London
+ * street say nothing about how the colours, pins and zoom levels behave
+ * across a city or the world; this does.
  *
  * Deterministic: the same count gives the same reports on every load, so a
  * screenshot can be retaken and compared. The reports cluster around real
@@ -176,13 +176,11 @@ export function largeDemoReports(count: number, now: number = Date.now()): DemoR
 }
 
 /**
- * How many large-demo reports the address asks for, or null for the ordinary
- * five. `?demo=large` gives the default; `&count=` changes it, within limits.
+ * How many made-up reports "The idea" shows: the default, or what `?count=` in
+ * the address asks for, within limits.
  */
-export function largeDemoCountFromSearch(search: string): number | null {
-  const params = new URLSearchParams(search)
-  if (params.get('demo') !== 'large') return null
-  const asked = Number.parseInt(params.get('count') ?? '', 10)
+export function ideaCountFromSearch(search: string): number {
+  const asked = Number.parseInt(new URLSearchParams(search).get('count') ?? '', 10)
   if (!Number.isFinite(asked) || asked <= 0) return DEFAULT_LARGE_COUNT
   return Math.min(asked, MAX_LARGE_COUNT)
 }

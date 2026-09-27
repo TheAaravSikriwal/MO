@@ -125,7 +125,31 @@ const TRANSFORMS = {
     [],
   )`,
     )
+    text = swap(
+      text,
+      file,
+      '  const realConnected = !chosen.demo\n',
+      `  // The Supabase keys above are the store's, and they are set long before
+  // the map's own tables exist in that project. So "Real world" counts as
+  // connected only once NEXT_PUBLIC_MAP_LIVE is "true": set it after
+  // migrations 010-015 are applied and \`mo\` is an exposed schema. Until then
+  // it shows the empty "not connected yet" map, not a screen of errors under a
+  // label saying these are real reports.
+  const realConnected = !chosen.demo && process.env.NEXT_PUBLIC_MAP_LIVE === 'true'
+`,
+    )
     return text
+  },
+
+  'App.worlds.test.tsx': (text, file) => {
+    // This site's variable names, not Vite's.
+    text = swap(
+      text,
+      file,
+      "  vi.stubEnv('VITE_SUPABASE_URL', '')\n  vi.stubEnv('VITE_SUPABASE_ANON_KEY', '')\n",
+      "  vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', '')\n  vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', '')\n  vi.stubEnv('NEXT_PUBLIC_MAP_LIVE', '')\n",
+    )
+    return swap(text, file, "  it('opens on whichever side the address names', () => {", LIVE_TESTS + "  it('opens on whichever side the address names', () => {")
   },
 
   'lib/data/createDataSource.ts': (text, file) => {
@@ -243,8 +267,40 @@ const ZOOM_TEST = `
 
 /** The app's own tests of App, pointed at MapApp. */
 function appTest(text, file) {
-  return swap(text, file, "import App from './App'", "import App from './MapApp'")
+  return swap(text, file, " from './App'\n", " from './MapApp'\n")
 }
+
+/** This site only: the store's Supabase keys alone do not make the map real. */
+const LIVE_TESTS = `  it('stays "not connected" on the store\\'s Supabase keys alone, until the map is switched on', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co')
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon')
+    const asked = vi.fn(() => new Promise(() => {}))
+    vi.stubGlobal('fetch', asked)
+    const user = userEvent.setup()
+    render(<App />)
+    expect(side(/The idea/)).toHaveAttribute('aria-checked', 'true')
+    await user.click(side(/Real world/))
+    await settle()
+    expect(side(/Real world/)).toHaveTextContent('Not connected yet')
+    expect(screen.getByText(/not connected to the real reports yet/)).toBeInTheDocument()
+    // And the database, which has no map tables yet, is never asked.
+    expect(asked).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('opens on the real map once NEXT_PUBLIC_MAP_LIVE is "true"', () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co')
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon')
+    vi.stubEnv('NEXT_PUBLIC_MAP_LIVE', 'true')
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+    window.history.replaceState(null, '', '/')
+    render(<App />)
+    expect(side(/Real world/)).toHaveAttribute('aria-checked', 'true')
+    expect(side(/Real world/)).toHaveTextContent('Reports people have actually made')
+    vi.unstubAllGlobals()
+  })
+
+`
 
 // --- copying -----------------------------------------------------------------------
 

@@ -4,16 +4,10 @@ import { cellsForPoint } from '../grid/cells'
 import { crossesAntimeridian, boundsAround, intersectBounds } from '../geo/bounds'
 import { distanceMetres } from '../geo/distance'
 import { uploadPhoto } from '../upload/uploadPhoto'
-import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE } from './types'
+import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE, REPORT_PAGE_LIMIT } from './types'
 
-/**
- * How many individual reports one viewport will return.
- *
- * The aggregated view does not use this — it is a real GROUP BY over every
- * matching row — so a capped page only ever limits how many pins are drawn at
- * street level, where far fewer than this are on screen anyway.
- */
-export const REPORT_PAGE_LIMIT = 500
+// Defined with the other page sizes, so the in-memory source caps the same way.
+export { REPORT_PAGE_LIMIT }
 
 /**
  * One place the client is built, so its type follows from its options.

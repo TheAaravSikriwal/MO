@@ -161,6 +161,10 @@ self-hosted through `NEXT_PUBLIC_NSFW_MODULE_URL`, which that repo's
    to the Site URL: the home page, where nothing picks the sign-in up.
 3. **Apply migrations `010`-`015`** to that project, then make yourself the
    first admin (the snippet is under "Admin bootstrap" in `013`/`0004`).
+   Then set `NEXT_PUBLIC_MAP_LIVE=true` on the site. Until you do, the map's
+   "Real world" side says it is not connected and asks the database nothing,
+   because the Supabase keys there belong to the store and exist before the
+   map's tables do.
 4. **The R2 CORS rule** has to allow `PUT` from the site with the
    `content-type` and `if-none-match` headers. Then do one real upload. That is
    the first time R2 sees MO's signature.
@@ -196,12 +200,21 @@ npm install
 npm run dev
 ```
 
-No accounts or keys needed. With no Supabase configured the app runs on seeded
-sample reports around central London, so the map is populated and every screen
-works. That is deliberate — see `src/lib/data/createDataSource.ts`.
+No accounts or keys needed. A switch at the top of the map moves between two
+sides:
+
+* **The idea** (violet) is 20,000 made-up reports clustered around 39 cities.
+  Add `?count=` to the address for more or fewer. It shows how the map looks
+  at scale, and you can try everything there, signed in as a made-up visitor.
+* **Real world** (green) is the database. With no Supabase configured it is
+  empty and says it is not connected, and it offers no sign-in and no way to
+  add a report.
+
+The choice is kept in the address as `?world=idea` or `?world=real`. See
+`src/lib/data/worlds.ts` and `src/lib/data/largeDemo.ts`.
 
 ```bash
-npm test              # 1012 tests, including real Postgres via PGlite
+npm test              # 1045 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
 cd worker && npm test # 138 tests
 ```

@@ -24,7 +24,7 @@ import type {
   RollupFilters,
   ViewBounds,
 } from './types'
-import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE } from './types'
+import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE, REPORT_PAGE_LIMIT } from './types'
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -213,6 +213,16 @@ export class FakeDataSource implements DataSource {
   // --- reports ------------------------------------------------------------
 
   async listReportsInView(bounds: ViewBounds, filters?: RollupFilters) {
+    // One page, in the real source's order: most confirmed first, then newest.
+    // Handing back every report in the box let thousands of sample reports
+    // through at once, which the real source never does.
+    return this.matchingInView(bounds, filters)
+      .sort((a, b) => b.voteCount - a.voteCount || b.createdAt.localeCompare(a.createdAt))
+      .slice(0, REPORT_PAGE_LIMIT)
+  }
+
+  /** Every live report in the box that the filters allow, uncapped. */
+  private matchingInView(bounds: ViewBounds, filters?: RollupFilters): ReportView[] {
     // containsPoint, not a plain between: a viewport straddling the dateline
     // arrives as minLng > maxLng, and a range test returns nothing there. The
     // fake has to match the real source or it hides that bug from every test.
@@ -220,16 +230,17 @@ export class FakeDataSource implements DataSource {
     const inView = [...this.reports.values()]
       .filter((r) => containsPoint(bounds, r.lat, r.lng) && r.moderationStatus !== 'rejected')
       .map((r) => this.present(r))
-    if (!filters) return inView
-
-    return applyFilters(inView, {
-      ...DEFAULT_FILTERS,
-      status: filters.status,
-      minConfirmations: filters.minConfirmations,
-      since: filters.since,
-      origin: filters.origin,
-      withinMetres: filters.withinMetres,
-    })
+    const matching = filters
+      ? applyFilters(inView, {
+          ...DEFAULT_FILTERS,
+          status: filters.status,
+          minConfirmations: filters.minConfirmations,
+          since: filters.since,
+          origin: filters.origin,
+          withinMetres: filters.withinMetres,
+        })
+      : inView
+    return matching
   }
 
   async countReportsInView(bounds: ViewBounds, filters?: RollupFilters): Promise<number> {
@@ -252,7 +263,9 @@ export class FakeDataSource implements DataSource {
     resolution: number,
     filters: RollupFilters,
   ): Promise<RollupCell[]> {
-    const matching = await this.listReportsInView(bounds, filters)
+    // Every matching report, not one page: the real rollup is a GROUP BY over
+    // all of them, and colouring from a page would cool the busiest areas.
+    const matching = this.matchingInView(bounds, filters)
     return weighCells(
       matching.map((report) => ({
         id: report.id,

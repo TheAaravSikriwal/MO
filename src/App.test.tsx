@@ -82,8 +82,18 @@ describe('App', () => {
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: async () => hydePark }),
     )
+    // With no database the app opens on "The idea". Forty made-up reports
+    // rather than twenty thousand, so each render is quick.
+    window.history.replaceState(null, '', '/?count=40')
+    // And no database, whatever a local .env says.
+    vi.stubEnv('VITE_SUPABASE_URL', '')
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', '')
   })
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+    window.history.replaceState(null, '', '/')
+  })
 
   it('lands directly on the map, not a splash page', () => {
     render(<App />)
@@ -107,7 +117,7 @@ describe('App', () => {
 
   it('says plainly when it is showing sample data rather than real reports', () => {
     render(<App />)
-    expect(screen.getByText(/showing sample reports/i)).toBeInTheDocument()
+    expect(screen.getByText(/every report on this map is made up/i)).toBeInTheDocument()
   })
 
   it('asks people to sign in before they can add anything', async () => {
@@ -131,7 +141,7 @@ describe('App', () => {
 
     // The default view shows what is still there, so ask for everything first.
     await user.click(screen.getByRole('button', { name: /everything/i }))
-    expect(await screen.findByRole('button', { name: /cleaned report/i })).toBeInTheDocument()
+    expect((await screen.findAllByRole('button', { name: /cleaned report/i })).length).toBeGreaterThan(0)
   })
 
   it('suggests places for a typed query and flies there when one is chosen', async () => {

@@ -102,6 +102,15 @@ export interface QueueItem {
   createdAt: string
 }
 
+/**
+ * How many individual reports one viewport will return.
+ *
+ * The aggregated view does not use this — it is a real GROUP BY over every
+ * matching row — so a capped page only ever limits how many pins are drawn at
+ * street level, where far fewer than this are on screen anyway.
+ */
+export const REPORT_PAGE_LIMIT = 500
+
 /** How many off-map pins the review queue lists at once. */
 export const OFF_MAP_PAGE = 50
 
