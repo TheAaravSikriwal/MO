@@ -105,7 +105,10 @@ worker mid-judgement is holding a job that no longer exists, and both refuse.
 
 **A marketplace account deletion would take litter data with it.** Seven MO
 tables reference `public.profiles` with `on delete cascade`: `reports`,
-`comments`, `votes`, `flags`, `upload_grants`, `admins` and `display_names`. So a "delete my
+`comments`, `votes`, `flags`, `admins`, `display_names` and `post_log`.
+(`upload_grants` does not: it sets `user_id` to null instead, so the R2 cleanup
+can still find and delete that person's photos. `pin_history.acted_by` also
+sets null.) So a "delete my
 account" feature on the marketplace side — which does not exist today — would
 remove that person's reports from the map rather than merely detach them, and
 could delete the last row of `mo.admins`, which `0004` says there is no in-app
@@ -262,9 +265,9 @@ public Cloudflare hostname now, so anyone *holding* a key can fetch the object
 whatever this view says — and `api/sign-upload` hands the key to the uploader, so
 they always hold their own. The keys are unguessable (three UUIDs), the bucket
 must not be listable, and nobody else is given a pending or rejected path. But a
-photo a human rejected stays retrievable by whoever uploaded it, because nothing
-deletes from the bucket. That is recorded in `HANDOFF.md` under what is not
-done; it is not fixed.
+photo a human rejected stays retrievable by whoever uploaded it until the
+worker's cleanup deletes the bytes (`claim_objects_to_delete` in `0006`; see
+`HANDOFF.md` item 3). That has not yet run against a real bucket.
 
 **Read through the views, because there is no other way.** `public_reports`,
 `public_report_photos` and `public_comments` are the ONLY public read path.

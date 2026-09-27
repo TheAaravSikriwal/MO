@@ -47,7 +47,8 @@ const TEXT_SOURCES: Record<
  *
  * It talks to Supabase over ordinary outbound HTTPS. No inbound port, no
  * tunnel, no static IP, nothing to expose to the internet — which is what makes
- * "copy the folder onto whichever machine has the GPU and run it" true.
+ * "copy the folder, and `shared/` beside it, onto whichever machine has the GPU
+ * and run it" true.
  */
 export class Queue {
   private readonly client: MoClient
@@ -161,6 +162,19 @@ export class Queue {
       .eq('status', 'in_progress')
       .is('verdict', null)
     if (error) throw new Error(`could not mark job ${job.id} failed: ${error.message}`)
+  }
+
+  /** A batch of R2 objects to delete. See claim_objects_to_delete in 0006. */
+  async claimObjectsToDelete(batchSize = 50): Promise<Array<{ storage_path: string; reason: string }>> {
+    const { data, error } = await this.client.rpc('claim_objects_to_delete', { batch_size: batchSize })
+    if (error) throw new Error(`could not claim objects to delete: ${error.message}`)
+    return (data ?? []) as Array<{ storage_path: string; reason: string }>
+  }
+
+  /** Record that R2 has removed an object. */
+  async recordObjectDeleted(path: string): Promise<void> {
+    const { error } = await this.client.rpc('record_object_deleted', { path })
+    if (error) throw new Error(`could not record ${path} as deleted: ${error.message}`)
   }
 
   /** A job whose content vanished has nothing left to judge. */

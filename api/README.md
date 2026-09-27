@@ -16,7 +16,7 @@ PUT, and never touches the bytes.
 | `_lib/signUpload.ts` | The handler. Auth, validation, and the reply |
 | `_lib/r2.ts` | The object key, and the R2 presigned PUT |
 | `../supabase/migrations/0006_upload_grants.sql` | The table and trigger that limit how many URLs one account can get |
-| `_lib/sigv4.ts` | AWS Signature Version 4, query-string flavour, on Web Crypto |
+| `../shared/sigv4.ts` | AWS Signature Version 4, query-string flavour, on Web Crypto. Shared with the worker, which signs DELETEs with it |
 
 Vercel ignores files under `api/` whose names begin with `_`, so only
 `sign-upload.ts` becomes a route.
@@ -107,7 +107,7 @@ bounds it. Vercel's own per-deployment rate limiting is where that would go.
 **It is a per-account limit, so it is not a limit on cost.** One account is
 capped at 240 MB an hour; forty-two accounts are not capped at anything useful,
 and sign-up is an open magic link, so accounts are free to make. Nothing here
-bounds the total, and nothing deletes from the bucket either. Say that plainly
+bounds the total. Say that plainly
 rather than quoting the per-account figure as if it were the ceiling — the
 mistake twice above was exactly this kind of arithmetic.
 
@@ -245,42 +245,16 @@ the note at the end of this file first, because the alternative is signing
 `content-md5`, which pins the bytes themselves and is strictly better than
 either.
 
-## Nothing ever deletes from the bucket
+## What deletes from the bucket
 
-Two consequences, and the second one matters more than it first looks.
-
-`createReport` in `src/lib/data/supabaseSource.ts` writes the report row first,
-then uploads and links each photo. If any part fails it deletes the report,
-because a pin with nothing to show is worse than no pin — but bytes already in
-R2 stay there forever, unreferenced. The burst case above leaks the same way.
-
-**Rejected photos stay retrievable.** The database withholds an unapproved
-`storage_path`, so nobody can discover one through it — but the bytes sit on a
-public Cloudflare hostname, and this endpoint hands the key to the person
-uploading. So they always hold their own key, and an image a human rejected is
-still fetchable at its URL, indefinitely. Keys are three UUIDs and therefore
-unguessable, the bucket must not be listable, and no pending or rejected path is
-ever given to anybody else — so this is not a browsing hole. It is worse than it
-sounds anyway, because rejection is the mechanism this project relies on for
-content that must not be hosted at all. Deleting the object on rejection is the
-actual fix and needs the same R2 delete credential as below.
-
-Both want one of these, and neither can be built or verified without a real
-bucket:
-
-- **A reconcile pass in `worker/`.** It already runs on a loop with service
-  role access, so it can do both jobs: delete objects whose key is absent from
-  `report_photos.storage_path` (the orphans), and delete objects whose row is
-  `rejected` (the ones that must not stay hosted). It needs R2 list and delete
-  credentials, which the worker does not currently hold.
-- **A bucket lifecycle rule**, as a blunt fallback. R2 lifecycle rules act on
-  age, not on whether an object is referenced, so this only works if uploads
-  land in a staging prefix and are copied on approval. That is a bigger change
-  than it sounds.
-
-Until one exists, the leak is bounded by the limits above and by how many
-submissions actually fail. It is recorded in `HANDOFF.md` under what is not
-done, so it does not get quietly forgotten.
+The worker does, since 2026-09-27 -- see `HANDOFF.md` item 3. It removes
+uploads that never became a photo, photos whose row was deleted, and photos
+rejected more than thirty days ago, which is what makes rejection remove
+content rather than only withhold its row. The thirty days are a hold, so a
+wrong automatic rejection can be reversed before the bytes are gone. It works from `upload_grants`, not from a listing of
+the bucket, because the bucket is shared with the marketplace, and it signs
+its DELETEs with the same SigV4 code as this endpoint, now in `shared/`. It has
+not yet been run against a real bucket.
 
 ## What has to exist before it works
 
@@ -339,7 +313,7 @@ string the bundle will actually use.
 
 Proven by `npm test`:
 
-- The signature itself. `_lib/sigv4.test.ts` reproduces AWS's own published
+- The signature itself. `../shared/sigv4.test.ts` reproduces AWS's own published
   presigned-URL example exactly, and pins HMAC-SHA-256 against the RFC 4231
   vectors underneath it. A 256-bit match cannot happen by accident.
 - Every refusal path: missing token, rejected token, an unreachable auth

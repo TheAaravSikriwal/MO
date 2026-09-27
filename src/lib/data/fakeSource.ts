@@ -16,6 +16,7 @@ import type {
   DataSource,
   MyDisplayName,
   NewReport,
+  RejectedPhoto,
   QueueItem,
   QueueSubject,
   ReportView,
@@ -23,7 +24,7 @@ import type {
   RollupFilters,
   ViewBounds,
 } from './types'
-import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE } from './types'
+import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE } from './types'
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -446,11 +447,29 @@ export class FakeDataSource implements DataSource {
   }
 
   /** Every trigger on mo.flags, whichever route the flag came by. */
+  private isOwnPost(subjectType: QueueSubject, subjectId: string): boolean {
+    const me = this.user?.id
+    if (!me) return false
+    const reporterOf = (reportId: string) =>
+      this.reportAuthors.get(reportId) ??
+      (this.reports.get(reportId)?.viewerIsReporter ? me : undefined)
+    if (subjectType === 'comment') return this.commentAuthors.get(subjectId) === me
+    if (subjectType === 'note') return reporterOf(subjectId) === me
+    if (subjectType === 'photo') {
+      for (const report of this.reports.values()) {
+        if (report.photos.some((photo) => photo.id === subjectId)) return reporterOf(report.id) === me
+      }
+    }
+    return false
+  }
+
   private async raiseFlag(subjectType: QueueSubject, subjectId: string, reason: string) {
     if (!this.user) throw new Error('you must be signed in to report this')
     if (subjectType === 'name' && subjectId === this.user.id) {
       throw new Error('you cannot report your own name')
     }
+    // As validate_flag_subject: nobody complains about their own post.
+    if (this.isOwnPost(subjectType, subjectId)) throw new Error('you cannot report your own post')
     // Matching the unique constraint on flags: one PERSON, one complaint --
     // not one complaint in total, which would stop a second person reporting
     // the same thing and make the two-person withholding rule unreachable.
@@ -700,6 +719,48 @@ export class FakeDataSource implements DataSource {
     if (this.user?.isAdmin) return true
     const authorId = this.reportAuthors.get(report.id)
     return authorId !== undefined ? authorId === this.user?.id : report.viewerIsReporter
+  }
+
+  /** Which rejected photos a machine rejected, for tests; the rest were people. */
+  private automaticRejections = new Set<string>()
+
+  /** Test seam: a photo on a report, rejected by a machine or a person. */
+  seedRejectedPhoto(reportId: string, photoId: string, options: { automatic?: boolean } = {}) {
+    const report = this.requireReport(reportId)
+    report.photos.push({ id: photoId, url: null, moderationStatus: 'rejected' })
+    if (options.automatic) this.automaticRejections.add(photoId)
+  }
+
+  async listRecentlyRejectedPhotos(): Promise<{ photos: RejectedPhoto[]; more: boolean }> {
+    if (!this.user?.isAdmin) throw new Error('only an admin may read the moderation queue')
+    const out: RejectedPhoto[] = []
+    for (const report of this.reports.values()) {
+      for (const photo of report.photos) {
+        if (photo.moderationStatus !== 'rejected') continue
+        out.push({
+          photoId: photo.id,
+          reportId: report.id,
+          url: `https://img.example/${photo.id}.jpg`,
+          rejectedAt: new Date(this.now()).toISOString(),
+          automatic: this.automaticRejections.has(photo.id),
+        })
+      }
+    }
+    return { photos: out.slice(0, REJECTED_PAGE), more: out.length > REJECTED_PAGE }
+  }
+
+  async allowRejectedPhoto(photoId: string) {
+    if (!this.user?.isAdmin) throw new Error('only an admin may decide moderation items')
+    for (const report of this.reports.values()) {
+      const photo = report.photos.find((p) => p.id === photoId && p.moderationStatus === 'rejected')
+      if (photo) {
+        photo.moderationStatus = 'approved'
+        photo.url = `https://img.example/${photo.id}.jpg`
+        this.automaticRejections.delete(photoId)
+        return
+      }
+    }
+    throw new Error('no such photo')
   }
 
   async decideModerationItem(jobId: string, verdict: 'approved' | 'rejected') {

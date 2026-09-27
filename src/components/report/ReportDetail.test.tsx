@@ -239,8 +239,8 @@ describe('ReportDetail — reporting a comment', () => {
       { displayName: 'Sam' },
     )
     const report = data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
-    await data.addComment('r1', body)
-    ;(await data.listComments('r1'))[0].moderationStatus = moderationStatus
+    // Somebody else's comment: nobody may report their own post.
+    data.seedComment('r1', { authorId: 'u9', body, moderationStatus })
 
     render(
       <ReportDetail

@@ -545,21 +545,18 @@ describe('the flag limit cannot be reset by deleting what you flagged', () => {
     await setName(NED, 'Ned')
     const reportId = await addReport(NED)
 
-    // Setup, as the table owner: twenty comments of Mia's own and one of Ned's,
-    // with the comment limit switched off so the setup is not what is tested.
+    // Setup, as the table owner: twenty-one of Ned's comments, with the comment
+    // limit switched off so the setup is not what is tested. Mia cannot flag
+    // her own posts any more, so she flags his.
     await db.exec('alter table mo.comments disable trigger enforce_comment_rate_limit')
-    const own: string[] = []
-    for (let i = 0; i < 20; i += 1) {
+    const his: string[] = []
+    for (let i = 0; i < 21; i += 1) {
       const { rows } = await db.query<{ id: string }>(
-        "insert into mo.comments (report_id, author_id, body) values ($1, $2, $3) returning id",
-        [reportId, MIA, `mine ${i}`],
+        'insert into mo.comments (report_id, author_id, body) values ($1, $2, $3) returning id',
+        [reportId, NED, `his ${i}`],
       )
-      own.push(rows[0].id)
+      his.push(rows[0].id)
     }
-    const { rows: neds } = await db.query<{ id: string }>(
-      "insert into mo.comments (report_id, author_id, body) values ($1, $2, 'his') returning id",
-      [reportId, NED],
-    )
     await db.exec('alter table mo.comments enable trigger enforce_comment_rate_limit')
 
     const flag = (subject: string) =>
@@ -569,14 +566,38 @@ describe('the flag limit cannot be reset by deleting what you flagged', () => {
           [subject, MIA],
         ),
       )
-    for (const id of own) await flag(id)
+    for (const id of his.slice(0, 20)) await flag(id)
 
-    // Deleting the comments deletes the flags on them.
-    await as(MIA, () => db.query('delete from mo.comments'))
+    // Ned deletes the twenty she flagged, and the flags on them go too. Her
+    // count must not go with them.
+    await db.query('delete from mo.comments where id = any($1)', [his.slice(0, 20)])
     const { rows } = await db.query<{ n: number }>('select count(*)::int as n from mo.flags where flagger_id = $1', [MIA])
     expect(rows[0].n).toBe(0)
 
-    expect(await failure(() => flag(neds[0].id))).toMatch(/too many reports in the last hour/)
+    expect(await failure(() => flag(his[20]))).toMatch(/too many reports in the last hour/)
+  })
+
+  it('refuses a complaint about your own post', async () => {
+    const reportId = await addReport(NED)
+    await addComment(NED, reportId, 'mine')
+    const { rows } = await db.query<{ id: string }>(
+      "select id from mo.comments where report_id = $1 and body = 'mine'",
+      [reportId],
+    )
+    const own = (type: string, subject: string) =>
+      failure(() =>
+        as(NED, () =>
+          db.query('insert into mo.flags (subject_type, subject_id, flagger_id, reason) values ($1, $2, $3, $4)', [
+            type,
+            subject,
+            NED,
+            'x',
+          ]),
+        ),
+      )
+    expect(await own('comment', rows[0].id)).toMatch(/your own post/)
+    await db.query("update mo.reports set note = 'a note', note_status = 'approved' where id = $1", [reportId])
+    expect(await own('note', reportId)).toMatch(/your own post/)
   })
 })
 

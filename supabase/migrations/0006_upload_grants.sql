@@ -98,15 +98,22 @@ grant execute on function mo.is_photo_object_key(text) to anon, authenticated;
 
 create table mo.upload_grants (
   id         uuid primary key default gen_random_uuid(),
-  -- Cascades, unlike report_id below. Deleting a person should take their
-  -- records with them, and this one row is not worth keeping over that.
+  -- Set null, NOT cascade, when the person is deleted -- like report_id below.
   --
-  -- Be aware of what it means for the count, though: it IS a path that empties
-  -- somebody's grants inside the window. Nothing in MO exposes it -- MO holds
-  -- no delete grant on public.profiles and does not own that table -- but the
-  -- marketplace side owns profiles now, so a "delete my account" feature added
-  -- THERE would reset this counter here. Worth knowing before building one.
-  user_id    uuid not null references public.profiles (id) on delete cascade,
+  -- It used to cascade, on the grounds that deleting somebody should take their
+  -- records. But the R2 cleanup finds MO's objects only through these rows. A
+  -- cascade took the grants away with the account while the bytes stayed in
+  -- the bucket, unfindable for good -- including photos that had been rejected
+  -- and were still waiting to be deleted. Kept with no owner, the row still
+  -- tells the cleanup the object is MO's, and the cleanup deletes it: the
+  -- account's reports and photos have cascaded away, so nothing links it.
+  --
+  -- What this means for the hourly count: an ownerless grant counts for nobody,
+  -- so deleting an account still empties its grants from the window. Nothing in
+  -- MO can delete an account -- MO holds no delete grant on public.profiles --
+  -- but the marketplace side owns profiles, so a "delete my account" there
+  -- would reset this counter. Worth knowing before building one.
+  user_id    uuid references public.profiles (id) on delete set null,
   report_id  uuid references mo.reports (id) on delete set null,
   -- The object key the URL was signed for.
   --
@@ -121,7 +128,13 @@ create table mo.upload_grants (
   -- Set when the photo row naming this object is inserted, which is what makes
   -- a grant one-use. See enforce_photo_has_grant below.
   linked_at  timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- The object's end, in two steps, written only by the worker's cleanup
+  -- functions below. `retired_at` is set first and stops the grant ever being
+  -- linked again; `object_deleted_at` once R2 has actually removed the bytes.
+  -- Between the two, a failed delete is retried.
+  retired_at        timestamptz,
+  object_deleted_at timestamptz
 );
 
 create index upload_grants_user_idx on mo.upload_grants (user_id, created_at desc);
@@ -292,6 +305,13 @@ begin
    where storage_path = new.storage_path
      and report_id = new.report_id
      and linked_at is null
+     -- Not an object the cleanup has retired: its bytes are gone, or going.
+     and retired_at is null
+     -- Nor one old enough for the cleanup to be claiming it. An unused grant
+     -- is deletable after an hour; refusing to link after fifty minutes keeps
+     -- the two sets from ever meeting. An upload URL lives two minutes, and a
+     -- report links its photos moments after uploading them.
+     and created_at > now() - interval '50 minutes'
   returning id into spent;
 
   if spent is null then
@@ -357,10 +377,8 @@ create policy upload_grants_insert_own
 -- rows, so a delete grant would make the hourly limit resettable by the person
 -- it limits.
 revoke all                        on mo.upload_grants from anon, authenticated;
--- No select grant for service_role. The orphan sweep in api/README.md would
--- need one, and that sweep is not built (see HANDOFF.md) -- granting a
--- privilege for code that does not exist is how a schema ends up carrying
--- privileges nobody can account for. Add it with the sweep.
+-- No select grant for service_role. The R2 cleanup below reaches this table
+-- only through its two SECURITY DEFINER functions, so it needs none.
 grant insert (user_id, report_id, storage_path)
                                   on mo.upload_grants to authenticated;
 
@@ -368,22 +386,323 @@ grant insert (user_id, report_id, storage_path)
 -- Housekeeping
 -- ---------------------------------------------------------------------------
 --
--- Rows older than the window are dead weight. There is no scheduler on the free
--- tier, so this is not automatic; run it from the SQL editor, or from the worker
--- if it ever grows a maintenance pass. Leaving them costs a few bytes a row, so
--- forgetting is not a correctness problem.
+-- Most rows here are NOT dead weight, however old. The R2 cleanup below works
+-- only from grant rows: a grant is how it knows an object is MO's, and a
+-- grant for a live photo is how it will find the bytes if that photo is
+-- rejected a month from now. Deleting such a row loses the object for good --
+-- a photo rejected later stays on the public hostname, and a failed delete
+-- still being retried is dropped.
 --
--- Keep the interval comfortably wider than the trigger's window. Deleting rows
--- younger than an hour would hand back the reset this table exists to prevent.
+-- The only rows safe to remove are those whose object R2 has already deleted:
 --
---   delete from mo.upload_grants where created_at < now() - interval '2 days';
+--   delete from mo.upload_grants
+--    where object_deleted_at is not null
+--      and created_at < now() - interval '2 days';
 --
--- Note there is no delete POLICY and no delete GRANT, so this is a maintenance
--- task for whoever holds the service role key, not something a person can do.
+-- The interval keeps well clear of the hourly limit's window, which counts
+-- these rows. There is no delete POLICY and no delete GRANT, so this is a
+-- maintenance task for whoever holds the service role key. Leaving them costs
+-- a few bytes a row, so forgetting is not a correctness problem.
+
+-- ---------------------------------------------------------------------------
+-- Deleting photos from R2 that nothing should serve
+-- ---------------------------------------------------------------------------
 --
--- Do not delete SPENT grants on a shorter schedule than unspent ones either. A
--- spent grant is what stops its object being linked a second time, so removing
--- it early hands back the re-judging loop described above.
+-- Two kinds of object stay in the bucket for good unless something removes
+-- them: bytes that were uploaded and never became a photo (a submission rolled
+-- back, a connection dropped, a photo row deleted), and photos a person or the
+-- worker REJECTED. The database withholds a rejected path, but the bytes are on
+-- a public hostname and the uploader holds the key, so rejection only withheld
+-- the row. These two functions tell the worker which objects to delete.
+--
+-- Built on upload_grants rather than on a listing of the bucket, and that is
+-- the safety of the whole thing. The bucket is chintubucket, which the
+-- marketplace also uses. Every object MO writes has a grant -- the endpoint
+-- records one before it signs anything -- and nothing else does, so working
+-- from grants means the worker never so much as looks at an object MO did not
+-- write. A grant names a key inside its owner's own prefix only (the policy
+-- above), so even a grant somebody minted by hand can only point the worker at
+-- their own MO objects.
+--
+-- Photos on a pin taken off the map are NOT deleted: the pin can be put back.
+
+-- Claim a batch to delete, retiring each grant as it goes so it can never be
+-- linked again. Row locks (skip locked) make this safe beside a photo being
+-- linked at the same moment, and beside a complaint about it: both take the
+-- grant row too (enforce_photo_has_grant here, validate_flag_subject in 0005),
+-- so whichever gets it first wins, and the other re-checks or is skipped. A grant retired more than ten minutes ago without its
+-- object recorded as deleted is offered again, so a failed delete is retried.
+--
+-- What is claimed:
+--   * never linked, and an hour old -- far past the two-minute upload URL, so
+--     nothing is still on its way;
+--   * linked once, but its photo row has since been deleted;
+--   * its photo was rejected THIRTY DAYS AGO, and that rejection is settled.
+--     The hold is so a wrong automatic rejection -- an NSFW score over the
+--     line on a photo of a bin bag -- can be reversed before the bytes are
+--     gone, with admin_allow_rejected_photo below, from the review queue's
+--     list of recent rejections. Until then the photo is withheld from
+--     everybody but its uploader. Settled
+--     means: its review job
+--     holds a 'rejected' verdict and nobody has an open complaint about it.
+--     Rejection is not always final -- a complaint puts a decided photo back
+--     in front of an admin (flag_reopens_review in 0005), and deleting the
+--     bytes then would leave an admin judging a broken image, and possibly
+--     approving a photo that no longer exists. The two checks overlap on
+--     purpose: a complaint also clears the job's verdict, so either alone
+--     refuses a reopened photo today, and each still holds if the other's
+--     behaviour ever changes.
+-- Why an object may be deleted, or null if it may not. One place for the
+-- rules, used by both steps of the claim below.
+create or replace function mo.deletion_reason(grant_id uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = mo, public
+as $$
+  select case
+    when g.object_deleted_at is not null then null
+    when p.id is null and g.linked_at is null and g.created_at < now() - interval '1 hour'
+      then 'unused'
+    when p.id is null and g.linked_at is not null
+      then 'unused'
+    when p.moderation_status = 'rejected'
+     -- The thirty-day hold, from the photo's FIRST rejection. The job's
+     -- updated_at was used before, and a complaint followed by a fresh
+     -- rejection restamped it -- so a throwaway account could restart the
+     -- clock as often as it liked. rejected_at is kept by the trigger below.
+     and p.rejected_at < now() - interval '30 days'
+     and exists (
+       select 1 from mo.moderation_jobs j
+        where j.subject_type = 'photo' and j.subject_id = p.id and j.verdict = 'rejected'
+     )
+     and not exists (
+       select 1 from mo.flags f
+        where f.subject_type = 'photo' and f.subject_id = p.id and f.resolved_at is null
+     )
+      then 'rejected'
+    else null
+  end
+  from mo.upload_grants g
+  left join mo.report_photos p on p.storage_path = g.storage_path
+  where g.id = grant_id;
+$$;
+
+revoke all on function mo.deletion_reason(uuid) from public, anon, authenticated;
+
+-- Two steps, and the second is what makes it safe.
+--
+-- One statement was not enough. Under Postgres's default isolation, a row that
+-- changes under a `for update` is re-checked, but only that row: the join to
+-- report_photos and the verdict and complaint checks keep the statement's
+-- first snapshot. So a photo linked, or a complaint filed, just after that
+-- snapshot could still see its object claimed.
+--
+-- Step one locks the candidates, skipping any a photo link or a complaint
+-- already holds. Step two runs as a new statement, so it sees everything
+-- committed before the locks were taken, and re-decides each one with the
+-- same rules; only those still deletable are retired. Nothing can change them
+-- in between, because a link and a complaint both need the grant row, which
+-- this now holds until it commits.
+create or replace function mo.claim_objects_to_delete(batch_size integer default 50)
+returns table (storage_path text, reason text)
+language plpgsql
+volatile
+security definer
+set search_path = mo, public
+as $$
+declare
+  held uuid[];
+begin
+  select array_agg(c.id) into held
+    from (
+      select g.id
+        from mo.upload_grants g
+       where g.object_deleted_at is null
+         and (g.retired_at is null or g.retired_at < now() - interval '10 minutes')
+         and mo.deletion_reason(g.id) is not null
+       order by g.created_at
+       limit least(greatest(batch_size, 1), 500)
+       for update of g skip locked
+    ) c;
+
+  if held is null then
+    return;
+  end if;
+
+  return query
+  with still as (
+    select g.id as grant_id, mo.deletion_reason(g.id) as why
+      from mo.upload_grants g
+     where g.id = any(held)
+  )
+  update mo.upload_grants g
+     set retired_at = now()
+    from still s
+   where g.id = s.grant_id
+     and s.why is not null
+  returning g.storage_path, s.why;
+end;
+$$;
+
+-- Record that R2 has removed an object. Returns whether this changed anything.
+create or replace function mo.record_object_deleted(path text)
+returns boolean
+language sql
+volatile
+security definer
+set search_path = mo, public
+as $$
+  update mo.upload_grants
+     set object_deleted_at = now()
+   where storage_path = path
+     and retired_at is not null
+     and object_deleted_at is null
+  returning true;
+$$;
+
+-- The worker's, and nobody else's. See the note on revoking from PUBLIC in
+-- 0004 for why service_role has to be granted back explicitly.
+revoke all on function mo.claim_objects_to_delete(integer) from public, anon, authenticated;
+revoke all on function mo.record_object_deleted(text)     from public, anon, authenticated;
+grant execute on function mo.claim_objects_to_delete(integer) to service_role;
+grant execute on function mo.record_object_deleted(text)     to service_role;
+
+-- ---------------------------------------------------------------------------
+-- When a photo was first rejected
+-- ---------------------------------------------------------------------------
+--
+-- Set the first time a photo becomes rejected, and cleared when it is
+-- approved. Nothing else touches it: a complaint that reopens a rejected photo
+-- leaves its status 'rejected', so the clock keeps running, and rejecting it
+-- again does not restart it. Allowing it resets the clock, so a photo rejected
+-- long after being allowed gets its full hold.
+create or replace function mo.stamp_photo_rejection()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.moderation_status = 'rejected' and new.rejected_at is null then
+    new.rejected_at = now();
+  elsif new.moderation_status = 'approved' then
+    new.rejected_at = null;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger stamp_photo_rejection
+  before update of moderation_status on mo.report_photos
+  for each row execute function mo.stamp_photo_rejection();
+
+-- ---------------------------------------------------------------------------
+-- Reversing a wrong rejection, inside the thirty-day hold
+-- ---------------------------------------------------------------------------
+--
+-- The hold on rejected photos exists so a mistake can be undone before the
+-- bytes are deleted -- above all an automatic one, which no person has seen.
+-- A decided rejection is not in the review queue (that holds only items with
+-- no verdict), so these two give admins a way to find one and allow it.
+
+-- Photos rejected and not yet claimed by the cleanup, OLDEST first -- the ones
+-- closest to being deleted are the ones an admin most needs to see -- with who
+-- or what rejected them. The path is included: admins may see a withheld
+-- photo, which is the point.
+create or replace function mo.admin_recent_rejected_photos(max_results integer default 50)
+returns table (
+  photo_id     uuid,
+  report_id    uuid,
+  storage_path text,
+  rejected_at  timestamptz,
+  decided_by   text
+)
+language plpgsql
+stable
+security definer
+set search_path = mo, public
+as $$
+begin
+  if not mo.is_admin() then
+    raise exception 'only an admin may read the moderation queue';
+  end if;
+
+  return query
+  select p.id, p.report_id, p.storage_path, p.rejected_at, j.decided_by
+    from mo.report_photos p
+    join mo.moderation_jobs j on j.subject_type = 'photo' and j.subject_id = p.id
+    join mo.upload_grants g on g.storage_path = p.storage_path
+   where p.moderation_status = 'rejected'
+     and j.verdict = 'rejected'
+     and g.retired_at is null
+   order by p.rejected_at asc nulls last
+   limit least(greatest(max_results, 1), 201);
+end;
+$$;
+
+-- Allow a rejected photo after all. Records a person's decision in place of
+-- the rejection and settles any complaint about it, as admin_decide_moderation
+-- does. The grant row is locked first, the same row the cleanup claims, so
+-- this and a cleanup pass cannot both succeed: whichever is second finds the
+-- photo already allowed, or already retired.
+create or replace function mo.admin_allow_rejected_photo(target_photo uuid)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = mo, public
+as $$
+begin
+  if not mo.is_admin() then
+    raise exception 'only an admin may decide moderation items';
+  end if;
+
+  perform 1
+     from mo.upload_grants g
+     join mo.report_photos p on p.storage_path = g.storage_path
+    where p.id = target_photo
+      for update of g;
+
+  if not exists (
+    select 1
+      from mo.report_photos p
+      join mo.upload_grants g on g.storage_path = p.storage_path
+     where p.id = target_photo
+       and p.moderation_status = 'rejected'
+       and g.retired_at is null
+  ) then
+    raise exception 'no such photo';
+  end if;
+
+  update mo.moderation_jobs
+     set verdict    = 'approved',
+         status     = 'done',
+         decided_by = 'human:' || coalesce(auth.uid()::text, 'unknown'),
+         reason     = 'allowed after all by an admin',
+         locked_at  = null,
+         locked_by  = null
+   where subject_type = 'photo'
+     and subject_id   = target_photo
+     and verdict      = 'rejected';
+
+  if not found then
+    raise exception 'this item was decided by someone else a moment ago';
+  end if;
+
+  update mo.flags
+     set resolved_at = now()
+   where subject_type = 'photo'
+     and subject_id   = target_photo
+     and resolved_at is null;
+
+  update mo.report_photos set moderation_status = 'approved' where id = target_photo;
+end;
+$$;
+
+revoke all on function mo.admin_recent_rejected_photos(integer) from public, anon;
+revoke all on function mo.admin_allow_rejected_photo(uuid)       from public, anon;
+grant execute on function mo.admin_recent_rejected_photos(integer) to authenticated;
+grant execute on function mo.admin_allow_rejected_photo(uuid)       to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Put the session back

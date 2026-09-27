@@ -90,8 +90,10 @@ describe('loadConfig', () => {
 describe('describeCapabilities', () => {
   it('warns loudly when nothing can decide anything', () => {
     const warnings = describeCapabilities(loadConfig(minimal))
-    expect(warnings).toHaveLength(3)
+    // Three tiers missing, and no R2 credential to clean up with.
+    expect(warnings).toHaveLength(4)
     expect(warnings.join(' ')).toContain('human')
+    expect(warnings.join(' ')).toContain('stay in the bucket')
   })
 
   it('stays quiet when every tier is configured', () => {
@@ -101,8 +103,44 @@ describe('describeCapabilities', () => {
         MODERATION_ENDPOINT: 'http://localhost:11434/v1',
         TEXT_CLASSIFIER_URL: 'http://localhost:8001/toxicity',
         IMAGE_CLASSIFIER_URL: 'http://localhost:8002/nsfw',
+        R2_ACCOUNT_ID: 'account',
+        R2_ACCESS_KEY_ID: 'key',
+        R2_SECRET_ACCESS_KEY: 'secret',
+        R2_BUCKET: 'chintubucket',
       }),
     )
     expect(warnings).toEqual([])
+  })
+})
+
+describe('loadConfig — R2 cleanup', () => {
+  const r2 = {
+    R2_ACCOUNT_ID: 'account',
+    R2_ACCESS_KEY_ID: 'key',
+    R2_SECRET_ACCESS_KEY: 'secret',
+    R2_BUCKET: 'chintubucket',
+  }
+
+  it('leaves cleanup off when no R2 variable is set', () => {
+    expect(loadConfig(minimal).r2).toBeUndefined()
+  })
+
+  it('reads all four when they are set', () => {
+    expect(loadConfig({ ...minimal, ...r2 }).r2).toEqual({
+      accountId: 'account',
+      accessKeyId: 'key',
+      secretAccessKey: 'secret',
+      bucket: 'chintubucket',
+    })
+  })
+
+  it('refuses to start with some but not all, naming what is missing', () => {
+    const { R2_BUCKET: _bucket, ...partial } = r2
+    void _bucket
+    expect(() => loadConfig({ ...minimal, ...partial })).toThrow(/R2_BUCKET missing/)
+  })
+
+  it('refuses a cleanup interval under a minute', () => {
+    expect(() => loadConfig({ ...minimal, CLEANUP_INTERVAL_MS: '1000' })).toThrow(/CLEANUP_INTERVAL_MS/)
   })
 })

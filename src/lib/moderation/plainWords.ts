@@ -125,6 +125,7 @@ const ERROR_RULES: Array<[RegExp, string]> = [
   [/name can be changed once a day/i, 'You can change your name once a day.'],
   [/too many new names today/i, 'You have chosen several names today. Please try again tomorrow.'],
   [/cannot report your own name/i, 'You cannot report your own name.'],
+  [/cannot report your own post/i, 'You cannot report your own post.'],
   [/name could not be saved/i, 'Your name could not be saved. Please try again.'],
   [/at least 2 visible characters/i, 'Please choose a name with at least 2 characters that show up.'],
   [/tabs or line breaks|display_names_name_check/i, 'Please choose a name without tabs or line breaks.'],

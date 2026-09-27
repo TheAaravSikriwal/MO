@@ -362,7 +362,11 @@ create table mo.report_photos (
   -- see the public_report_photos view.
   storage_path      text not null check (char_length(storage_path) between 1 and 500),
   moderation_status moderation_status not null default 'pending',
-  created_at        timestamptz not null default now()
+  created_at        timestamptz not null default now(),
+  -- When the photo was FIRST rejected, and cleared only if it is allowed.
+  -- The thirty-day hold before its bytes are deleted runs from here, so a
+  -- complaint and a fresh rejection cannot restart it (0006).
+  rejected_at       timestamptz
 );
 
 create index report_photos_report_idx on mo.report_photos (report_id);

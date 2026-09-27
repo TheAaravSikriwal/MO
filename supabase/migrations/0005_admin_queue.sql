@@ -508,8 +508,42 @@ begin
     if not exists (select 1 from mo.comments where id = new.subject_id) then
       raise exception 'no such comment';
     end if;
+    -- Nobody complains about their own post. There is no honest reason to, and
+    -- a complaint reopens a decided item -- so it was a way for the author of
+    -- something rejected to send it back to a person, and, for a photo, to
+    -- restart the thirty-day hold on its bytes.
+    if exists (select 1 from mo.comments where id = new.subject_id and author_id = new.flagger_id) then
+      raise exception 'you cannot report your own post';
+    end if;
   elsif new.subject_type = 'photo' then
     if not exists (select 1 from mo.report_photos where id = new.subject_id) then
+      raise exception 'no such photo';
+    end if;
+    if exists (
+      select 1 from mo.report_photos p join mo.reports r on r.id = p.report_id
+       where p.id = new.subject_id and r.reporter_id = new.flagger_id
+    ) then
+      raise exception 'you cannot report your own post';
+    end if;
+    -- Nor one whose bytes the R2 cleanup has retired (0006). Reopening it would
+    -- put an image that is gone, or going, back in front of an admin.
+    --
+    -- The grant row is locked first, FOR SHARE, because the cleanup claims it
+    -- FOR UPDATE. Without a lock both sides only read, and a complaint and a
+    -- cleanup pass at the same moment could each miss the other: the photo
+    -- back in the queue with its bytes deleted. With it, whichever comes second
+    -- waits, and then sees what the first did -- the cleanup skips a grant a
+    -- complaint holds, and a complaint that waited finds the grant retired.
+    perform 1
+       from mo.upload_grants g
+       join mo.report_photos p on p.storage_path = g.storage_path
+      where p.id = new.subject_id
+        for share of g;
+    if exists (
+      select 1 from mo.report_photos p
+        join mo.upload_grants g on g.storage_path = p.storage_path
+       where p.id = new.subject_id and g.retired_at is not null
+    ) then
       raise exception 'no such photo';
     end if;
   elsif new.subject_type = 'note' then
@@ -518,6 +552,9 @@ begin
       where id = new.subject_id and note is not null
     ) then
       raise exception 'no such note';
+    end if;
+    if exists (select 1 from mo.reports where id = new.subject_id and reporter_id = new.flagger_id) then
+      raise exception 'you cannot report your own post';
     end if;
   elsif new.subject_type = 'name' then
     if not exists (select 1 from mo.display_names where user_id = new.subject_id) then

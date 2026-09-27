@@ -4,6 +4,8 @@ import { Queue } from './queue.js'
 import { moderate } from './pipeline.js'
 import { createHttpImageClassifier, createHttpTextClassifier } from './providers/httpClassifier.js'
 import { createLlmJudge } from './providers/llmJudge.js'
+import { cleanUpObjects } from './cleanup.js'
+import { deleteObject } from './r2.js'
 import type { Tiers } from './pipeline.js'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -38,6 +40,27 @@ async function main(): Promise<void> {
     console.warn(`[mo-worker] WARNING  ${warning}`)
   }
 
+  // The first pass runs at start-up, then every cleanupIntervalMs.
+  let nextCleanup = 0
+  const cleanUp = async () => {
+    if (!config.r2 || Date.now() < nextCleanup) return
+    nextCleanup = Date.now() + config.cleanupIntervalMs
+    const r2 = config.r2
+    try {
+      const { deleted, failed } = await cleanUpObjects(
+        {
+          claim: () => queue.claimObjectsToDelete(),
+          deleteObject: (key) => deleteObject(r2, key),
+          record: (key) => queue.recordObjectDeleted(key),
+        },
+        (message) => console.log(`[mo-worker] cleanup: ${message}`),
+      )
+      if (deleted || failed) console.log(`[mo-worker] cleanup: ${deleted} deleted, ${failed} left to retry`)
+    } catch (error) {
+      console.error('[mo-worker] cleanup could not run:', error)
+    }
+  }
+
   let running = true
   const stop = () => {
     if (!running) return
@@ -48,6 +71,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', stop)
 
   while (running) {
+    await cleanUp()
     let handled = 0
     try {
       const jobs = await queue.claim(config.batchSize)

@@ -148,8 +148,8 @@ select
   -- object whatever this view returns -- and api/sign-upload hands the key to
   -- the uploader, so they always hold their own. Keys are three UUIDs and
   -- unguessable, and no pending or rejected path is given to anybody else. But
-  -- a rejected photo stays retrievable by whoever uploaded it, because nothing
-  -- deletes from the bucket. See HANDOFF.md under what is not done.
+  -- a rejected photo stayed retrievable by whoever uploaded it until the
+  -- worker's cleanup (claim_objects_to_delete in 0006) deleted the bytes.
   case
     when p.moderation_status = 'approved' or mo.is_admin()
     then p.storage_path

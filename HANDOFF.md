@@ -115,7 +115,8 @@ somebody has to own that decision on the other side.
    route. The site has no test runner at all, so Vitest goes in with it — MO's
    suite is the only thing making the port safe.
 2. **Replace `api/sign-upload` with a Next route handler** over the site's
-   existing `lib/r2`. That deletes `api/_lib/sigv4.ts` entirely. `getUploadUrl`
+   existing `lib/r2`. The signer, now `shared/sigv4.ts`, stays: the worker
+   signs its R2 deletes with it. `getUploadUrl`
    there signs only `ContentType`, so it needs `ContentLength` and
    `IfNoneMatch` adding or MO loses its size cap and its one-write guarantee —
    see `api/README.md`. Note their own comment: R2 rejects a presigned URL that
@@ -157,9 +158,9 @@ sample reports around central London, so the map is populated and every screen
 works. That is deliberate — see `src/lib/data/createDataSource.ts`.
 
 ```bash
-npm test              # 977 tests, including real Postgres via PGlite
+npm test              # 1012 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
-cd worker && npm test # 123 tests
+cd worker && npm test # 138 tests
 ```
 
 ## What is done
@@ -214,31 +215,54 @@ Eight things. The first two are blocked on accounts rather than on code:
    `content-length` is the only thing enforcing the 8 MB cap, and
    `if-none-match` is the only thing stopping a signed URL being reused to swap
    the bytes after they have been judged.
-3. **Nothing ever deletes from the R2 bucket, and that includes rejected
-   photos.** Two things follow, and the second is the one that matters.
+3. **R2 cleanup: written 2026-09-27, never run against a real bucket.**
+   Uploads that never became a photo, photos whose row was deleted, and photos
+   that were REJECTED are now deleted from R2 by the worker. The last matters
+   most: the database withheld a rejected path, but the bytes stayed on a
+   public hostname and the uploader holds the key, so rejection only withheld
+   the row.
 
-   A submission that fails after its bytes have landed leaves them
-   unreferenced forever: the report row is deleted, the photo row cascades
-   away, the object stays.
+   * **What decides.** `mo.claim_objects_to_delete` in `0006`, working from MO's
+     own `upload_grants` -- never from a listing of the bucket. `chintubucket`
+     is shared with the marketplace; every object MO writes has a grant and
+     nothing else does, so the worker never looks at anything MO did not write.
+     Unused uploads wait an hour (the upload URL lives two minutes); rejected
+     photos are held for thirty days first, so an admin can reverse a wrong
+     automatic rejection -- a choice made on 2026-09-27. The review queue
+     lists photos removed in the last thirty days, says whether a machine or a
+     person removed each, and offers "Allow after all"
+     (`mo.admin_allow_rejected_photo`), the ones due soonest first. The hold
+     runs from a photo's FIRST rejection (`report_photos.rejected_at`), so a
+     complaint and a fresh rejection -- from any account -- cannot restart it;
+     an open complaint does keep the bytes until a person rules on it. Nobody
+     can complain about their own post. Photos on a pin taken off the map are kept, since
+     the pin can be put back.
+   * **How it stays safe.** Claiming an object retires its grant under a row
+     lock, so a photo can never be linked to bytes that are gone or going. A
+     failed delete is offered again after ten minutes. All of it runs against
+     real Postgres in `src/lib/db/cleanup.run.test.ts`.
+   * **The worker.** `worker/src/cleanup.ts` carries the list out every ten
+     minutes, signing each DELETE with the SigV4 signer now in `shared/`
+     (moved from `api/_lib`, still pinned against AWS's published example).
+     It needs `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+     `R2_BUCKET` -- a token that may delete in that bucket -- and warns at
+     start-up without them. The worker now needs `shared/` beside it.
 
-   More seriously, **a photo a human rejected stays retrievable.** The database
-   withholds an unapproved `storage_path`, so nobody can discover one through
-   it — but the bytes are on a public Cloudflare hostname, and `api/sign-upload`
-   hands the key to the person uploading, so they always hold their own. Keys
-   are three UUIDs and unguessable, the bucket must not be listable, and no
-   pending or rejected path is given to anybody else, so this is not a browsing
-   hole. It is still wrong: rejection is the mechanism this project relies on
-   for content that must not be hosted at all, and right now rejection only
-   withholds the row.
+   **Still to verify:** that R2 accepts the signed DELETE, on first contact
+   with the bucket, exactly as for the upload signature in item 2. And the row
+   locks that keep the cleanup from racing a photo being linked, or a
+   complaint reopening a rejected photo, are proven by reading the SQL only:
+   PGlite has one connection, so nothing here runs two sessions at once. The
+   claim locks its candidates first and then re-decides them in a fresh
+   statement, which is what Postgres's default isolation needs for those locks
+   to mean anything.
 
-   Both need the same thing — a reconcile pass in `worker/`, which already loops
-   with service role access, holding an R2 credential that can list and delete.
-   It does not hold one, and none of it can be verified without a real bucket.
-   `api/README.md` has the detail. Note both `supabase/README.md` and the comment
-   on `public_report_photos` in `0003` used to claim an unreviewed image was
-   "genuinely unreachable"; that was true of Supabase storage and is not true
-   of R2. Both are corrected, and a test refuses the wording anywhere in the
-   migrations.
+   A deletion is final. A rejected photo can be complained about -- and so
+   reopened -- for its thirty-day hold, until the cleanup claims it; after
+   that, complaints about it are refused rather than bringing back a broken
+   image. Whether anything must be preserved rather than deleted (item 8, if
+   CSAM scanning ever reports something) is a legal question, not answered
+   here.
 4. **A signed upload URL is rate limited but not proven.** `authenticated` can
    insert an `upload_grants` row directly, because `api/sign-upload` writes with
    the caller's own token rather than a service role key. So a grant means

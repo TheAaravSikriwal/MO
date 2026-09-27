@@ -23,6 +23,7 @@ const config: Config = {
   workerId: 'test-worker',
   batchSize: 10,
   pollIntervalMs: 15000,
+  cleanupIntervalMs: 600000,
 }
 
 const job: ModerationJob = {
@@ -229,5 +230,29 @@ describe('Queue.fetchSubject', () => {
       attempts: 1,
     })
     expect(subject).toBeNull()
+  })
+})
+
+describe('Queue — the R2 cleanup calls', () => {
+  it('claims through claim_objects_to_delete, by batch_size', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: [{ storage_path: 'a', reason: 'unused' }], error: null })
+    const { client } = makeClient(rpc)
+    const claimed = await new Queue(config, '', client).claimObjectsToDelete(25)
+    expect(rpc).toHaveBeenCalledWith('claim_objects_to_delete', { batch_size: 25 })
+    expect(claimed).toEqual([{ storage_path: 'a', reason: 'unused' }])
+  })
+
+  it('records through record_object_deleted, by path', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: true, error: null })
+    const { client } = makeClient(rpc)
+    await new Queue(config, '', client).recordObjectDeleted('u/r/p.jpg')
+    expect(rpc).toHaveBeenCalledWith('record_object_deleted', { path: 'u/r/p.jpg' })
+  })
+
+  it('says so when either fails, rather than carrying on silently', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: 'boom' } })
+    const { client } = makeClient(rpc)
+    await expect(new Queue(config, '', client).claimObjectsToDelete()).rejects.toThrow('boom')
+    await expect(new Queue(config, '', client).recordObjectDeleted('x')).rejects.toThrow('boom')
   })
 })

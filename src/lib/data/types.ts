@@ -105,8 +105,28 @@ export interface QueueItem {
 /** How many off-map pins the review queue lists at once. */
 export const OFF_MAP_PAGE = 50
 
+/** How many rejected photos the review queue lists at once. */
+export const REJECTED_PAGE = 50
+
+/** How long a rejected photo's bytes are kept, so a mistake can be undone. */
+export const REJECTED_HOLD_DAYS = 30
+
 /** How many off-map pins are drawn in one viewport. */
 export const OFF_MAP_IN_VIEW = 100
+
+/**
+ * A photo rejected within the thirty-day hold, before its bytes are deleted.
+ * Listed so an admin can undo a wrong rejection, above all an automatic one.
+ */
+export interface RejectedPhoto {
+  photoId: string
+  reportId: string
+  /** The actual image; admins may see a withheld photo. Null with no photo host. */
+  url: string | null
+  rejectedAt: string
+  /** True when a machine tier rejected it, so no person has seen it. */
+  automatic: boolean
+}
 
 export interface ViewBounds {
   minLat: number
@@ -234,4 +254,12 @@ export interface DataSource {
    * put one back. Capped at OFF_MAP_PAGE; `more` says there are others.
    */
   listReportsOffMap(): Promise<{ reports: ReportView[]; more: boolean }>
+  /**
+   * Photos rejected and not yet deleted, the closest to deletion first, so an
+   * admin sees those soonest. Capped at REJECTED_PAGE; `more` says there are
+   * others. Admins only.
+   */
+  listRecentlyRejectedPhotos(): Promise<{ photos: RejectedPhoto[]; more: boolean }>
+  /** Allow a rejected photo after all, before its bytes are deleted. Admins only. */
+  allowRejectedPhoto(photoId: string): Promise<void>
 }

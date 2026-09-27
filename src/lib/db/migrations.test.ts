@@ -1348,14 +1348,14 @@ describe('migrations — a signed upload URL is recorded and countable', () => {
     expect(fn).toContain('select distinct user_id from new_rows')
   })
 
-  it('cascades from the person but not from the report, and says which', () => {
-    // These two go opposite ways on purpose. The report reference must NOT
-    // cascade, or deleting your own report resets the hourly count. The person
-    // reference does, because deleting somebody should take their records --
-    // and that is a path which empties grants inside the window, so the file
-    // has to name it rather than claim no such path exists.
-    expect(grantTable()).toContain('references public.profiles (id) on delete cascade')
+  it('cascades from neither the person nor the report', () => {
+    // The report reference must not cascade, or deleting your own report resets
+    // the hourly count. The person reference must not either: the R2 cleanup
+    // finds MO's objects only through these rows, and a cascade left an
+    // account's bytes in the bucket with nothing pointing at them, for good.
+    expect(grantTable()).toContain('user_id uuid references public.profiles (id) on delete set null')
     expect(grantTable()).toContain('references mo.reports (id) on delete set null')
+    expect(grantTable()).not.toContain('on delete cascade')
   })
 
   it('is not deletable by the person it limits', () => {
@@ -1734,5 +1734,36 @@ describe('migrations — a rename and a decision cannot deadlock', () => {
     const nameLock = body.indexOf('select * into existing from mo.display_names where user_id = me for update;')
     expect(jobLock).toBeGreaterThan(-1)
     expect(nameLock).toBeGreaterThan(jobLock)
+  })
+})
+
+describe('migrations — a complaint and the R2 cleanup cannot miss each other', () => {
+  it('locks the photo’s grant before checking whether its bytes are retired', () => {
+    // The cleanup claims grants FOR UPDATE; a plain read here let a complaint
+    // and a cleanup pass each miss the other's uncommitted change.
+    const body = bodyOf('validate_flag_subject').replace(/\s+/g, ' ')
+    const lock = body.indexOf('for share of g;')
+    const check = body.indexOf('g.retired_at is not null')
+    expect(lock).toBeGreaterThan(-1)
+    expect(lock).toBeLessThan(check)
+    expect(bodyOf('claim_objects_to_delete(').replace(/\s+/g, ' ')).toContain('for update of g skip locked')
+  })
+})
+
+describe('migrations — the R2 claim re-decides after it has the locks', () => {
+  it('locks candidates in one statement, then re-decides them in another', () => {
+    const body = bodyOf('claim_objects_to_delete(').replace(/\s+/g, ' ')
+    const lock = body.indexOf('for update of g skip locked')
+    const recheck = body.indexOf('mo.deletion_reason(g.id) as why from mo.upload_grants g where g.id = any(held)')
+    expect(lock).toBeGreaterThan(-1)
+    expect(recheck).toBeGreaterThan(lock)
+    // Only what is still deletable is retired.
+    expect(body).toContain('and s.why is not null')
+  })
+
+  it('never lets a photo link a grant old enough to be cleaned up', () => {
+    // Linking stops at fifty minutes; an unused grant is deletable at sixty.
+    expect(bodyOf('enforce_photo_has_grant')).toMatch(/created_at > now\(\) - interval '50 minutes'/)
+    expect(bodyOf('deletion_reason(')).toMatch(/created_at < now\(\) - interval '1 hour'/)
   })
 })

@@ -86,7 +86,8 @@ export default defineConfig(({ mode }) => {
       // it. The worker is a separate package with its own config and runs in
       // node, not jsdom; without this it gets swept in here and passes under
       // the wrong environment by luck.
-      include: ['src/**/*.test.{ts,tsx}', 'api/**/*.test.ts'],
+      // `shared/` holds the SigV4 signer the endpoint and the worker both use.
+      include: ['src/**/*.test.{ts,tsx}', 'api/**/*.test.ts', 'shared/**/*.test.ts'],
     },
   }
 })

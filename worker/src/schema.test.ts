@@ -46,6 +46,7 @@ const config = {
   workerId: 'test-worker',
   batchSize: 10,
   pollIntervalMs: 15000,
+  cleanupIntervalMs: 600000,
 }
 
 describe('the client the worker builds', () => {
@@ -73,7 +74,8 @@ describe('the client the worker builds', () => {
     // constant back to itself.
     //
     // Read off disk rather than imported: `worker/` is its own package with its
-    // own tsconfig and does not compile anything from `src/`.
+    // own tsconfig and does not compile anything from `src/`. (It does compile
+    // `../shared/`, the SigV4 signer the app's upload endpoint also uses.)
     // Resolved from THIS FILE, not from the working directory. Off cwd it
     // only worked when the suite was run from `worker/` — run from the repo
     // root it read a path above the repo, so the only guard against the two

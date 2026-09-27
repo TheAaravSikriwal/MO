@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { DataSource, QueueItem, ReportView } from '../../lib/data/types'
+import type { DataSource, QueueItem, RejectedPhoto, ReportView } from '../../lib/data/types'
+import { REJECTED_HOLD_DAYS } from '../../lib/data/types'
+
+/** The date a rejected photo's hold ends, or a plain word if it already has. */
+const deletionDate = (rejectedAt: string): string => {
+  const due = new Date(new Date(rejectedAt).getTime() + REJECTED_HOLD_DAYS * 24 * 60 * 60 * 1000)
+  return due.getTime() <= Date.now()
+    ? 'Due to be deleted now.'
+    : `To be deleted on ${due.toLocaleDateString()}.`
+}
 import { plainReason, plainError, summariseScores } from '../../lib/moderation/plainWords'
 
 export interface AdminQueueProps {
@@ -35,6 +44,10 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
   const [offMap, setOffMap] = useState<ReportView[]>([])
   const [offMapMore, setOffMapMore] = useState(false)
   const [offMapError, setOffMapError] = useState<string | null>(null)
+  const [rejected, setRejected] = useState<RejectedPhoto[]>([])
+  const [rejectedMore, setRejectedMore] = useState(false)
+  const [rejectedError, setRejectedError] = useState<string | null>(null)
+  const [shownRejected, setShownRejected] = useState<Set<string>>(new Set())
 
   const loadOffMap = useCallback(async () => {
     try {
@@ -47,6 +60,20 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
     }
   }, [data])
 
+  // Photos rejected inside the thirty-day hold. The hold exists so a wrong
+  // rejection -- above all an automatic one nobody has seen -- can be undone
+  // before the bytes are deleted, and this is the one place to do it.
+  const loadRejected = useCallback(async () => {
+    try {
+      const { photos, more } = await data.listRecentlyRejectedPhotos()
+      setRejected(photos)
+      setRejectedMore(more)
+      setRejectedError(null)
+    } catch {
+      setRejectedError('Could not load the photos removed recently.')
+    }
+  }, [data])
+
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -55,6 +82,7 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
     // again by stumbling on it. Started before the queue and not awaited, so
     // neither one failing takes the other down.
     void loadOffMap()
+    void loadRejected()
     try {
       const [loaded, waiting] = await Promise.all([
         data.listModerationQueue(),
@@ -67,7 +95,7 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
     } finally {
       setLoading(false)
     }
-  }, [data, loadOffMap])
+  }, [data, loadOffMap, loadRejected])
 
   useEffect(() => {
     if (!isAdmin) {
@@ -157,6 +185,24 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
       onDecided?.()
     } catch (cause) {
       setError(plainError(cause instanceof Error ? cause.message : null))
+    } finally {
+      setPinBusy(false)
+    }
+  }
+
+  const allowAfterAll = async (photoId: string) => {
+    // Busy-guarded like the other buttons: a double click otherwise sent a
+    // second allow that failed, reading "could not be found" after a success.
+    if (pinBusy) return
+    setPinBusy(true)
+    setError(null)
+    try {
+      await data.allowRejectedPhoto(photoId)
+      await loadRejected()
+      onDecided?.()
+    } catch (cause) {
+      setError(plainError(cause instanceof Error ? cause.message : null))
+      await loadRejected()
     } finally {
       setPinBusy(false)
     }
@@ -300,6 +346,59 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
           </li>
         ))}
       </ul>
+
+      {rejectedError && <p className="mt-4 text-xs text-slate-600">{rejectedError}</p>}
+
+      {rejected.length > 0 && (
+        <div className="mt-5 border-t border-slate-200 pt-4">
+          <h3 className="text-sm font-semibold text-slate-900">Removed photos</h3>
+          <p className="text-xs text-slate-500">
+            A removed photo is kept for {REJECTED_HOLD_DAYS} days and then deleted for good, once
+            photo cleanup is running. Allow one here if it was removed by mistake. The ones due
+            soonest are first.
+          </p>
+          {rejectedMore && (
+            <p className="text-xs text-slate-500">
+              Showing the {rejected.length} due to be deleted soonest.
+            </p>
+          )}
+          <ul className="mt-2 space-y-2">
+            {rejected.map((photo) => (
+              <li key={photo.photoId} className="rounded-lg border border-slate-200 p-3 text-sm">
+                <p className="text-xs text-slate-600">
+                  {photo.automatic ? 'Removed automatically. Nobody has looked at it.' : 'Removed by a person.'}{' '}
+                  {deletionDate(photo.rejectedAt)}
+                </p>
+                {photo.url &&
+                  (shownRejected.has(photo.photoId) ? (
+                    <img
+                      src={photo.url}
+                      alt="Removed photo"
+                      className="mt-2 max-h-48 w-full rounded-lg object-contain"
+                    />
+                  ) : (
+                    // Not shown until asked for, like everything in this queue.
+                    <button
+                      type="button"
+                      onClick={() => setShownRejected((current) => new Set(current).add(photo.photoId))}
+                      className="mt-2 flex h-24 w-full items-center justify-center rounded-lg bg-slate-100 text-sm text-slate-600 hover:bg-slate-200"
+                    >
+                      Show photo
+                    </button>
+                  ))}
+                <button
+                  type="button"
+                  onClick={() => void allowAfterAll(photo.photoId)}
+                  disabled={pinBusy}
+                  className="mt-2 rounded-lg border border-slate-300 px-3 py-1 text-sm text-slate-800"
+                >
+                  Allow after all
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {offMapError && <p className="mt-4 text-xs text-slate-600">{offMapError}</p>}
 

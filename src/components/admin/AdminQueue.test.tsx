@@ -346,9 +346,9 @@ describe('AdminQueue — a complaint reaches a person', () => {
   it('puts flagged content into the queue even after it was already allowed', async () => {
     const data = new FakeDataSource({ id: 'admin-1', email: 'a@b.com', isAdmin: true }, { displayName: 'Sam' })
     data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
-    await data.addComment('r1', 'a comment that was let through')
+    // Somebody else's comment: nobody may report their own post.
+    data.seedComment('r1', { authorId: 'u9', body: 'a comment that was let through' })
     const posted = (await data.listComments('r1'))[0]
-    posted.moderationStatus = 'approved'
 
     // Nothing waiting to begin with.
     expect(await data.listModerationQueue()).toHaveLength(0)
@@ -410,7 +410,7 @@ describe('AdminQueue — a complaint reaches a person', () => {
   it('brings an already-decided item back for a second look', async () => {
     const data = new FakeDataSource({ id: 'admin-1', isAdmin: true }, { displayName: 'Sam' })
     data.seed({ id: 'r1', lat: 51.5, lng: -0.12 })
-    await data.addComment('r1', 'borderline')
+    data.seedComment('r1', { authorId: 'u9', body: 'borderline', moderationStatus: 'pending' })
     const posted = (await data.listComments('r1'))[0]
     data.seedQueueItem({
       jobId: 'j1',

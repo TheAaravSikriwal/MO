@@ -231,6 +231,7 @@ export function ReportDetail({
             {signedIn &&
               photo.url &&
               photo.moderationStatus === 'approved' &&
+              !report.viewerIsReporter &&
               (reported.has(photo.id) ? (
                 <p className="mt-1 text-xs text-slate-500">Thanks.</p>
               ) : (
@@ -271,6 +272,7 @@ export function ReportDetail({
         <div className="mt-3">
           <p className="text-sm text-slate-800">{report.note}</p>
           {signedIn &&
+            !report.viewerIsReporter &&
             (reported.has(`note:${report.id}`) ? (
               <p className="mt-1 text-xs text-slate-500">Thanks. Someone will look at this.</p>
             ) : (
@@ -410,6 +412,8 @@ export function ReportDetail({
                 )}
                 {signedIn &&
                   comment.moderationStatus === 'approved' &&
+                  // Nobody may report their own post; the database refuses it.
+                  !comment.viewerIsAuthor &&
                   (reported.has(comment.id) ? (
                     <p className="mt-1 text-xs text-slate-500">Thanks. Someone will look at this.</p>
                   ) : (

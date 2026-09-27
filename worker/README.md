@@ -11,9 +11,12 @@ cp ../.env.example .env    # then fill in the worker section
 npm start
 ```
 
-It needs **outbound HTTPS to Supabase and nothing else**. No inbound port, no
-tunnel, no static IP, no domain. That is what makes moving it between machines
-a matter of copying the folder, editing `.env`, and running it again.
+It needs **outbound HTTPS to Supabase and nothing else** -- and to R2, if the
+photo cleanup is configured. No inbound port, no tunnel, no static IP, no
+domain. That is what makes moving it between machines a matter of copying this
+folder **and `../shared/` beside it**, editing `.env`, and running it again.
+The R2 cleanup signs with `../shared/sigv4.ts`; without it the worker does not
+start.
 
 ## Switching model or machine
 
@@ -119,6 +122,20 @@ be measured against real content once one is running.
 `src/queue.ts` has no tests: it is a thin wrapper over RPCs that do not exist yet
 on any live database. It should be verified against a real Supabase project
 before being trusted.
+
+## Deleting photos from R2
+
+With `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+`R2_BUCKET` set, the worker also removes from the bucket, every ten minutes
+(`CLEANUP_INTERVAL_MS`), uploads that never became a photo, photos whose row
+was deleted, and photos that were rejected more than thirty days ago -- the
+hold is so a wrong automatic rejection can be reversed first. Which ones is decided in the
+database, from MO's own upload grants, so nothing MO did not write is ever
+touched -- the bucket is shared with the marketplace. The token needs delete
+permission on that bucket, and nothing more.
+
+It signs with `../shared/sigv4.ts`, so copy `shared/` along with this folder
+-- see "Running it" above.
 
 ## Not built yet
 

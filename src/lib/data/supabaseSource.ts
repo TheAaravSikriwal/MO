@@ -4,7 +4,7 @@ import { cellsForPoint } from '../grid/cells'
 import { crossesAntimeridian, boundsAround, intersectBounds } from '../geo/bounds'
 import { distanceMetres } from '../geo/distance'
 import { uploadPhoto } from '../upload/uploadPhoto'
-import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE } from './types'
+import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE } from './types'
 
 /**
  * How many individual reports one viewport will return.
@@ -33,6 +33,7 @@ import type {
   DataSource,
   DirectFlagSubject,
   MyDisplayName,
+  RejectedPhoto,
   NewReport,
   PhotoView,
   QueueItem,
@@ -672,6 +673,31 @@ export class SupabaseDataSource implements DataSource {
       reports: await this.toReports(rows.slice(0, OFF_MAP_PAGE), user?.id ?? null),
       more: rows.length > OFF_MAP_PAGE,
     }
+  }
+
+  async listRecentlyRejectedPhotos(): Promise<{ photos: RejectedPhoto[]; more: boolean }> {
+    // One more than a page, so a list cut short can say so.
+    const { data, error } = await this.client.rpc('admin_recent_rejected_photos', {
+      max_results: REJECTED_PAGE + 1,
+    })
+    if (error) throw new Error(error.message)
+    const rows = (data ?? []) as Array<Record<string, unknown>>
+    return { photos: rows.slice(0, REJECTED_PAGE).map((row) => ({
+      photoId: String(row.photo_id),
+      reportId: String(row.report_id),
+      url:
+        this.photoBaseUrl && row.storage_path
+          ? `${this.photoBaseUrl}/${String(row.storage_path)}`
+          : null,
+      rejectedAt: String(row.rejected_at),
+      // A person's decision is recorded as `human:<id>`; anything else is a tier.
+      automatic: !String(row.decided_by ?? '').startsWith('human:'),
+    })), more: rows.length > REJECTED_PAGE }
+  }
+
+  async allowRejectedPhoto(photoId: string): Promise<void> {
+    const { error } = await this.client.rpc('admin_allow_rejected_photo', { target_photo: photoId })
+    if (error) throw new Error(error.message)
   }
 
   async decideModerationItem(jobId: string, verdict: 'approved' | 'rejected'): Promise<void> {

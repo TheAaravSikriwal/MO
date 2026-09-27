@@ -1,5 +1,6 @@
 import { isUsableBand } from './decide.js'
 import type { Band, Thresholds } from './types.js'
+import type { R2Config } from './r2.js'
 
 export interface Config {
   supabaseUrl: string
@@ -20,6 +21,14 @@ export interface Config {
   workerId: string
   batchSize: number
   pollIntervalMs: number
+
+  /**
+   * An R2 credential that may delete objects, for removing rejected and unused
+   * photos. All four or none: absent, the cleanup does not run.
+   */
+  r2?: R2Config
+  /** How often the cleanup pass runs. */
+  cleanupIntervalMs: number
 }
 
 export class ConfigError extends Error {}
@@ -62,6 +71,27 @@ const band = (
   return parsed
 }
 
+const R2_KEYS = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET'] as const
+
+/**
+ * All four R2 variables, or none. Some but not all is a mistake worth refusing
+ * to start over: it looks configured and would delete nothing.
+ */
+function r2Config(env: NodeJS.ProcessEnv): R2Config | undefined {
+  const present = R2_KEYS.filter((key) => optional(env, key))
+  if (present.length === 0) return undefined
+  if (present.length < R2_KEYS.length) {
+    const missing = R2_KEYS.filter((key) => !present.includes(key))
+    throw new ConfigError(`${missing.join(', ')} missing: set all four R2 variables, or none`)
+  }
+  return {
+    accountId: required(env, 'R2_ACCOUNT_ID'),
+    accessKeyId: required(env, 'R2_ACCESS_KEY_ID'),
+    secretAccessKey: required(env, 'R2_SECRET_ACCESS_KEY'),
+    bucket: required(env, 'R2_BUCKET'),
+  }
+}
+
 /**
  * Read configuration from the environment.
  *
@@ -97,9 +127,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     workerId: optional(env, 'WORKER_ID') ?? 'worker',
     batchSize: numberOr(env, 'WORKER_BATCH_SIZE', 10),
     pollIntervalMs: numberOr(env, 'WORKER_POLL_INTERVAL_MS', 15_000),
+
+    r2: r2Config(env),
+    cleanupIntervalMs: numberOr(env, 'CLEANUP_INTERVAL_MS', 10 * 60_000),
   }
 
   if (config.batchSize < 1) throw new ConfigError('WORKER_BATCH_SIZE must be at least 1')
+  if (config.cleanupIntervalMs < 60_000) {
+    throw new ConfigError('CLEANUP_INTERVAL_MS must be at least 60000')
+  }
   if (config.pollIntervalMs < 1000) {
     throw new ConfigError('WORKER_POLL_INTERVAL_MS must be at least 1000')
   }
@@ -122,6 +158,11 @@ export function describeCapabilities(config: Config): string[] {
   }
   if (!config.moderationEndpoint) {
     warnings.push('No MODERATION_ENDPOINT: tier 3 is disabled, so anything uncertain goes to a human.')
+  }
+  if (!config.r2) {
+    warnings.push(
+      'No R2 credentials: rejected and unused photos stay in the bucket, and a rejected photo stays reachable by whoever holds its key.',
+    )
   }
   return warnings
 }

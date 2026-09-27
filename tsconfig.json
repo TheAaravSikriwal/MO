@@ -25,7 +25,7 @@
     // are listed in tsconfig.node.json.
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "api", "vitest.setup.ts"],
+  "include": ["src", "api", "shared", "vitest.setup.ts"],
   // Compiled by tsconfig.node.json instead. They read migration SQL off disk,
   // which is node-only by nature.
   "exclude": [
@@ -33,6 +33,7 @@
     "src/lib/db/migrations.run.test.ts",
     "src/lib/db/pgHarness.ts",
     "src/lib/db/pinPhotos.run.test.ts",
+    "src/lib/db/cleanup.run.test.ts",
     "src/components/map/CellLayer.test.tsx"
   ]
 }

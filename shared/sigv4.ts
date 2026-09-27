@@ -1,6 +1,10 @@
 /**
  * AWS Signature Version 4, the query-string ("presigned URL") flavour.
  *
+ * Shared: the upload endpoint signs PUTs with it (api/_lib/r2.ts) and the
+ * worker signs DELETEs with it (worker/src/r2.ts). One implementation, pinned
+ * once, so the two cannot drift into signing differently.
+ *
  * Hand-rolled on Web Crypto rather than taken from the AWS SDK. The SDK is
  * megabytes of dependency for one signature in a free-tier serverless
  * function, and the algorithm is small enough to pin exactly: the tests check

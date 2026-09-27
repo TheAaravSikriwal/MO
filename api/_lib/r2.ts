@@ -2,7 +2,7 @@ import {
   extensionForPhotoType,
   type AllowedPhotoType,
 } from '../../src/lib/upload/photoLimits'
-import { presignUrl } from './sigv4'
+import { presignUrl } from '../../shared/sigv4'
 
 /**
  * Cloudflare R2, reached over its S3-compatible API.
