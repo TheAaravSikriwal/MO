@@ -43,16 +43,18 @@
 -- The `map/` prefix is not decoration. The bucket is wearechintu's, shared
 -- with the marketplace, which already partitions it: `covers/` is served
 -- publicly and `artifacts/` is meant to stay private. Map photos get their own
--- namespace, so a bucket-level rule scoped by prefix -- public read, a
--- lifecycle policy, a CORS rule -- can name them as a group. The same shape is
+-- namespace, so rules that take a prefix -- an R2 lifecycle rule, a Cloudflare
+-- rule on the photo hostname refusing every path outside `map/` -- can name
+-- them as a group. R2's public access does not take one: a custom domain
+-- serves the whole bucket unless such a rule stops it. The same shape is
 -- PHOTO_KEY_PREFIX in src/lib/upload/objectKey.ts.
 --
 -- The unique indexes below are on the literal string, and a photo URL is built
 -- by concatenation and then read by a URL parser. Without this, two DIFFERENT
 -- strings address the SAME object, which defeats them:
 --
---   <uid>/<rid>/<pid>.jpg?x=1                 -- a query the parser drops
---   <uid>/<rid2>/../../<uid>/<rid>/<pid>.jpg  -- dot segments the parser folds
+--   map/<uid>/<rid>/<pid>.jpg?x=1                     -- a query the parser drops
+--   map/<uid>/<rid2>/../../map/<uid>/<rid>/<pid>.jpg  -- dot segments the parser folds
 --
 -- Either one is unique, satisfies the policy's `like`, and resolves to an
 -- object that is already linked -- so an image a human REJECTED could be put up

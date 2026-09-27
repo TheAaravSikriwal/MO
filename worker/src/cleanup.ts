@@ -4,7 +4,8 @@
  *
  * Which ones is decided in the database (claim_objects_to_delete in 0006),
  * working from MO's own upload grants -- never from a listing of the bucket,
- * which MO shares with the marketplace. This only carries out the list.
+ * which MO shares with the marketplace. This only carries out the list, and
+ * `deleteObject` in r2.ts refuses any key that is not a map photo's.
  */
 
 export interface ToDelete {

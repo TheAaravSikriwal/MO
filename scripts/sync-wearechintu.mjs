@@ -304,16 +304,50 @@ function syncSource(target) {
 }
 
 /** The upload endpoint's handler and its signer, rehomed under src/mo/server. */
+/** MO's server-side files, and their names under src/mo/server. */
+const SERVER_FILES = [
+  ['api/_lib/signUpload.ts', 'signUpload.ts'],
+  ['api/_lib/signUpload.test.ts', 'signUpload.test.ts'],
+  ['api/_lib/r2.ts', 'r2.ts'],
+  ['api/_lib/r2.test.ts', 'r2.test.ts'],
+  ['shared/sigv4.ts', 'sigv4.ts'],
+  ['shared/sigv4.test.ts', 'sigv4.test.ts'],
+]
+
+/**
+ * Files outside src/ that are deliberately not copied: the Vercel function,
+ * which wearechintu replaces with its own route over the same handler, and
+ * the endpoint's README.
+ */
+const NOT_COPIED = new Set(['api/sign-upload.ts', 'api/README.md'])
+
+/**
+ * Stop if MO has a migration, a server file or an endpoint this script does not
+ * know about. The lists above are written out by hand, so a new `0007_*.sql`
+ * or a second endpoint would otherwise be left behind while the run reported
+ * success, and the site would get code that expects a schema it does not have.
+ */
+function checkNothingUnaccounted() {
+  const known = new Set([
+    ...Object.values(MIGRATIONS).map(([, from]) => `supabase/migrations/${from}`),
+    ...SERVER_FILES.map(([from]) => from),
+    ...NOT_COPIED,
+    'api/_lib',
+  ])
+  const found = ['supabase/migrations', 'api', 'api/_lib', 'shared'].flatMap((dir) =>
+    readdirSync(join(MO, dir)).map((name) => `${dir}/${name}`),
+  )
+  const unknown = found.filter((path) => !known.has(path))
+  if (unknown.length) {
+    throw new Error(
+      `sync: MO has files this script does not know how to carry across: ${unknown.join(', ')}. ` +
+        'Add each to MIGRATIONS, SERVER_FILES or NOT_COPIED.',
+    )
+  }
+}
+
 function syncServer(target) {
-  const files = [
-    ['api/_lib/signUpload.ts', 'signUpload.ts'],
-    ['api/_lib/signUpload.test.ts', 'signUpload.test.ts'],
-    ['api/_lib/r2.ts', 'r2.ts'],
-    ['api/_lib/r2.test.ts', 'r2.test.ts'],
-    ['shared/sigv4.ts', 'sigv4.ts'],
-    ['shared/sigv4.test.ts', 'sigv4.test.ts'],
-  ]
-  return files.map(([from, to]) => {
+  return SERVER_FILES.map(([from, to]) => {
     let text = readFileSync(join(MO, from), 'utf8').replace(/\r\n/g, '\n')
     // Import paths: MO's api/_lib and shared/ reach into src/ from outside it;
     // under src/mo/server they are siblings of lib/.
@@ -397,6 +431,7 @@ if (!statSync(join(target, 'src', 'mo'), { throwIfNoEntry: false })) {
   process.exit(2)
 }
 
+checkNothingUnaccounted()
 const written = [
   ...syncSource(target),
   ...syncServer(target),

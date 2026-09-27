@@ -170,6 +170,15 @@ self-hosted through `NEXT_PUBLIC_NSFW_MODULE_URL`, which that repo's
    the endpoint will not accept an `r2.dev` photo host. So step 4's real
    upload waits on this step too.
 
+   **A custom domain serves the whole bucket, not only `map/`.** R2's public
+   access has no prefix setting, so the new hostname also serves the
+   marketplace's private `artifacts/` downloads to anyone who knows a key. Add
+   a Cloudflare rule on that hostname that blocks every path not starting
+   `/map/` (a WAF custom rule on the zone is free). The marketplace's `covers/`
+   are served from its own r2.dev address, which is also bucket-wide, so
+   `artifacts/` may already be reachable there. That is the marketplace's to
+   check, and it is not something MO created.
+
 ## What MO is
 
 A community pollution map. People report litter with a photo and a precise

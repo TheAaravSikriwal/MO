@@ -13,7 +13,11 @@ import { extensionForPhotoType, type AllowedPhotoType } from './photoLimits'
  * The bucket is shared with the marketplace, which already partitions it:
  * `covers/` is served publicly and `artifacts/` is meant to stay private.
  * Map photos get their own namespace rather than sitting loose at the root, so
- * a bucket-level rule scoped by prefix can name them as a group.
+ * rules that do take a prefix can name them as a group: an R2 lifecycle rule,
+ * or a Cloudflare rule on the photo hostname that refuses every path outside
+ * `map/`. Public access itself does not take one. A custom domain or r2.dev
+ * address serves the whole bucket, `artifacts/` included, unless such a rule
+ * stops it.
  *
  * `mo.is_photo_object_key` in migration 0006 holds the same shape as a regex and
  * both tables that store a key `check` against it. If this changes, that

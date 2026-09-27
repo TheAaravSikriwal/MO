@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { cleanUpObjects } from './cleanup.js'
-import { deleteObject, type R2Config } from './r2.js'
+import { readFileSync } from 'node:fs'
+import { deleteObject, MAP_PHOTO_KEY, type R2Config } from './r2.js'
 
 const r2: R2Config = { accountId: 'acct', accessKeyId: 'AKID', secretAccessKey: 'secret', bucket: 'chintubucket' }
+
+const KEY = 'map/abcdef01-2345-4678-9abc-def012345678/fedcba98-7654-4321-8fed-cba987654321/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.jpg'
 
 describe('cleanUpObjects', () => {
   it('deletes each claimed object, then records it', async () => {
@@ -46,23 +49,23 @@ describe('deleteObject', () => {
 
   it('sends a signed DELETE for exactly that key in that bucket', async () => {
     const send = vi.fn(async () => ({ status: 204 }))
-    await deleteObject(r2, 'u/r/p.jpg', { fetch: send, now: at })
+    await deleteObject(r2, KEY, { fetch: send, now: at })
     const [url, init] = send.mock.calls[0] as unknown as [string, { method: string }]
     expect(init.method).toBe('DELETE')
     const parsed = new URL(url)
     expect(parsed.host).toBe('acct.r2.cloudflarestorage.com')
-    expect(parsed.pathname).toBe('/chintubucket/u/r/p.jpg')
+    expect(parsed.pathname).toBe(`/chintubucket/${KEY}`)
     expect(parsed.searchParams.get('X-Amz-Algorithm')).toBe('AWS4-HMAC-SHA256')
     expect(parsed.searchParams.get('X-Amz-Credential')).toBe('AKID/20260927/auto/s3/aws4_request')
     expect(parsed.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it('treats a missing object as deleted', async () => {
-    await expect(deleteObject(r2, 'k', { fetch: async () => ({ status: 404 }), now: at })).resolves.toBeUndefined()
+    await expect(deleteObject(r2, KEY, { fetch: async () => ({ status: 404 }), now: at })).resolves.toBeUndefined()
   })
 
   it('throws when R2 refuses, so the object is retried', async () => {
-    await expect(deleteObject(r2, 'k', { fetch: async () => ({ status: 403 }), now: at })).rejects.toThrow('403')
+    await expect(deleteObject(r2, KEY, { fetch: async () => ({ status: 403 }), now: at })).rejects.toThrow('403')
   })
 })
 
@@ -71,11 +74,11 @@ describe('deleteObject — the signature is the one for this request', () => {
     const { presignUrl } = await import('../../shared/sigv4.js')
     const send = vi.fn(async () => ({ status: 204 }))
     const at = new Date('2026-09-27T12:00:00Z')
-    await deleteObject(r2, 'u/r/p.jpg', { fetch: send, now: () => at })
+    await deleteObject(r2, KEY, { fetch: send, now: () => at })
     const [sent] = send.mock.calls[0] as unknown as [string]
     const expected = await presignUrl({
       method: 'DELETE',
-      url: 'https://acct.r2.cloudflarestorage.com/chintubucket/u/r/p.jpg',
+      url: `https://acct.r2.cloudflarestorage.com/chintubucket/${KEY}`,
       region: 'auto',
       service: 's3',
       accessKeyId: 'AKID',
@@ -87,7 +90,7 @@ describe('deleteObject — the signature is the one for this request', () => {
     // And a PUT for the same key signs differently, so a wrong method fails.
     const asPut = await presignUrl({
       method: 'PUT',
-      url: 'https://acct.r2.cloudflarestorage.com/chintubucket/u/r/p.jpg',
+      url: `https://acct.r2.cloudflarestorage.com/chintubucket/${KEY}`,
       region: 'auto',
       service: 's3',
       accessKeyId: 'AKID',
@@ -103,7 +106,7 @@ describe('deleteObject — the signature is the one for this request', () => {
       expect(init.signal).toBeInstanceOf(AbortSignal)
       return { status: 204 }
     })
-    await deleteObject(r2, 'k', { fetch: send })
+    await deleteObject(r2, KEY, { fetch: send })
     expect(send).toHaveBeenCalled()
   })
 })
@@ -126,5 +129,69 @@ describe('cleanUpObjects — a time budget', () => {
     // a at 0s, b at 40s, then 80s is past the minute: c is left.
     expect(result).toEqual({ deleted: 2, failed: 0 })
     expect(deleteObject).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('deleteObject — only the map’s own photos', () => {
+  // The bucket is shared with the marketplace, whose paid downloads live under
+  // artifacts/, and R2 cannot limit a token to a prefix. So this is checked in
+  // the worker too, not only by the database that chooses the keys.
+  it.each([
+    'artifacts/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/app.zip',
+    'covers/abc.png',
+    KEY.replace('map/', ''),
+    KEY.replace('map/', 'MAP/'),
+    KEY.toUpperCase(),
+    KEY.replace('.jpg', '.zip'),
+    `${KEY}?x=1`,
+    `map/../artifacts/${KEY.slice(4)}`,
+    '',
+  ])('refuses %j and sends nothing', async (key) => {
+    const send = vi.fn(async () => ({ status: 204 }))
+    await expect(deleteObject(r2, key, { fetch: send })).rejects.toThrow('not a map photo key')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('accepts each photo type the app uploads', async () => {
+    for (const ext of ['jpg', 'png', 'webp']) {
+      const send = vi.fn(async () => ({ status: 204 }))
+      await deleteObject(r2, KEY.replace('.jpg', `.${ext}`), { fetch: send })
+      expect(send).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('is the same pattern the database checks every key against', () => {
+    const sql = readFileSync(new URL('../../supabase/migrations/0006_upload_grants.sql', import.meta.url), 'utf8')
+    const match = /select key ~ '(\^[^']+\$)'/.exec(sql)
+    expect(match).not.toBeNull()
+    expect(MAP_PHOTO_KEY.source).toBe(new RegExp(match![1]).source)
+  })
+
+  it('leaves a refused key unrecorded in a pass, and carries on with the rest', async () => {
+    const deleted: string[] = []
+    const record = vi.fn(async () => undefined)
+    const log = vi.fn()
+    const result = await cleanUpObjects(
+      {
+        claim: async () => [
+          { storage_path: 'artifacts/x/y/app.zip', reason: 'rejected' },
+          { storage_path: KEY, reason: 'rejected' },
+        ],
+        deleteObject: (key) =>
+          deleteObject(r2, key, {
+            fetch: async () => {
+              deleted.push(key)
+              return { status: 204 }
+            },
+          }),
+        record,
+      },
+      log,
+    )
+    expect(result).toEqual({ deleted: 1, failed: 1 })
+    expect(deleted).toEqual([KEY])
+    expect(record).toHaveBeenCalledTimes(1)
+    expect(record).toHaveBeenCalledWith(KEY)
+    expect(String(log.mock.calls[0][0])).toContain('not a map photo key')
   })
 })

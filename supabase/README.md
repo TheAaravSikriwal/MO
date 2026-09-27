@@ -368,7 +368,7 @@ And these should SUCCEED:
   rolls back the rate limit too, and the only symptom is uploads answering
   "not set up".
 - Does an `upload_grants` insert whose `storage_path` is outside
-  `<your-id>/<report-id>/` fail?
+  `map/<your-id>/<report-id>/` fail? Try one without the `map/` prefix too.
 - Does deleting the report leave its upload grants in place, with `report_id`
   set to null? A cascade there would let the person the limit applies to reset
   it by deleting their own report, and would do it without consulting RLS.
