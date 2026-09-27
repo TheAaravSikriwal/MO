@@ -20,7 +20,13 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
 
+    // No "node" here on purpose. These files are compiled as browser code, so
+    // `process` and `Buffer` must not typecheck. The files that do run in node
+    // are listed in tsconfig.node.json.
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "vite.config.ts", "vitest.setup.ts"]
+  "include": ["src", "api", "vitest.setup.ts"],
+  // Compiled by tsconfig.node.json instead. They read migration SQL off disk,
+  // which is node-only by nature.
+  "exclude": ["src/lib/db/migrations.test.ts", "src/components/map/CellLayer.test.tsx"]
 }

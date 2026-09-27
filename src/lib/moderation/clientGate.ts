@@ -1,4 +1,9 @@
 import { RegExpMatcher, englishDataset, englishRecommendedTransformers } from 'obscenity'
+import {
+  ALLOWED_PHOTO_TYPES,
+  MAX_PHOTO_BYTES,
+  isAllowedPhotoType,
+} from '../upload/photoLimits'
 
 /**
  * Tier 1 — the instant gate that runs in the browser.
@@ -44,12 +49,14 @@ export function checkText(text: string): GateResult {
   }
 }
 
-export const MAX_PHOTO_BYTES = 8 * 1024 * 1024
-const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+// Re-exported, not redefined. The upload-signing endpoint enforces the same
+// limits server-side and must read them from the same place; a second copy
+// here would drift into a photo the browser accepts and the server refuses.
+export { MAX_PHOTO_BYTES, ALLOWED_PHOTO_TYPES }
 
 /** Cheap checks that need no model at all. */
 export function checkPhotoFile(file: { type: string; size: number }): GateResult {
-  if (!ALLOWED_TYPES.includes(file.type)) {
+  if (!isAllowedPhotoType(file.type)) {
     return { blocked: true, message: 'Please choose a JPEG, PNG or WebP photo.' }
   }
   if (file.size > MAX_PHOTO_BYTES) {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { MAX_PHOTOS, MAX_PHOTO_BYTES } from '../upload/photoLimits'
 import {
   plainReason,
   plainError,
@@ -147,7 +148,41 @@ describe('plainError — actionable causes stay distinct', () => {
     ['a report may have at most 3 photos', /at most 3 photos/i],
     ['Please sign in to add a report.', /sign in/i],
     ['a report needs at least one photo', /add a photo/i],
-    ['Photo upload is not connected yet. It needs the R2 signing endpoint', /not set up yet/i],
+    ['Photo upload is not set up on this site yet.', /not set up yet/i],
+    ['Please choose a JPEG, PNG or WebP photo.', /jpeg, png or webp/i],
+    ['That photo is too large. Please choose one under 8 MB.', /under 8 MB/i],
+    ['That file seems to be empty. Please choose another photo.', /empty/i],
+    ['Your photo could not be uploaded. Please try again.', /photo could not be uploaded/i],
+    ['That report could not be found.', /report could not be found/i],
+    // Verbatim from PostgREST when `mo` is not an exposed schema. The single
+    // likeliest first-deploy failure, reachable from every screen.
+    [
+      'The schema must be one of the following: public, graphql_public',
+      /not set up yet/i,
+    ],
+    // Verbatim from Postgres, which is what the real backend sends. These used
+    // to fall through to "something went wrong, please try again" for actions
+    // that can never succeed.
+    [
+      'duplicate key value violates unique constraint "flags_subject_type_subject_id_flagger_id_key"',
+      /already reported this/i,
+    ],
+    ['duplicate key value violates unique constraint "votes_pkey"', /already confirmed/i],
+    [
+      'new row violates row-level security policy for table "votes"',
+      /cannot confirm this one/i,
+    ],
+    [
+      'duplicate key value violates unique constraint "upload_grants_storage_path_key"',
+      /already done that/i,
+    ],
+    ['that photo could not be added; please choose it again', /choose it again/i],
+    [
+      'You have added several photos recently. Please wait a while before adding more.',
+      /several photos recently/i,
+    ],
+    ['too many photo uploads in the last hour; please slow down', /several photos recently/i],
+    ['Something went wrong preparing the upload.', /photo could not be uploaded/i],
     ['you have already reported this', /already reported/i],
     ['you cannot confirm your own report', /own report/i],
     ['report not found, already cleaned, or not yet approved', /already been marked cleaned/i],
@@ -168,6 +203,25 @@ describe('plainError — actionable causes stay distinct', () => {
         expect(plain).not.toContain(word)
       }
     }
+  })
+
+  it('names the caps from the constants, not from a number typed in here', () => {
+    // These sentences REPLACE whatever the server said, so a literal here
+    // silently overrides the endpoint's own derived wording. Raising the cap
+    // had the server refuse at 12 MB while the person read "under 8 MB".
+    expect(plainError('that photo is too large')).toContain(
+      `under ${MAX_PHOTO_BYTES / 1024 / 1024} MB`,
+    )
+    expect(plainError('a report may have at most 3 photos')).toContain(
+      `at most ${MAX_PHOTOS} photos`,
+    )
+  })
+
+  it('still recognises the wording whatever the numbers become', () => {
+    // The patterns match a digit, not an 8 and a 3, so the database's own
+    // message still routes here after either cap moves.
+    expect(plainError('please choose one under 12 MB')).not.toBe(DEFAULT_ERROR)
+    expect(plainError('a report may have at most 4 photos')).not.toBe(DEFAULT_ERROR)
   })
 
   it('still falls back for anything genuinely unrecognised', () => {

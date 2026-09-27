@@ -18,7 +18,30 @@
 -- that grant was what leaked unreviewed notes and photo paths. The function is
 -- safe to run as definer because it returns only counts and sums over rows that
 -- are already public, never a note, a photo path, or a reporter's identity.
-create or replace function public.reports_rollup(
+
+-- Every object below is created in, and resolves against, the `mo` schema.
+--
+-- MO shares the wearechintu project's database, which already has
+-- `public.reports` and `public.profiles`. Tables, views and functions are
+-- written out as `mo.x` so that is never in doubt. The enum types are left
+-- bare and resolved through this search path, because `moderation_status` and
+-- `subject_type` are the names of both a type and a column -- qualifying every
+-- occurrence produced `where mo.moderation_status = ...`, which is a
+-- schema-qualified column reference and not valid SQL.
+--
+-- Set per file: each migration runs in its own session, so this cannot be
+-- inherited from the one before it.
+-- `extensions` at FILE level, not just on the functions.
+--
+-- `reports_rollup` and `count_reports_in_view` are `language sql` and call
+-- st_dwithin unqualified. A function's own SET clause applies when it RUNS;
+-- Postgres validates a SQL function's body when it is CREATED, against the
+-- session's search path. So without `extensions` here, creating them fails
+-- with "function st_dwithin does not exist" even though each one pins the
+-- right path for its own execution.
+set search_path = mo, public, extensions;
+
+create or replace function mo.reports_rollup(
   min_lat    double precision,
   min_lng    double precision,
   max_lat    double precision,
@@ -51,7 +74,7 @@ stable
 security definer
 -- PostGIS lives in `extensions` on a default Supabase project, and this now
 -- calls st_dwithin.
-set search_path = public, extensions
+set search_path = mo, public, extensions
 as $$
   select
     case resolution
@@ -64,7 +87,7 @@ as $$
     end as cell,
     sum(1 + r.vote_count)::bigint as weight,
     count(*)::bigint              as report_count
-  from public.reports r
+  from mo.reports r
   where r.moderation_status = 'approved'
     and resolution in (1, 3, 5, 7, 9, 12)
     -- Open only unless somebody explicitly asked to see cleaned spots. This is
@@ -101,7 +124,7 @@ as $$
   group by 1;
 $$;
 
-grant execute on function public.reports_rollup(
+grant execute on function mo.reports_rollup(
   double precision, double precision, double precision, double precision, integer,
   text, integer, timestamptz, double precision, double precision, double precision
 ) to anon, authenticated;
@@ -118,12 +141,18 @@ grant execute on function public.reports_rollup(
 -- drawn -- the count contradicting both the pins and the cells.
 --
 -- Pass no filters for the unfiltered total.
-create or replace function public.count_reports_in_view(
+create or replace function mo.count_reports_in_view(
   min_lat    double precision,
   min_lng    double precision,
   max_lat    double precision,
   max_lng    double precision,
-  status_filter      text             default 'all',
+  -- 'open', the same default as reports_rollup above.
+  --
+  -- This was 'all', which is the one thing this function must not do: a caller
+  -- that omits the filter would count cleaned reports the rollup at the same
+  -- zoom leaves out, and the panel would say "60 reports" over twelve pins.
+  -- Removing that contradiction is the whole reason this function exists.
+  status_filter      text             default 'open',
   min_confirmations  integer          default 0,
   since              timestamptz      default null,
   origin_lat         double precision default null,
@@ -134,10 +163,10 @@ returns bigint
 language sql
 stable
 security definer
-set search_path = public, extensions
+set search_path = mo, public, extensions
 as $$
   select count(*)::bigint
-  from public.reports r
+  from mo.reports r
   where r.moderation_status = 'approved'
     and (
       status_filter = 'all'
@@ -164,60 +193,26 @@ as $$
     );
 $$;
 
-grant execute on function public.count_reports_in_view(
+grant execute on function mo.count_reports_in_view(
   double precision, double precision, double precision, double precision,
   text, integer, timestamptz, double precision, double precision, double precision
 ) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
--- nearby_reports  --  powers "near me"
+-- There is no nearby_reports
 -- ---------------------------------------------------------------------------
-
-create or replace function public.nearby_reports(
-  origin_lat  double precision,
-  origin_lng  double precision,
-  radius_m    double precision default 2000,
-  max_results integer default 100
-)
-returns table (
-  id         uuid,
-  lat        double precision,
-  lng        double precision,
-  distance_m double precision,
-  vote_count integer,
-  status     report_status,
-  created_at timestamptz
-)
-language sql
-stable
-security definer
--- PostGIS lives in `extensions` on a default Supabase project, so a definer
--- function with search_path pinned to `public` alone cannot resolve st_dwithin.
-set search_path = public, extensions
-as $$
-  select
-    r.id,
-    r.lat,
-    r.lng,
-    st_distance(r.geom, st_setsrid(st_makepoint(origin_lng, origin_lat), 4326)::geography)
-      as distance_m,
-    r.vote_count,
-    r.status,
-    r.created_at
-  from public.reports r
-  where r.moderation_status = 'approved'
-    and st_dwithin(
-          r.geom,
-          st_setsrid(st_makepoint(origin_lng, origin_lat), 4326)::geography,
-          least(greatest(radius_m, 0), 50000)
-        )
-  order by distance_m
-  limit least(greatest(max_results, 1), 500);
-$$;
-
-grant execute on function public.nearby_reports(
-  double precision, double precision, double precision, integer
-) to anon, authenticated;
+--
+-- There was: a PostGIS `st_dwithin` function with EXECUTE granted to anon, and
+-- a comment saying it powered "near me". Nothing called it. Near-me is done
+-- through `public_reports` plus `distanceMetres` on the client, and through the
+-- `origin_lat`/`origin_lng`/`within_metres` arguments of `reports_rollup` and
+-- `count_reports_in_view` above.
+--
+-- Removed rather than left in place. These migrations are about to be applied
+-- to a database the marketplace also uses, and unexercised SQL that anon can
+-- call is not something to ship on the strength of a comment that was wrong
+-- about what called it. If near-me ever needs a real geography query, this is
+-- a small function to write again, against a test.
 
 -- ---------------------------------------------------------------------------
 -- The worker's interface
@@ -227,22 +222,36 @@ grant execute on function public.nearby_reports(
 --
 -- FOR UPDATE SKIP LOCKED is what makes it safe to run several workers at once,
 -- or to restart one mid-batch, without two of them grading the same photo.
-create or replace function public.claim_moderation_jobs(
+create or replace function mo.claim_moderation_jobs(
   worker_id  text,
   batch_size integer default 10
 )
-returns setof public.moderation_jobs
+returns setof mo.moderation_jobs
 language sql
 volatile
-set search_path = public
+set search_path = mo, public
+security definer
+-- SECURITY DEFINER, like the read RPCs above.
+--
+-- These are the worker's write path, and they update moderation_jobs,
+-- report_photos, comments and reports. Running as the CALLER, they needed
+-- DML on all four -- which service_role does not have in this schema,
+-- because a new schema grants nothing and Supabase's defaults are scoped
+-- to public. Before the move to `mo` that came free, so nothing here said
+-- it was needed; after it, claim_moderation_jobs failed on its first
+-- statement and the pipeline never started.
+--
+-- Running as definer instead of granting four tables' worth of DML keeps
+-- the privilege inside these three functions, which are already revoked
+-- from every browser role and carry their own guards.
 as $$
-  update public.moderation_jobs j
+  update mo.moderation_jobs j
      set status    = 'in_progress',
          locked_at = now(),
          locked_by = worker_id,
          attempts  = j.attempts + 1
    where j.id in (
-     select id from public.moderation_jobs
+     select id from mo.moderation_jobs
       -- Never re-claim something already decided. Nothing currently moves a
       -- decided job back into these states, but this is the one link in the
       -- chain that was relying on its neighbours rather than its own predicate.
@@ -272,7 +281,7 @@ $$;
 -- Returns whether the verdict was actually applied. It can legitimately be
 -- refused -- a flag landed, or another worker got there first -- and the caller
 -- needs to know, or its log will claim a decision that never happened.
-create or replace function public.record_moderation_verdict(
+create or replace function mo.record_moderation_verdict(
   job_id       uuid,
   new_verdict  moderation_status,
   decided_by   text,
@@ -282,12 +291,26 @@ create or replace function public.record_moderation_verdict(
 returns boolean
 language plpgsql
 volatile
-set search_path = public
+set search_path = mo, public
+security definer
+-- SECURITY DEFINER, like the read RPCs above.
+--
+-- These are the worker's write path, and they update moderation_jobs,
+-- report_photos, comments and reports. Running as the CALLER, they needed
+-- DML on all four -- which service_role does not have in this schema,
+-- because a new schema grants nothing and Supabase's defaults are scoped
+-- to public. Before the move to `mo` that came free, so nothing here said
+-- it was needed; after it, claim_moderation_jobs failed on its first
+-- statement and the pipeline never started.
+--
+-- Running as definer instead of granting four tables' worth of DML keeps
+-- the privilege inside these three functions, which are already revoked
+-- from every browser role and carry their own guards.
 as $$
 declare
-  job public.moderation_jobs;
+  job mo.moderation_jobs;
 begin
-  select * into job from public.moderation_jobs where id = job_id;
+  select * into job from mo.moderation_jobs where id = job_id;
   if not found then
     raise exception 'no such moderation job: %', job_id;
   end if;
@@ -297,7 +320,7 @@ begin
   -- back to done/verdict-null; without this guard the worker would then write
   -- its own verdict over the top, and the flagged item would never reach a
   -- human -- breaking the rule that a complaint always does.
-  update public.moderation_jobs
+  update mo.moderation_jobs
      set status       = 'done',
          verdict      = new_verdict,
          decided_by   = record_moderation_verdict.decided_by,
@@ -324,12 +347,12 @@ begin
   -- flagged items always reach a human" true even when the flag arrives while
   -- the worker is mid-decision.
   if exists (
-    select 1 from public.flags
+    select 1 from mo.flags
      where subject_type = job.subject_type
        and subject_id = job.subject_id
        and resolved_at is null
   ) then
-    update public.moderation_jobs
+    update mo.moderation_jobs
        set verdict    = null,
            decided_by = 'escalated',
            reason     = 'people reported this'
@@ -338,9 +361,9 @@ begin
   end if;
 
   if job.subject_type = 'photo' then
-    update public.report_photos set moderation_status = new_verdict where id = job.subject_id;
+    update mo.report_photos set moderation_status = new_verdict where id = job.subject_id;
   elsif job.subject_type = 'comment' then
-    update public.comments set moderation_status = new_verdict where id = job.subject_id;
+    update mo.comments set moderation_status = new_verdict where id = job.subject_id;
   elsif job.subject_type = 'note' then
     -- note_status, NOT moderation_status. The pin and its note are judged
     -- separately: approving here must release the text, and rejecting here must
@@ -348,7 +371,7 @@ begin
     -- moderation_status would do neither -- it would leave an approved note
     -- permanently hidden with no job left to release it, and drop a rejected
     -- one's pin off the map entirely.
-    update public.reports set note_status = new_verdict where id = job.subject_id;
+    update mo.reports set note_status = new_verdict where id = job.subject_id;
   end if;
 
   return true;
@@ -361,7 +384,7 @@ $$;
 -- does: the guard below can legitimately refuse the write when an admin got
 -- there first, and a caller that assumes success logs an escalation which
 -- never happened.
-create or replace function public.escalate_moderation_job(
+create or replace function mo.escalate_moderation_job(
   job_id       uuid,
   tier_results jsonb default '{}'::jsonb,
   reason       text default null
@@ -369,9 +392,23 @@ create or replace function public.escalate_moderation_job(
 returns boolean
 language sql
 volatile
-set search_path = public
+set search_path = mo, public
+security definer
+-- SECURITY DEFINER, like the read RPCs above.
+--
+-- These are the worker's write path, and they update moderation_jobs,
+-- report_photos, comments and reports. Running as the CALLER, they needed
+-- DML on all four -- which service_role does not have in this schema,
+-- because a new schema grants nothing and Supabase's defaults are scoped
+-- to public. Before the move to `mo` that came free, so nothing here said
+-- it was needed; after it, claim_moderation_jobs failed on its first
+-- statement and the pipeline never started.
+--
+-- Running as definer instead of granting four tables' worth of DML keeps
+-- the privilege inside these three functions, which are already revoked
+-- from every browser role and carry their own guards.
 as $$
-  update public.moderation_jobs
+  update mo.moderation_jobs
      set status       = 'done',
          verdict      = null,
          decided_by   = 'escalated',
@@ -388,26 +425,62 @@ as $$
   returning true;
 $$;
 
--- These are the worker's, and the worker authenticates with the service role
--- key, which bypasses RLS. No browser-facing role gets execute on them.
-revoke all on function public.claim_moderation_jobs(text, integer) from public, anon, authenticated;
-revoke all on function public.record_moderation_verdict(uuid, moderation_status, text, jsonb, text) from public, anon, authenticated;
-revoke all on function public.escalate_moderation_job(uuid, jsonb, text) from public, anon, authenticated;
+-- These are the worker's. No browser-facing role gets execute on them.
+--
+-- Revoking from PUBLIC is what does the work: Postgres grants EXECUTE on a new
+-- function to PUBLIC by default, so listing anon and authenticated alone would
+-- leave it reachable by both through that implicit grant.
+--
+-- Which is also why service_role has to be granted back explicitly below. The
+-- old comment here said the worker "authenticates with the service role key,
+-- which bypasses RLS" and left it at that — true, and not the point: BYPASSRLS
+-- is not a grant, and the revoke above takes service_role's implicit EXECUTE
+-- away with everybody else's. When MO lived in `public` this never came up,
+-- because Supabase's default privileges there had already granted it.
+revoke all on function mo.claim_moderation_jobs(text, integer) from public, anon, authenticated;
+revoke all on function mo.record_moderation_verdict(uuid, moderation_status, text, jsonb, text) from public, anon, authenticated;
+revoke all on function mo.escalate_moderation_job(uuid, jsonb, text) from public, anon, authenticated;
+
+grant execute on function mo.claim_moderation_jobs(text, integer) to service_role;
+grant execute on function mo.record_moderation_verdict(uuid, moderation_status, text, jsonb, text) to service_role;
+grant execute on function mo.escalate_moderation_job(uuid, jsonb, text) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- Admin bootstrap
 -- ---------------------------------------------------------------------------
 
 -- There is no way to create the first admin from inside the app, by design:
--- guard_profile_role_change requires an existing admin to promote anyone.
+-- `mo.admins` is revoked from both browser roles and has no insert policy, so
+-- nothing a browser can send will add a row.
 --
--- Promote the first one by hand, from the Supabase SQL editor, which runs as a
--- superuser and is not subject to the trigger's auth.uid() check:
+-- Add the first one by hand, from the Supabase SQL editor, which runs as a
+-- superuser and is subject to neither the grant nor RLS:
 --
---   update public.profiles
---      set role = 'admin'
---    where id = (select id from auth.users where email = 'you@example.com');
+--   insert into mo.admins (user_id)
+--   select id from auth.users where email = 'you@example.com';
+--
+-- That person must have signed in at least once, so that chintu's
+-- handle_new_user trigger has created their public.profiles row -- mo.admins
+-- references it.
 --
 -- Without at least one admin there is no tier 4, and every ambiguous photo and
 -- comment will sit in the queue unreviewed. Do this immediately after the first
 -- sign-in.
+
+-- ---------------------------------------------------------------------------
+-- Put the session back
+-- ---------------------------------------------------------------------------
+--
+-- `set search_path` at the top of this file is session-scoped, not
+-- transaction-scoped: a plain SET survives the commit. These migrations are
+-- meant to be renumbered into the wearechintu project and applied by that
+-- project's CLI, which uses ONE connection for the whole run -- so without this
+-- line the search path stays `mo, public` for every marketplace migration
+-- applied after MO's, and the next unqualified `create table foo` over there
+-- lands in `mo`.
+--
+-- Nothing breaks today, because all nine of chintu's migrations qualify with
+-- `public.`. That is not a guarantee about the tenth. Leaving a session
+-- modified for somebody else's code is the same reach outside MO that the
+-- `alter default privileges in schema public` statement was removed for.
+reset search_path;

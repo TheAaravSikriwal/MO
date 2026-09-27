@@ -1,3 +1,5 @@
+import { MAX_PHOTOS, MAX_PHOTO_BYTES } from '../upload/photoLimits'
+
 /**
  * Turns machine strings into plain sentences.
  *
@@ -33,17 +35,75 @@ export function plainReason(reason: string | null | undefined): string {
   return DEFAULT_REASON
 }
 
+/**
+ * The caps, written once.
+ *
+ * These sentences replace whatever the server said, so a number typed in here
+ * silently overrides a number computed from the constant. The endpoint derives
+ * its own wording from `MAX_PHOTO_BYTES` -- and then this table overwrote it,
+ * so raising the cap had the server refuse at 12 MB while the person read
+ * "under 8 MB".
+ */
+const MAX_PHOTO_MB = MAX_PHOTO_BYTES / 1024 / 1024
+
 const ERROR_RULES: Array<[RegExp, string]> = [
   // Actionable causes come first. Collapsing these into "please try again"
   // told someone to retry the one thing guaranteed to keep failing, and left
   // every other cause with the same wording.
   [/last minute/i, 'You are posting quickly. Please wait a moment.'],
+  [
+    /added several photos recently|too many photo uploads/i,
+    'You have added several photos recently. Please wait a while before adding more.',
+  ],
   [/last hour|slow down/i, 'You have added several recently. Please wait a while before adding more.'],
-  [/at most 3 photos|at most 3/i, 'A report can have at most 3 photos.'],
+  [/at most \d+ photos|at most \d+/i, `A report can have at most ${MAX_PHOTOS} photos.`],
   [/sign in|signed in/i, 'Please sign in first.'],
   [/add a photo|needs at least one photo/i, 'Please add a photo.'],
-  [/photo upload is not connected/i, 'Photo upload is not set up yet, so reports cannot be sent.'],
+  // The upload endpoint's own replies. It refuses a photo before any byte is
+  // sent, and each refusal is something the person can act on, so none of them
+  // may collapse into "please try again" -- retrying a 12 MB photo fails
+  // exactly the same way.
+  // PostgREST's answer when `mo` is not in the project's exposed-schemas list.
+  // That is one checkbox in the Supabase dashboard and nothing works without
+  // it, so it is the likeliest thing to be wrong the first time this is
+  // deployed -- and it reaches a person through every screen, not just the
+  // upload. The endpoint has its own branch for it; everything else comes
+  // through here, and used to arrive as "something went wrong, please try
+  // again" about a configuration nobody using the site can fix.
+  [/schema must be one of the following|PGRST106/i, 'This site is not set up yet.'],
+  [/upload is not set up/i, 'Photo upload is not set up yet, so reports cannot be sent.'],
+  [/jpeg, png or webp/i, 'Please choose a JPEG, PNG or WebP photo.'],
+  [/too large|under \d+ ?mb/i, `That photo is too large. Please choose one under ${MAX_PHOTO_MB} MB.`],
+  [/seems to be empty/i, 'That file seems to be empty. Please choose another photo.'],
+  [/could not be uploaded|preparing the upload/i, 'Your photo could not be uploaded. Please try again.'],
+  // What the endpoint says when a report is not there, or is not yours. It
+  // must not fall through to the generic sentence: this is what someone sees
+  // if their own report disappears part-way through submitting it.
+  [/report could not be found/i, 'That report could not be found.'],
+  // From enforce_photo_has_grant in 0006, which fires when a photo row names an
+  // object with no unspent grant behind it. Choosing the photo again uploads it
+  // afresh, which is genuinely the way out, so this must not collapse into the
+  // generic "something went wrong".
+  [/could not be added/i, 'That photo could not be added. Please choose it again.'],
   [/already reported this/i, 'You have already reported this.'],
+  // The three below are what the REAL backend says, as opposed to the fake.
+  //
+  // Every "already done that" case reaches the browser as a Postgres
+  // constraint or policy message, because the database is what enforces them:
+  // the unique constraint on flags, the primary key on votes, and the
+  // votes_insert_own policy. None of those strings matched any rule, so
+  // re-flagging something, voting twice, or voting on your own report all came
+  // back as "something went wrong, please try again" — advice to retry an
+  // action that can never succeed.
+  //
+  // Matched on the table name, which appears in the constraint name Postgres
+  // reports, so a duplicate flag and a duplicate vote stay distinguishable.
+  [/duplicate key[\s\S]*flags/i, 'You have already reported this.'],
+  [/duplicate key[\s\S]*votes/i, 'You have already confirmed this one.'],
+  // Any of the three things votes_insert_own requires: it is your own row, it
+  // is not your own report, and the report is open and approved. The wording
+  // covers all three rather than guessing which failed.
+  [/row-level security policy for table "votes"/i, 'You cannot confirm this one.'],
   [/already confirmed|already been decided/i, 'You have already done that.'],
   [/cannot confirm your own/i, 'You cannot confirm your own report.'],
   [/already cleaned|not found, already cleaned/i, 'This report has already been marked cleaned.'],
@@ -52,6 +112,9 @@ const ERROR_RULES: Array<[RegExp, string]> = [
   [/permission denied|not authorized|unauthorized|jwt/i, 'You do not have permission to do that.'],
   [/already been decided|decided by someone else/i, 'Someone already dealt with this one.'],
   [/no such/i, 'That item could not be found.'],
+  // Anything else the database refuses as a duplicate. Last, so the specific
+  // cases above keep their own wording.
+  [/duplicate key/i, 'You have already done that.'],
   [/network|fetch|offline|econnrefused|timeout/i, 'Could not reach the server. Please try again.'],
 ]
 

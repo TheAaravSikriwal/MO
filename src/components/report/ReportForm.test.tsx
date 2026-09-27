@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { ReportForm } from './ReportForm'
 import { FakeDataSource } from '../../lib/data/fakeSource'
 import { screenPhotoFileOnly } from '../../lib/moderation/screenPhoto'
+import { ALLOWED_PHOTO_TYPES } from '../../lib/upload/photoLimits'
 
 const photo = (name = 'litter.jpg', type = 'image/jpeg', size = 1024) => {
   const file = new File(['x'], name, { type })
@@ -91,6 +92,95 @@ describe('ReportForm — photos', () => {
     const { user } = setup()
     await user.upload(screen.getByLabelText(/^photo$/i), photo('huge.jpg', 'image/jpeg', 9e6))
     expect(await screen.findByRole('alert')).toHaveTextContent(/under 8 MB/i)
+  })
+
+  it('offers exactly the types the rest of the stack accepts', async () => {
+    // The `accept` attribute was a third copy of the list. A fourth type added
+    // to photoLimits would have been filtered out by the picker with nothing
+    // on screen to say why.
+    setup()
+    expect(screen.getByLabelText(/^photo$/i)).toHaveAttribute(
+      'accept',
+      ALLOWED_PHOTO_TYPES.join(','),
+    )
+  })
+
+  it('keeps the photos that pass when one of a batch is blocked', async () => {
+    // Discarding the whole selection meant picking two good photos and one
+    // oversized one added none of the three, with a message that did not say
+    // which was at fault.
+    const { user } = setup()
+    await user.upload(screen.getByLabelText(/^photo$/i), [
+      photo('good.jpg'),
+      photo('huge.jpg', 'image/jpeg', 9e6),
+    ])
+    expect(await screen.findByText('good.jpg')).toBeInTheDocument()
+    expect(screen.queryByText('huge.jpg')).not.toBeInTheDocument()
+  })
+
+  it('names the photo it could not use, and why', async () => {
+    const { user } = setup()
+    await user.upload(screen.getByLabelText(/^photo$/i), [
+      photo('good.jpg'),
+      photo('huge.jpg', 'image/jpeg', 9e6),
+    ])
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/huge\.jpg/)
+    expect(alert).toHaveTextContent(/under 8 MB/i)
+    expect(alert).not.toHaveTextContent(/good\.jpg/)
+  })
+
+  it('names every photo it could not use', async () => {
+    // fireEvent, not user.upload: the input carries an `accept` list, and
+    // user.upload honours it by dropping the files before they ever reach the
+    // handler -- so the gate under test would never run.
+    setup()
+    fireEvent.change(screen.getByLabelText(/^photo$/i), {
+      target: {
+        files: [photo('one.pdf', 'application/pdf'), photo('two.pdf', 'application/pdf')],
+      },
+    })
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/one\.pdf/)
+    expect(alert).toHaveTextContent(/two\.pdf/)
+  })
+
+  it('keeps the unjudged files, but not the blocked one, when the screener throws', async () => {
+    // Tier 1 fails open, so files it never reached are let through and the
+    // server decides. But re-admitting the whole selection put back the ones
+    // the gate had already positively BLOCKED, so a file it had just refused
+    // was attached anyway and only stopped after the report row was written.
+    let seen = 0
+    const screenPhoto = async () => {
+      seen += 1
+      if (seen === 1) return { blocked: true, message: 'That photo cannot be used.' }
+      throw new Error('model exploded')
+    }
+
+    const { user } = setup({ screenPhoto })
+    await user.upload(screen.getByLabelText(/^photo$/i), [
+      photo('blocked.jpg'),
+      photo('unjudged.jpg'),
+    ])
+
+    expect(await screen.findByText('unjudged.jpg')).toBeInTheDocument()
+    expect(screen.queryByText('blocked.jpg')).not.toBeInTheDocument()
+  })
+
+  it('still reports the blocked file when the screener throws afterwards', async () => {
+    let seen = 0
+    const screenPhoto = async () => {
+      seen += 1
+      if (seen === 1) return { blocked: true, message: 'That photo cannot be used.' }
+      throw new Error('model exploded')
+    }
+
+    const { user } = setup({ screenPhoto })
+    await user.upload(screen.getByLabelText(/^photo$/i), [
+      photo('blocked.jpg'),
+      photo('unjudged.jpg'),
+    ])
+    expect(await screen.findByRole('alert')).toHaveTextContent(/blocked\.jpg/)
   })
 
   it('stops at three photos', async () => {

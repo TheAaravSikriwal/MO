@@ -14,7 +14,22 @@
 -- check is therefore the only thing standing between this and a way to read
 -- unreviewed content, so it is checked first and raises rather than returning
 -- an empty set — a silent empty result would look like "queue is clear".
-create or replace function public.admin_moderation_queue(max_results integer default 50)
+
+-- Every object below is created in, and resolves against, the `mo` schema.
+--
+-- MO shares the wearechintu project's database, which already has
+-- `public.reports` and `public.profiles`. Tables, views and functions are
+-- written out as `mo.x` so that is never in doubt. The enum types are left
+-- bare and resolved through this search path, because `moderation_status` and
+-- `subject_type` are the names of both a type and a column -- qualifying every
+-- occurrence produced `where mo.moderation_status = ...`, which is a
+-- schema-qualified column reference and not valid SQL.
+--
+-- Set per file: each migration runs in its own session, so this cannot be
+-- inherited from the one before it.
+set search_path = mo, public;
+
+create or replace function mo.admin_moderation_queue(max_results integer default 50)
 returns table (
   job_id       uuid,
   subject_type subject_type,
@@ -30,10 +45,10 @@ returns table (
 language plpgsql
 stable
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
 begin
-  if not public.is_admin() then
+  if not mo.is_admin() then
     raise exception 'only an admin may read the moderation queue';
   end if;
 
@@ -46,23 +61,23 @@ begin
     j.tier_results,
     j.created_at,
     case j.subject_type
-      when 'comment' then (select c.body from public.comments c where c.id = j.subject_id)
-      when 'note'    then (select r.note from public.reports  r where r.id = j.subject_id)
+      when 'comment' then (select c.body from mo.comments c where c.id = j.subject_id)
+      when 'note'    then (select r.note from mo.reports  r where r.id = j.subject_id)
       else null
     end,
     case j.subject_type
-      when 'photo' then (select p.storage_path from public.report_photos p where p.id = j.subject_id)
+      when 'photo' then (select p.storage_path from mo.report_photos p where p.id = j.subject_id)
       else null
     end,
     case j.subject_type
-      when 'photo'   then (select p.report_id from public.report_photos p where p.id = j.subject_id)
-      when 'comment' then (select c.report_id from public.comments      c where c.id = j.subject_id)
+      when 'photo'   then (select p.report_id from mo.report_photos p where p.id = j.subject_id)
+      when 'comment' then (select c.report_id from mo.comments      c where c.id = j.subject_id)
       else j.subject_id
     end,
-    (select count(*) from public.flags f
+    (select count(*) from mo.flags f
       where f.subject_type = j.subject_type and f.subject_id = j.subject_id
         and f.resolved_at is null)
-  from public.moderation_jobs j
+  from mo.moderation_jobs j
   -- Three ways an item ends up needing a person:
   --   * the machine tiers finished but could not decide (verdict is null)
   --   * the worker gave up after repeated failures
@@ -79,7 +94,7 @@ begin
     )
   order by
     -- Anything people have complained about goes first.
-    (select count(*) from public.flags f
+    (select count(*) from mo.flags f
       where f.subject_type = j.subject_type and f.subject_id = j.subject_id
         and f.resolved_at is null) desc,
     j.created_at asc
@@ -87,8 +102,8 @@ begin
 end;
 $$;
 
-revoke all on function public.admin_moderation_queue(integer) from public, anon;
-grant execute on function public.admin_moderation_queue(integer) to authenticated;
+revoke all on function mo.admin_moderation_queue(integer) from public, anon;
+grant execute on function mo.admin_moderation_queue(integer) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Deciding
@@ -99,7 +114,7 @@ grant execute on function public.admin_moderation_queue(integer) to authenticate
 -- refuses anyone who is not an admin instead of relying on RLS to quietly
 -- update nothing. A silent no-op would leave an admin believing they had
 -- rejected something they had not.
-create or replace function public.admin_decide_moderation(
+create or replace function mo.admin_decide_moderation(
   job_id      uuid,
   new_verdict moderation_status,
   reason      text default null
@@ -108,12 +123,12 @@ returns void
 language plpgsql
 volatile
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
 declare
-  job public.moderation_jobs;
+  job mo.moderation_jobs;
 begin
-  if not public.is_admin() then
+  if not mo.is_admin() then
     raise exception 'only an admin may decide moderation items';
   end if;
 
@@ -131,7 +146,7 @@ begin
   -- so one admin could reject an obscene photo and have it silently
   -- re-approved. Locking the row serialises them, and the WHERE makes the
   -- second one a no-op that the row count below turns into a visible error.
-  select * into job from public.moderation_jobs where id = job_id for update;
+  select * into job from mo.moderation_jobs where id = job_id for update;
   if not found then
     raise exception 'no such moderation job: %', job_id;
   end if;
@@ -140,7 +155,7 @@ begin
     raise exception 'this item has already been decided';
   end if;
 
-  update public.moderation_jobs
+  update mo.moderation_jobs
      set verdict    = new_verdict,
          status     = 'done',
          decided_by = 'human:' || coalesce(auth.uid()::text, 'unknown'),
@@ -156,44 +171,44 @@ begin
 
   -- Ruling on something settles the complaints about it, so they cannot
   -- re-withhold it the moment somebody else objects.
-  update public.flags
+  update mo.flags
      set resolved_at = now()
    where subject_type = job.subject_type
      and subject_id = job.subject_id
      and resolved_at is null;
 
   if job.subject_type = 'photo' then
-    update public.report_photos set moderation_status = new_verdict where id = job.subject_id;
+    update mo.report_photos set moderation_status = new_verdict where id = job.subject_id;
   elsif job.subject_type = 'comment' then
-    update public.comments set moderation_status = new_verdict where id = job.subject_id;
+    update mo.comments set moderation_status = new_verdict where id = job.subject_id;
   elsif job.subject_type = 'note' then
     -- note_status, NOT moderation_status. Rejecting one offensive sentence must
     -- withhold the sentence, not erase a legitimate litter report from the map.
-    update public.reports set note_status = new_verdict where id = job.subject_id;
+    update mo.reports set note_status = new_verdict where id = job.subject_id;
   end if;
 end;
 $$;
 
-revoke all on function public.admin_decide_moderation(uuid, moderation_status, text) from public, anon;
-grant execute on function public.admin_decide_moderation(uuid, moderation_status, text) to authenticated;
+revoke all on function mo.admin_decide_moderation(uuid, moderation_status, text) from public, anon;
+grant execute on function mo.admin_decide_moderation(uuid, moderation_status, text) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- How full is the queue
 -- ---------------------------------------------------------------------------
 
-create or replace function public.admin_queue_size()
+create or replace function mo.admin_queue_size()
 returns bigint
 language plpgsql
 stable
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
 begin
-  if not public.is_admin() then
+  if not mo.is_admin() then
     raise exception 'only an admin may read the moderation queue';
   end if;
   return (
-    select count(*) from public.moderation_jobs
+    select count(*) from mo.moderation_jobs
     where verdict is null
       and (
         status = 'done'
@@ -205,8 +220,8 @@ begin
 end;
 $$;
 
-revoke all on function public.admin_queue_size() from public, anon;
-grant execute on function public.admin_queue_size() to authenticated;
+revoke all on function mo.admin_queue_size() from public, anon;
+grant execute on function mo.admin_queue_size() to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- A complaint puts something back in front of a person
@@ -217,41 +232,66 @@ grant execute on function public.admin_queue_size() to authenticated;
 -- of people could report a comment while it stayed live for good.
 --
 -- Clearing the verdict is what puts an item back in the queue -- the same
--- condition admin_moderation_queue selects on. Re-flagging something already
--- waiting is harmless: the unique constraint on flags stops one person doing it
--- twice, and the upsert simply refreshes the reason.
-create or replace function public.flag_reopens_review()
+-- condition admin_moderation_queue selects on.
+--
+-- Re-flagging is refused, not refreshed. This used to say "the upsert simply
+-- refreshes the reason"; there is no upsert — the app does a plain `.insert()`
+-- into mo.flags, and the unique constraint on
+-- (subject_type, subject_id, flagger_id) makes a second flag from the same
+-- person a duplicate-key error.
+--
+-- One person, one complaint, which is right. But it reaches the browser as a
+-- Postgres error string, so `plainWords` needs a rule for it or somebody is
+-- told "something went wrong, please try again" about an action that cannot
+-- ever succeed. The same is true of a duplicate vote and of voting on your own
+-- report.
+create or replace function mo.flag_reopens_review()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
 begin
-  insert into public.moderation_jobs (subject_type, subject_id, status, verdict, reason)
-  values (new.subject_type, new.subject_id, 'done', null, 'people reported this')
-  on conflict (subject_type, subject_id) do update
+  -- UPDATE, not an upsert, and that is the fix to a real hole.
+  --
+  -- Only pull back something the machines have already finished with.
+  --
+  -- Resetting a job that is still pending or in progress would let anyone shove
+  -- items straight past tiers 2 and 3 into the human queue -- and the ids of
+  -- the whole unreviewed backlog are public, because the UI needs them to show
+  -- "being checked" placeholders. A flag on a job still in the machine queue is
+  -- not lost: record_moderation_verdict below refuses to publish anything
+  -- carrying an unresolved complaint, and escalates it instead.
+  --
+  -- This used to be `insert ... on conflict do update ... where status = 'done'`,
+  -- and the guard only ever applied to the update branch. With no existing job
+  -- the INSERT ran unconditionally and put a `status = 'done', verdict = null`
+  -- row straight into the human queue. That was reachable: a report whose note
+  -- is whitespace gets no job at all (enqueue_moderation returns early), while
+  -- validate_flag_subject accepts any note that is not null and nothing stops
+  -- you flagging your own report. So a whitespace note plus a self-flag
+  -- manufactured an admin queue item with blank text, as often as the report
+  -- rate limit allowed.
+  --
+  -- An UPDATE cannot do that: no job, nothing to reopen. Which is also the
+  -- right answer on the merits -- there is no text to review.
+  update mo.moderation_jobs
      set status     = 'done',
          verdict    = null,
          reason     = 'people reported this',
          locked_at  = null,
          locked_by  = null,
          updated_at = now()
-   -- Only pull back something the machines have already finished with.
-   --
-   -- Resetting a job that is still pending or in progress would let anyone
-   -- shove items straight past tiers 2 and 3 into the human queue -- and the
-   -- ids of the whole unreviewed backlog are public, because the UI needs them
-   -- to show "being checked" placeholders. A flag on a job still in the machine
-   -- queue is not lost: record_moderation_verdict below refuses to publish
-   -- anything carrying an unresolved complaint, and escalates it instead.
-   where public.moderation_jobs.status = 'done';
+   where subject_type = new.subject_type
+     and subject_id   = new.subject_id
+     and status       = 'done';
   return null;
 end;
 $$;
 
 create trigger flag_reopens_review
-  after insert on public.flags
-  for each row execute function public.flag_reopens_review();
+  after insert on mo.flags
+  for each row execute function mo.flag_reopens_review();
 
 -- Anything enough people complain about is withheld again while it waits.
 --
@@ -259,17 +299,30 @@ create trigger flag_reopens_review
 -- and unpublish every approved photo one insert at a time. A single flag still
 -- puts the item in front of an admin (above); it takes a second, independent
 -- person to actually take the content down in the meantime.
-create or replace function public.flag_withholds_content()
+-- One path here produces content that stays pending forever.
+--
+-- A report whose note is whitespace gets no moderation job: enqueue_moderation
+-- returns early, and default_note_status has already set note_status to
+-- 'approved'. But validate_flag_subject accepts any note that is not null, so
+-- that report can be flagged — and this function then sets note_status back to
+-- 'pending' with no job for anyone to rule on, and flag_reopens_review only
+-- ever updates a job that already exists.
+--
+-- The note is whitespace, so nothing of value is withheld and the pin stays on
+-- the map either way. It is recorded because it is the only way to reach
+-- permanently-pending content that admin_moderation_queue cannot see, and that
+-- is worth knowing before adding a "why is this still pending?" screen.
+create or replace function mo.flag_withholds_content()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
 declare
   complaints integer;
 begin
   select count(*) into complaints
-    from public.flags
+    from mo.flags
    where subject_type = new.subject_type
      and subject_id = new.subject_id
      -- Only complaints an admin has not already ruled on. Otherwise a decided
@@ -282,16 +335,16 @@ begin
   end if;
 
   if new.subject_type = 'comment' then
-    update public.comments set moderation_status = 'pending'
+    update mo.comments set moderation_status = 'pending'
      where id = new.subject_id and moderation_status = 'approved';
   elsif new.subject_type = 'photo' then
-    update public.report_photos set moderation_status = 'pending'
+    update mo.report_photos set moderation_status = 'pending'
      where id = new.subject_id and moderation_status = 'approved';
   elsif new.subject_type = 'note' then
     -- `and note is not null` matters: a report with no note has note_status
     -- 'approved' to satisfy note_status_matches_note, and setting it back to
     -- 'pending' would violate that constraint and roll the whole flag back.
-    update public.reports set note_status = 'pending'
+    update mo.reports set note_status = 'pending'
      where id = new.subject_id and note_status = 'approved' and note is not null;
   end if;
   return null;
@@ -299,8 +352,8 @@ end;
 $$;
 
 create trigger flag_withholds_content
-  after insert on public.flags
-  for each row execute function public.flag_withholds_content();
+  after insert on mo.flags
+  for each row execute function mo.flag_withholds_content();
 
 -- ---------------------------------------------------------------------------
 -- Flags cannot be used as a battering ram
@@ -310,24 +363,24 @@ create trigger flag_withholds_content
 -- check, any signed-in account could insert flags for invented ids and, through
 -- flag_reopens_review (SECURITY DEFINER), fill moderation_jobs -- a table no
 -- browser role is granted at all -- with unbounded junk.
-create or replace function public.validate_flag_subject()
+create or replace function mo.validate_flag_subject()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
 begin
   if new.subject_type = 'comment' then
-    if not exists (select 1 from public.comments where id = new.subject_id) then
+    if not exists (select 1 from mo.comments where id = new.subject_id) then
       raise exception 'no such comment';
     end if;
   elsif new.subject_type = 'photo' then
-    if not exists (select 1 from public.report_photos where id = new.subject_id) then
+    if not exists (select 1 from mo.report_photos where id = new.subject_id) then
       raise exception 'no such photo';
     end if;
   elsif new.subject_type = 'note' then
     if not exists (
-      select 1 from public.reports
+      select 1 from mo.reports
       where id = new.subject_id and note is not null
     ) then
       raise exception 'no such note';
@@ -338,32 +391,54 @@ end;
 $$;
 
 create trigger validate_flag_subject
-  before insert on public.flags
-  for each row execute function public.validate_flag_subject();
+  before insert on mo.flags
+  for each row execute function mo.validate_flag_subject();
 
 -- The other tables are rate limited; without the same here, one account can
 -- still generate unlimited review work even if it cannot take content down.
-create or replace function public.enforce_flag_rate_limit()
+--
+-- AFTER ... FOR EACH STATEMENT, over a transition table, for the reason spelled
+-- out above enforce_upload_grant_rate_limit in 0006: a row-level BEFORE trigger
+-- cannot see the other rows of its own statement, and PostgREST posts a JSON
+-- array as one statement. In the row form this limit was decorative -- one
+-- request carrying thousands of flags across distinct subjects passed every
+-- invocation, which is exactly the unlimited review work the comment above says
+-- it exists to stop. Counted after the statement the new rows are in the total,
+-- so the test is `> 20` rather than `>= 20`.
+create or replace function mo.enforce_flag_rate_limit()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
+declare
+  flagger uuid;
+  offender uuid;
 begin
-  if (
-    select count(*) from public.flags
-    where flagger_id = new.flagger_id
-      and created_at > now() - interval '1 hour'
-  ) >= 20 then
+  for flagger in select distinct flagger_id from new_rows loop
+    perform pg_advisory_xact_lock(hashtext('flag:' || flagger::text));
+  end loop;
+
+  select n.flagger_id into offender
+    from (select distinct flagger_id from new_rows) n
+   where (
+     select count(*) from mo.flags f
+      where f.flagger_id = n.flagger_id
+        and f.created_at > now() - interval '1 hour'
+   ) > 20
+   limit 1;
+
+  if offender is not null then
     raise exception 'too many reports in the last hour; please slow down';
   end if;
-  return new;
+  return null;
 end;
 $$;
 
 create trigger enforce_flag_rate_limit
-  before insert on public.flags
-  for each row execute function public.enforce_flag_rate_limit();
+  after insert on mo.flags
+  referencing new table as new_rows
+  for each statement execute function mo.enforce_flag_rate_limit();
 
 -- ---------------------------------------------------------------------------
 -- Deleted content leaves nothing behind
@@ -374,11 +449,11 @@ create trigger enforce_flag_rate_limit
 -- without this a deleted subject leaves its job behind: the worker claims it,
 -- finds nothing, escalates it, and it sits in the human queue forever reading
 -- "This content is no longer available" with buttons that update no rows.
-create or replace function public.cleanup_moderation_for_deleted()
+create or replace function mo.cleanup_moderation_for_deleted()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = mo, public
 as $$
 declare
   kind subject_type;
@@ -389,9 +464,9 @@ begin
             else 'note'::subject_type
           end;
 
-  delete from public.moderation_jobs
+  delete from mo.moderation_jobs
    where subject_type = kind and subject_id = old.id;
-  delete from public.flags
+  delete from mo.flags
    where subject_type = kind and subject_id = old.id;
 
   -- Nothing extra is needed for a report's photos and comments: Postgres does
@@ -403,13 +478,31 @@ end;
 $$;
 
 create trigger cleanup_moderation_on_report_delete
-  before delete on public.reports
-  for each row execute function public.cleanup_moderation_for_deleted();
+  before delete on mo.reports
+  for each row execute function mo.cleanup_moderation_for_deleted();
 
 create trigger cleanup_moderation_on_photo_delete
-  after delete on public.report_photos
-  for each row execute function public.cleanup_moderation_for_deleted();
+  after delete on mo.report_photos
+  for each row execute function mo.cleanup_moderation_for_deleted();
 
 create trigger cleanup_moderation_on_comment_delete
-  after delete on public.comments
-  for each row execute function public.cleanup_moderation_for_deleted();
+  after delete on mo.comments
+  for each row execute function mo.cleanup_moderation_for_deleted();
+
+-- ---------------------------------------------------------------------------
+-- Put the session back
+-- ---------------------------------------------------------------------------
+--
+-- `set search_path` at the top of this file is session-scoped, not
+-- transaction-scoped: a plain SET survives the commit. These migrations are
+-- meant to be renumbered into the wearechintu project and applied by that
+-- project's CLI, which uses ONE connection for the whole run -- so without this
+-- line the search path stays `mo, public` for every marketplace migration
+-- applied after MO's, and the next unqualified `create table foo` over there
+-- lands in `mo`.
+--
+-- Nothing breaks today, because all nine of chintu's migrations qualify with
+-- `public.`. That is not a guarantee about the tenth. Leaving a session
+-- modified for somebody else's code is the same reach outside MO that the
+-- `alter default privileges in schema public` statement was removed for.
+reset search_path;

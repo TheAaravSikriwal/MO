@@ -1,7 +1,9 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { createClient } from '@supabase/supabase-js'
+import { MO_SCHEMA } from './schema'
 import { cellsForPoint } from '../grid/cells'
 import { crossesAntimeridian, boundsAround, intersectBounds } from '../geo/bounds'
 import { distanceMetres } from '../geo/distance'
+import { uploadPhoto } from '../upload/uploadPhoto'
 
 /**
  * How many individual reports one viewport will return.
@@ -11,6 +13,19 @@ import { distanceMetres } from '../geo/distance'
  * street level, where far fewer than this are on screen anyway.
  */
 export const REPORT_PAGE_LIMIT = 500
+
+/**
+ * One place the client is built, so its type follows from its options.
+ *
+ * `SupabaseClient` is generic over the schema name, so annotating the field as
+ * a bare `SupabaseClient` makes it the `public`-schema type and the assignment
+ * stops compiling. Deriving the type from this function means the generics
+ * never have to be written out — or kept in step with supabase-js changing
+ * their number.
+ */
+function createMoClient(url: string, anonKey: string) {
+  return createClient(url, anonKey, { db: { schema: MO_SCHEMA } })
+}
 import type {
   CommentView,
   CurrentUser,
@@ -33,16 +48,32 @@ import type {
  * it; this is a careful draft of the wiring, and it should be exercised against
  * a real project before it is trusted.
  *
+ * The one exception is `createReport`, which has tests in
+ * `supabaseSource.createReport.test.ts`. They run against a fake client, so
+ * they prove nothing about the SQL -- but that method is the app's primary
+ * write and the only one that has to undo its own work, and its control flow
+ * is worth pinning whether or not a database exists.
+ *
  * It reads through the public_reports and public_report_photos views rather
  * than the tables, so a note or photo that has not been approved comes back as
  * null rather than as content the UI has to remember to hide.
  */
 export class SupabaseDataSource implements DataSource {
-  private readonly client: SupabaseClient
+  private readonly client: ReturnType<typeof createMoClient>
   private readonly photoBaseUrl: string
 
   constructor(url: string, anonKey: string, photoBaseUrl: string) {
-    this.client = createClient(url, anonKey)
+    // Everything MO owns lives in the `mo` schema, not `public`.
+    //
+    // MO shares the wearechintu project's database, which already has a
+    // `public.reports` table holding abuse reports against marketplace
+    // projects. Setting the schema once here is what lets every query below
+    // stay written as `.from('reports')` and still mean `mo.reports`.
+    //
+    // `mo` has to be in the project's exposed-schemas list for this to work
+    // at all (Supabase dashboard: API settings). Without it every request
+    // comes back 406 with "The schema must be one of the following".
+    this.client = createMoClient(url, anonKey)
     this.photoBaseUrl = photoBaseUrl.replace(/\/$/, '')
   }
 
@@ -52,11 +83,17 @@ export class SupabaseDataSource implements DataSource {
     const { data } = await this.client.auth.getUser()
     if (!data.user) return null
 
-    // Through the RPC, not the table. `profiles` is revoked from browser roles
-    // so nobody can enumerate admins by reading `role`; reading it directly
-    // returns "permission denied", and swallowing that error made isAdmin
-    // silently false for everyone -- including real admins, which left the
-    // review queue impossible to open.
+    // Through the RPC, because there is nothing to read. Moderators are rows
+    // in `mo.admins`, which is revoked from both browser roles and has no
+    // policy, so `is_admin()` is the only reachable answer and it tells you
+    // about yourself only.
+    //
+    // (This used to say `profiles` was revoked so nobody could read `role`.
+    // Neither half is true here: there is no role column, and the
+    // marketplace's `public.profiles` is readable by anon in this database.)
+    //
+    // Swallowing the error made isAdmin silently false for everyone --
+    // including real admins, which left the review queue impossible to open.
     const { data: isAdmin, error } = await this.client.rpc('is_admin')
     if (error) {
       console.error('[mo] could not determine admin status:', error.message)
@@ -338,6 +375,13 @@ export class SupabaseDataSource implements DataSource {
     if (!user) throw new Error('Please sign in to add a report.')
     if (report.photos.length === 0) throw new Error('Please add a photo.')
 
+    // Taken before anything is written. The upload endpoint needs it, and a
+    // missing token discovered halfway through would mean deleting a report
+    // that was only just inserted.
+    const { data: session } = await this.client.auth.getSession()
+    const accessToken = session.session?.access_token
+    if (!accessToken) throw new Error('Please sign in to add a report.')
+
     // Cells are computed here, client-side. Postgres cannot derive them without
     // the H3 extension, which is exactly why the schema stores them.
     const cells = cellsForPoint(report.lat, report.lng)
@@ -363,7 +407,7 @@ export class SupabaseDataSource implements DataSource {
     // good with nothing to show.
     try {
       for (const photo of report.photos) {
-        const storagePath = await uploadPhoto(reportId, photo)
+        const storagePath = await uploadPhoto({ reportId, file: photo, accessToken })
         const { error: photoError } = await this.client
           .from('report_photos')
           .insert({ report_id: reportId, storage_path: storagePath })
@@ -373,7 +417,20 @@ export class SupabaseDataSource implements DataSource {
       // Deleting the report also clears its moderation job, via the
       // cleanup_moderation_for_deleted trigger -- otherwise every failed
       // submission would seed a permanent orphan into the human queue.
-      await this.client.from('reports').delete().eq('id', reportId)
+      const { error: rollbackError } = await this.client
+        .from('reports')
+        .delete()
+        .eq('id', reportId)
+      if (rollbackError) {
+        // The rollback is what keeps the promise made above, so its failure is
+        // worse than the failure that triggered it: the person is told their
+        // report failed while a pin with no photo stays on the map for good.
+        // Swallowing it left that with nothing on screen and nothing in a log.
+        console.error(
+          `[mo] could not remove report ${reportId} after a failed upload:`,
+          rollbackError.message,
+        )
+      }
       throw cause
     }
 
@@ -413,9 +470,13 @@ export class SupabaseDataSource implements DataSource {
     if (rows.length === 0) return []
 
     // Names come from the profile_names RPC, which takes the ids you already
-    // hold and returns id and display_name only. Reading `profiles` directly
-    // would expose `role` and let anyone enumerate admins, and a listable view
-    // would let anyone enumerate every account.
+    // hold and returns id and display_name only.
+    //
+    // Not a privacy control, and it should not be described as one: in this
+    // database `public.profiles` is readable by anon anyway, because the
+    // marketplace grants that. It is here because it is the right shape -- one
+    // bounded call for names MO already holds ids for -- and because it does
+    // not depend on the marketplace's read policy staying open.
     const authorIds = [...new Set(rows.map((row) => String(row.author_id)))]
     const { data: profiles, error: nameError } = await this.client.rpc('profile_names', {
       ids: authorIds,
@@ -519,18 +580,4 @@ export class SupabaseDataSource implements DataSource {
     })
     if (error) throw new Error(error.message)
   }
-}
-
-/**
- * Upload a photo and return its object key.
- *
- * NOT BUILT. Photos live in Cloudflare R2, and uploading to R2 from a browser
- * needs a short-lived signed URL, which needs a small server endpoint holding
- * the R2 credentials. That endpoint does not exist yet, so this throws rather
- * than pretending to succeed and leaving a report with a broken photo row.
- */
-async function uploadPhoto(_reportId: string, _file: File): Promise<string> {
-  throw new Error(
-    'Photo upload is not connected yet. It needs the R2 signing endpoint (see supabase/README.md).',
-  )
 }

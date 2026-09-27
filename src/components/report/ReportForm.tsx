@@ -1,11 +1,11 @@
 import { useState, type FormEvent } from 'react'
 import { checkText } from '../../lib/moderation/clientGate'
+import { ALLOWED_PHOTO_TYPES, MAX_PHOTOS } from '../../lib/upload/photoLimits'
 import { plainError } from '../../lib/moderation/plainWords'
 import { screenPhotoWithModel, type PhotoScreener } from '../../lib/moderation/screenPhoto'
 import { PIN_ZOOM_THRESHOLD } from '../../lib/grid/zoomResolution'
 import type { DataSource } from '../../lib/data/types'
 
-export const MAX_PHOTOS = 3
 export const MAX_NOTE_LENGTH = 500
 
 export interface ReportFormProps {
@@ -52,24 +52,54 @@ export function ReportForm({
 
     const chosen = Array.from(files).slice(0, MAX_PHOTOS - photos.length)
     setChecking(true)
+
+    // Declared out here so the catch below can tell what was already judged
+    // from what never got looked at.
+    const accepted: File[] = []
+    const rejected: string[] = []
+    let firstMessage: string | null = null
+    let judged = 0
+
     try {
+      // Each file judged on its own, and the ones that pass are kept.
+      //
+      // Stopping at the first block used to discard the whole selection: pick
+      // two good photos and one that is too large, and none of the three were
+      // added, with a message that did not say which was at fault. Somebody
+      // then has to guess which of their photos the form disliked.
       for (const file of chosen) {
         const result = await screenPhoto(file)
+        judged += 1
         if (result.blocked) {
-          setError(result.message ?? 'That photo cannot be used.')
-          return
+          rejected.push(file.name)
+          firstMessage ??= result.message ?? 'That photo cannot be used.'
+        } else {
+          accepted.push(file)
         }
       }
-      setPhotos((current) => [...current, ...chosen].slice(0, MAX_PHOTOS))
     } catch {
-      // Tier 1 fails OPEN. Without this catch a screener that rejects escapes
-      // as an unhandled rejection: the photo is never added and no message is
-      // shown, so picking a photo appears to do nothing at all. That is
-      // fail-closed, the opposite of what this tier is for -- the server tiers
-      // are what actually protect the map.
-      setPhotos((current) => [...current, ...chosen].slice(0, MAX_PHOTOS))
+      // Tier 1 fails OPEN. Without this a screener that rejects escapes as an
+      // unhandled rejection: the photo is never added and no message is shown,
+      // so picking a photo appears to do nothing at all. That is fail-closed,
+      // the opposite of what this tier is for -- the server tiers are what
+      // actually protect the map.
+      //
+      // Only the files it never reached, though. Re-admitting `chosen` whole
+      // put back the ones the gate had positively BLOCKED a moment earlier, so
+      // a file it had just refused would be attached anyway and only stopped
+      // by the server after the report row had been written and rolled back.
+      accepted.push(...chosen.slice(judged))
     } finally {
       setChecking(false)
+    }
+
+    if (rejected.length > 0) {
+      // Name the files, so it is clear which ones did not make it. The reason
+      // is the gate's own wording, which is written for a person.
+      setError(`${rejected.join(', ')}: ${firstMessage}`)
+    }
+    if (accepted.length > 0) {
+      setPhotos((current) => [...current, ...accepted].slice(0, MAX_PHOTOS))
     }
   }
 
@@ -145,7 +175,10 @@ export function ReportForm({
         <input
           id="report-photos"
           type="file"
-          accept="image/jpeg,image/png,image/webp"
+          // Built from the shared list, not written out again. A fourth type
+          // added to photoLimits would otherwise still be filtered out by the
+          // picker, with nothing to say why.
+          accept={ALLOWED_PHOTO_TYPES.join(',')}
           multiple
           disabled={photos.length >= MAX_PHOTOS}
           onChange={(event) => void onChoosePhotos(event.target.files)}

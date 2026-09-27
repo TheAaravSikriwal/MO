@@ -1,6 +1,28 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { createClient } from '@supabase/supabase-js'
 import type { Config } from './config.js'
+import { MO_SCHEMA } from './schema.js'
 import type { Decision, ModerationJob, Subject } from './types.js'
+
+/**
+ * The client, built in one place so its type follows from its options.
+ *
+ * `SupabaseClient` is generic over the schema name, so a bare annotation means
+ * the `public`-schema type and the assignment below stops compiling. Deriving
+ * the type from this function keeps the generics out of the code entirely —
+ * and out of step-keeping when supabase-js changes how many there are.
+ */
+function createMoClient(url: string, serviceRoleKey: string) {
+  return createClient(url, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    // Everything this worker touches is in `mo`, not `public`. See schema.ts:
+    // without this, `.from('reports')` finds the marketplace's abuse-report
+    // table instead of MO's, and every RPC 404s.
+    db: { schema: MO_SCHEMA },
+  })
+}
+
+/** The shape the constructor accepts, so tests can inject a fake. */
+export type MoClient = ReturnType<typeof createMoClient>
 
 /**
  * The worker's whole relationship with the database.
@@ -10,7 +32,7 @@ import type { Decision, ModerationJob, Subject } from './types.js'
  * "copy the folder onto whichever machine has the GPU and run it" true.
  */
 export class Queue {
-  private readonly client: SupabaseClient
+  private readonly client: MoClient
   private readonly workerId: string
   private readonly photoBaseUrl: string
 
@@ -19,14 +41,11 @@ export class Queue {
    * database. They are the only thing stopping a retried job from reversing a
    * decision a person already made, and they were previously untested.
    */
-  constructor(config: Config, photoBaseUrl = '', client?: SupabaseClient) {
+  constructor(config: Config, photoBaseUrl = '', client?: MoClient) {
     // The service role key bypasses row-level security entirely. It lives here,
     // in a process on a machine you control, and must never reach a browser.
     this.client =
-      client ??
-      createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      })
+      client ?? createMoClient(config.supabaseUrl, config.supabaseServiceRoleKey)
     this.workerId = config.workerId
     this.photoBaseUrl = photoBaseUrl.replace(/\/$/, '')
   }

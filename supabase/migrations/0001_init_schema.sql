@@ -1,5 +1,22 @@
 -- MO — Milestone B schema
 --
+-- Everything MO owns lives in the `mo` schema, not in `public`.
+--
+-- MO runs as a route inside the wearechintu Next app and shares that project's
+-- Supabase database, which already has `public.reports` (abuse reports against
+-- marketplace projects) and `public.profiles`. A litter report and an abuse
+-- report are not the same thing and must not be the same table, so the whole of
+-- MO is namespaced. The client sets `db: { schema: 'mo' }`, which is why the
+-- application code still says `.from('reports')`.
+--
+-- Two consequences worth knowing before reading further:
+--   * MO does NOT create or own profiles. chintu's `handle_new_user` trigger
+--     already inserts one for every row in auth.users, so `public.profiles` is
+--     guaranteed to exist for anybody who can sign in, and MO references it.
+--   * chintu's profiles has no `role` column. MO keeps its own admin list in
+--     `mo.admins` rather than adding one, because who may review litter
+--     reports is MO's business and does not belong in the marketplace's table.
+--
 -- Design notes that matter for reading this file:
 --   * Severity is DERIVED, never chosen. There is no severity column anywhere.
 --     An area's colour comes from how many distinct people flagged it.
@@ -7,40 +24,104 @@
 --     indexed GROUP BY, with no Postgres H3 extension required.
 --   * Nothing is trusted as safe until the moderation worker has ruled on it.
 
-create extension if not exists "pgcrypto";      -- gen_random_uuid()
-create extension if not exists "postgis";       -- geography type + distance queries
+
+-- Every object below is created in, and resolves against, the `mo` schema.
+--
+-- MO shares the wearechintu project's database, which already has
+-- `public.reports` and `public.profiles`. Tables, views and functions are
+-- written out as `mo.x` so that is never in doubt. The enum types are left
+-- bare and resolved through this search path, because `moderation_status` and
+-- `subject_type` are the names of both a type and a column -- qualifying every
+-- occurrence produced `where mo.moderation_status = ...`, which is a
+-- schema-qualified column reference and not valid SQL.
+--
+-- Set per file: each migration runs in its own session, so this cannot be
+-- inherited from the one before it.
+-- `extensions` is in the path because PostGIS lives there on a default
+-- Supabase project, and `geography` below is written unqualified. 0004 already
+-- says this for its own functions; 0001 needs it too, and only appeared not to
+-- because `create extension` here runs before the schema exists and so falls
+-- back to public. On a project where PostGIS was enabled the normal way, that
+-- line is a no-op and `geography(Point, 4326)` would not resolve at all.
+set search_path = mo, public, extensions;
+
+-- `with schema extensions`, and it matters.
+--
+-- CREATE EXTENSION with no SCHEMA clause installs into the first EXISTING
+-- schema on the search path. `mo` is not created until below, so that was
+-- `public` -- meaning MO dropped PostGIS's types and its thousand-odd
+-- functions into the marketplace's schema, which is the one thing this whole
+-- refactor exists to avoid. The chintu project has no PostGIS today, so this
+-- was not a harmless no-op.
+--
+-- Not fixed by moving `create schema mo` above it either: then they would land
+-- in `mo`, and MO would own an extension the rest of the database might want.
+-- `extensions` is where Supabase puts them and where the dashboard would.
+-- `extensions` first, because `with schema extensions` aborts with
+-- `schema "extensions" does not exist` if it is absent -- and that happens
+-- before `create schema mo` below, so it takes the whole file with it.
+--
+-- It exists on every Supabase project and none of chintu's nine migrations
+-- create it, so this is a no-op there. It is here so the file does not depend
+-- on that being true, and so a bare Postgres can run it.
+create schema if not exists extensions;
+
+create extension if not exists "pgcrypto" with schema extensions;  -- gen_random_uuid()
+create extension if not exists "postgis"  with schema extensions;  -- geography + distance
 
 -- ---------------------------------------------------------------------------
 -- Types
 -- ---------------------------------------------------------------------------
 
-create type user_role         as enum ('user', 'admin');
-create type report_status     as enum ('open', 'cleaned');
-create type moderation_status as enum ('pending', 'approved', 'rejected');
-create type subject_type      as enum ('photo', 'comment', 'note');
-create type job_status        as enum ('pending', 'in_progress', 'done', 'failed');
+create schema if not exists mo;
+
+-- Every role needs this before anything inside the schema is reachable; the
+-- grants at the bottom of 0003 decide what they can actually touch.
+--
+-- `service_role` is in the list because the moderation worker uses it, and a
+-- new schema grants it nothing. Supabase's default privileges are per-schema
+-- and scoped to `public`, so none of what MO used to get for free there
+-- applies here. BYPASSRLS is not a grant: without this the worker fails on its
+-- first statement with "permission denied for schema mo", and the symptom is
+-- that no photo or note is ever reviewed.
+grant usage on schema mo to anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
--- profiles
+-- Types
 -- ---------------------------------------------------------------------------
 
-create table profiles (
-  id           uuid primary key references auth.users (id) on delete cascade,
-  display_name text check (char_length(display_name) between 1 and 60),
-  role         user_role   not null default 'user',
-  created_at   timestamptz not null default now()
+-- No `user_role`. MO has exactly one privileged role and it is a row in
+-- mo.admins, not a column on somebody else's table.
+create type mo.report_status     as enum ('open', 'cleaned');
+create type mo.moderation_status as enum ('pending', 'approved', 'rejected');
+create type mo.subject_type      as enum ('photo', 'comment', 'note');
+create type mo.job_status        as enum ('pending', 'in_progress', 'done', 'failed');
+
+-- ---------------------------------------------------------------------------
+-- admins  --  who may review flagged content
+-- ---------------------------------------------------------------------------
+--
+-- A table rather than a column on public.profiles, for two reasons. Adding
+-- `role` to chintu's profiles would mean MO's moderation model lived in the
+-- marketplace's schema, where the next person to read it has no idea why. And
+-- a separate table can be revoked outright from browser roles, so the admin
+-- list is not merely unreadable by policy but ungranted -- nobody can
+-- enumerate who moderates the map.
+--
+-- There is no way to create the first admin from inside the app, by design.
+-- The bootstrap snippet is at the bottom of 0004.
+create table mo.admins (
+  user_id    uuid primary key references public.profiles (id) on delete cascade,
+  granted_at timestamptz not null default now()
 );
-
-comment on column profiles.role is
-  'Escalation to admin is blocked by the guard_profile_role_change trigger.';
 
 -- ---------------------------------------------------------------------------
 -- reports
 -- ---------------------------------------------------------------------------
 
-create table reports (
+create table mo.reports (
   id                uuid primary key default gen_random_uuid(),
-  reporter_id       uuid not null references profiles (id) on delete cascade,
+  reporter_id       uuid not null references public.profiles (id) on delete cascade,
 
   lat               double precision not null check (lat between -90 and 90),
   lng               double precision not null check (lng between -180 and 180),
@@ -66,12 +147,25 @@ create table reports (
   note              text check (char_length(note) <= 500),
 
   status            report_status     not null default 'open',
-  cleaned_by        uuid references profiles (id) on delete set null,
+  cleaned_by        uuid references public.profiles (id) on delete set null,
   cleaned_at        timestamptz,
 
   -- The PIN's own visibility. A location with litter on it is not itself
-  -- objectionable, so a report is visible the moment it is made; only an admin
-  -- ever rejects the row.
+  -- objectionable, so a report is visible the moment it is made.
+  --
+  -- NOTHING WRITES THIS. The comment used to say "only an admin ever rejects
+  -- the row", and no code path does: `record_moderation_verdict` and
+  -- `admin_decide_moderation` write photo and comment statuses and the report's
+  -- `note_status`, never this column, and the moderation subject types are
+  -- photo, comment and note — there is no pin subject. So in practice this is
+  -- always 'approved', `reports_select_visible` reduces to `using (true)`, and
+  -- the author-sees-own-rejected branch of `mo.public_reports` is unreachable.
+  --
+  -- It matters because a spam or malicious pin keeps contributing weight to the
+  -- map forever: `reports_rollup` filters on `moderation_status = 'approved'`,
+  -- and that is the only value this can hold. Rejecting the photo and the note
+  -- withholds the content and leaves the coloured cell. Removing the pin is a
+  -- SQL-editor job today. Recorded in HANDOFF.md under what is not done.
   moderation_status moderation_status not null default 'approved',
   -- The NOTE's visibility, judged separately. Free text somebody attached to a
   -- place is exactly what needs review, and withholding it must not take the
@@ -96,25 +190,25 @@ create table reports (
 
 -- One index per resolution: the rollup groups on exactly one of these, chosen
 -- by zoom level. Partial on approved, since nothing else contributes weight.
-create index reports_cell_r1_idx  on reports (cell_r1)  where moderation_status = 'approved';
-create index reports_cell_r3_idx  on reports (cell_r3)  where moderation_status = 'approved';
-create index reports_cell_r5_idx  on reports (cell_r5)  where moderation_status = 'approved';
-create index reports_cell_r7_idx  on reports (cell_r7)  where moderation_status = 'approved';
-create index reports_cell_r9_idx  on reports (cell_r9)  where moderation_status = 'approved';
-create index reports_cell_r12_idx on reports (cell_r12) where moderation_status = 'approved';
+create index reports_cell_r1_idx  on mo.reports (cell_r1)  where moderation_status = 'approved';
+create index reports_cell_r3_idx  on mo.reports (cell_r3)  where moderation_status = 'approved';
+create index reports_cell_r5_idx  on mo.reports (cell_r5)  where moderation_status = 'approved';
+create index reports_cell_r7_idx  on mo.reports (cell_r7)  where moderation_status = 'approved';
+create index reports_cell_r9_idx  on mo.reports (cell_r9)  where moderation_status = 'approved';
+create index reports_cell_r12_idx on mo.reports (cell_r12) where moderation_status = 'approved';
 
-create index reports_geom_idx        on reports using gist (geom);
-create index reports_reporter_idx    on reports (reporter_id, created_at desc);
-create index reports_open_recent_idx on reports (created_at desc)
+create index reports_geom_idx        on mo.reports using gist (geom);
+create index reports_reporter_idx    on mo.reports (reporter_id, created_at desc);
+create index reports_open_recent_idx on mo.reports (created_at desc)
   where status = 'open' and moderation_status = 'approved';
 
 -- ---------------------------------------------------------------------------
 -- report_photos
 -- ---------------------------------------------------------------------------
 
-create table report_photos (
+create table mo.report_photos (
   id                uuid primary key default gen_random_uuid(),
-  report_id         uuid not null references reports (id) on delete cascade,
+  report_id         uuid not null references mo.reports (id) on delete cascade,
   -- Object key in Cloudflare R2. Never exposed publicly until approved --
   -- see the public_report_photos view.
   storage_path      text not null check (char_length(storage_path) between 1 and 500),
@@ -122,48 +216,48 @@ create table report_photos (
   created_at        timestamptz not null default now()
 );
 
-create index report_photos_report_idx on report_photos (report_id);
+create index report_photos_report_idx on mo.report_photos (report_id);
 
 -- ---------------------------------------------------------------------------
 -- votes  --  the confirmation signal that drives severity
 -- ---------------------------------------------------------------------------
 
-create table votes (
-  report_id  uuid not null references reports (id) on delete cascade,
-  user_id    uuid not null references profiles (id) on delete cascade,
+create table mo.votes (
+  report_id  uuid not null references mo.reports (id) on delete cascade,
+  user_id    uuid not null references public.profiles (id) on delete cascade,
   created_at timestamptz not null default now(),
   -- This primary key IS the anti-stuffing control. One person, one vote.
   primary key (report_id, user_id)
 );
 
-create index votes_user_idx on votes (user_id, created_at desc);
+create index votes_user_idx on mo.votes (user_id, created_at desc);
 
 -- ---------------------------------------------------------------------------
 -- comments
 -- ---------------------------------------------------------------------------
 
-create table comments (
+create table mo.comments (
   id                uuid primary key default gen_random_uuid(),
-  report_id         uuid not null references reports (id) on delete cascade,
-  author_id         uuid not null references profiles (id) on delete cascade,
+  report_id         uuid not null references mo.reports (id) on delete cascade,
+  author_id         uuid not null references public.profiles (id) on delete cascade,
   body              text not null check (char_length(body) between 1 and 1000),
   moderation_status moderation_status not null default 'pending',
   created_at        timestamptz not null default now()
 );
 
-create index comments_report_idx on comments (report_id, created_at desc)
+create index comments_report_idx on mo.comments (report_id, created_at desc)
   where moderation_status = 'approved';
-create index comments_author_idx on comments (author_id, created_at desc);
+create index comments_author_idx on mo.comments (author_id, created_at desc);
 
 -- ---------------------------------------------------------------------------
 -- flags  --  the community "report this" button
 -- ---------------------------------------------------------------------------
 
-create table flags (
+create table mo.flags (
   id           uuid primary key default gen_random_uuid(),
   subject_type subject_type not null,
   subject_id   uuid not null,
-  flagger_id   uuid not null references profiles (id) on delete cascade,
+  flagger_id   uuid not null references public.profiles (id) on delete cascade,
   reason       text check (char_length(reason) <= 500),
   -- Set when an admin rules on the subject. Counting LIFETIME flags meant that
   -- once something had two, every new complaint immediately un-published it
@@ -173,14 +267,14 @@ create table flags (
   unique (subject_type, subject_id, flagger_id)
 );
 
-create index flags_subject_idx on flags (subject_type, subject_id)
+create index flags_subject_idx on mo.flags (subject_type, subject_id)
   where resolved_at is null;
 
 -- ---------------------------------------------------------------------------
 -- moderation_jobs  --  the swappable seam
 -- ---------------------------------------------------------------------------
 
-create table moderation_jobs (
+create table mo.moderation_jobs (
   id           uuid primary key default gen_random_uuid(),
   subject_type subject_type not null,
   subject_id   uuid not null,
@@ -200,8 +294,26 @@ create table moderation_jobs (
 );
 
 -- The worker's claim query hits exactly this.
-create index moderation_jobs_queue_idx on moderation_jobs (status, created_at)
+create index moderation_jobs_queue_idx on mo.moderation_jobs (status, created_at)
   where status in ('pending', 'failed');
 -- The admin queue: finished by the machine tiers but still needing a human.
-create index moderation_jobs_review_idx on moderation_jobs (updated_at desc)
+create index moderation_jobs_review_idx on mo.moderation_jobs (updated_at desc)
   where status = 'done' and verdict is null;
+
+-- ---------------------------------------------------------------------------
+-- Put the session back
+-- ---------------------------------------------------------------------------
+--
+-- `set search_path` at the top of this file is session-scoped, not
+-- transaction-scoped: a plain SET survives the commit. These migrations are
+-- meant to be renumbered into the wearechintu project and applied by that
+-- project's CLI, which uses ONE connection for the whole run -- so without this
+-- line the search path stays `mo, public` for every marketplace migration
+-- applied after MO's, and the next unqualified `create table foo` over there
+-- lands in `mo`.
+--
+-- Nothing breaks today, because all nine of chintu's migrations qualify with
+-- `public.`. That is not a guarantee about the tenth. Leaving a session
+-- modified for somebody else's code is the same reach outside MO that the
+-- `alter default privileges in schema public` statement was removed for.
+reset search_path;

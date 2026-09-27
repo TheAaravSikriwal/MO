@@ -5,21 +5,49 @@
 -- moderation worker has ruled on it.
 
 -- ---------------------------------------------------------------------------
--- Stop Supabase handing out everything created below
+-- Nothing is handed out by default in this schema
 -- ---------------------------------------------------------------------------
 
--- Supabase ships `alter default privileges in schema public grant all on tables
--- to anon, authenticated`. That default covers VIEWS as well as tables, and
--- ALTER DEFAULT PRIVILEGES is not retroactive -- so this has to run BEFORE
--- anything below is created.
+-- There used to be an `alter default privileges in schema public revoke all on
+-- tables from anon, authenticated` here, and it has been removed. Both halves
+-- of the reason matter.
 --
--- It was previously at the bottom of this file, which meant every view was
--- created carrying GRANT ALL to anon. The views are auto-updatable and are
--- deliberately not security_invoker, so their DML runs as the owner and is
--- exempt from RLS: an unauthenticated PATCH could flip moderation_status to
--- 'approved' and read back an unreviewed photo path, and an unauthenticated
--- DELETE could empty the database.
-alter default privileges in schema public revoke all on tables from anon, authenticated;
+-- It no longer did anything for MO. Supabase ships `alter default privileges in
+-- schema public grant all on tables to anon, authenticated`, which is what that
+-- line countered -- but default privileges are per-schema, and MO's tables and
+-- views are in `mo` now. Nothing grants anything by default in a schema this
+-- migration has just created, so there was nothing left to revoke.
+--
+-- And it reached outside MO. With no FOR ROLE clause it applied to the role
+-- running the migration, which is the same role chintu's own migrations run as
+-- -- so every table the MARKETPLACE created in `public` afterwards would have
+-- lost its default anon and authenticated grants. MO breaking the store is
+-- not a trade worth making for a statement that had stopped doing its job.
+--
+-- What protects the views is the explicit `revoke all on mo.public_* from anon,
+-- authenticated` further down, immediately before the select grants. That was
+-- always the real control; this line was belt to that braces, and the belt no
+-- longer fits.
+--
+-- The hazard it guarded against is still worth knowing: the views are
+-- auto-updatable and deliberately not security_invoker, so DML through them
+-- runs as the owner and is exempt from RLS. A stray GRANT ALL on one of them
+-- would let an unauthenticated PATCH flip moderation_status to 'approved' and
+-- read back an unreviewed photo path.
+
+-- Every object below is created in, and resolves against, the `mo` schema.
+--
+-- MO shares the wearechintu project's database, which already has
+-- `public.reports` and `public.profiles`. Tables, views and functions are
+-- written out as `mo.x` so that is never in doubt. The enum types are left
+-- bare and resolved through this search path, because `moderation_status` and
+-- `subject_type` are the names of both a type and a column -- qualifying every
+-- occurrence produced `where mo.moderation_status = ...`, which is a
+-- schema-qualified column reference and not valid SQL.
+--
+-- Set per file: each migration runs in its own session, so this cannot be
+-- inherited from the one before it.
+set search_path = mo, public;
 
 -- ---------------------------------------------------------------------------
 -- Public views
@@ -38,7 +66,7 @@ alter default privileges in schema public revoke all on tables from anon, authen
 -- rules themselves -- including the author's right to see their own rejected
 -- content, which RLS used to provide.
 
-create view public.public_reports as
+create view mo.public_reports as
 select
   r.id,
   r.reporter_id,
@@ -56,68 +84,103 @@ select
   case
     when r.note_status = 'approved'
       or r.reporter_id = auth.uid()
-      or public.is_admin()
+      or mo.is_admin()
     then r.note
     else null
   end as note,
   r.note_status,
   r.moderation_status,
   r.status,
-  r.cleaned_by,
+  -- No `cleaned_by`. It resolves to a person through mo.profile_names the
+  -- same way reporter_id does, and nothing in the app ever read it -- so it
+  -- was an identity column published to anon for no one's benefit. Who cleaned
+  -- a spot is recorded on mo.reports for the audit trail; it is not part of
+  -- the public read surface. Add it back with a consumer, and with a decision
+  -- about attribution, not before.
   r.cleaned_at,
   r.vote_count,
   r.created_at
-from public.reports r
+from mo.reports r
 where r.moderation_status <> 'rejected'
    or r.reporter_id = auth.uid()
-   or public.is_admin();
+   or mo.is_admin();
 
-create view public.public_report_photos as
+create view mo.public_report_photos as
 select
   p.id,
   p.report_id,
   -- Withheld, not merely hidden. A client-side blur is CSS: anyone can strip it
-  -- or read the URL out of the network tab. Returning null means an unreviewed
-  -- image is genuinely unreachable, while moderation_status still lets the UI
-  -- show a "being checked" placeholder.
+  -- or read the URL out of the network tab. Returning null means no unreviewed
+  -- image can be DISCOVERED through this database, while moderation_status
+  -- still lets the UI show a "being checked" placeholder.
+  --
+  -- This withholds the path, not the bytes. It said "genuinely unreachable"
+  -- while photos were going to live in Supabase storage; they live in an R2
+  -- bucket on a public hostname now, so anyone HOLDING a key can fetch the
+  -- object whatever this view returns -- and api/sign-upload hands the key to
+  -- the uploader, so they always hold their own. Keys are three UUIDs and
+  -- unguessable, and no pending or rejected path is given to anybody else. But
+  -- a rejected photo stays retrievable by whoever uploaded it, because nothing
+  -- deletes from the bucket. See HANDOFF.md under what is not done.
   case
-    when p.moderation_status = 'approved' or public.is_admin()
+    when p.moderation_status = 'approved' or mo.is_admin()
     then p.storage_path
     else null
   end as storage_path,
   p.moderation_status,
   p.created_at
-from public.report_photos p
+from mo.report_photos p
 where p.moderation_status <> 'rejected'
-   or public.is_admin()
+   or mo.is_admin()
    or exists (
-     select 1 from public.reports r
+     select 1 from mo.reports r
      where r.id = p.report_id and r.reporter_id = auth.uid()
    );
 
 -- Names are looked up BY ID, never listed.
 --
--- A plain view granted to anon let anyone GET every row and enumerate every
--- account in the database, including people who have never posted anything and
--- whose ids appear nowhere public. Callers only ever need names for author ids
--- they already hold, so the function takes those ids and returns nothing else.
-create or replace function public.profile_names(ids uuid[])
+-- The original reason for this was anti-enumeration: a plain view granted to
+-- anon would let anyone GET every row and list every account. That reason no
+-- longer applies, and saying so matters more than keeping the function looking
+-- clever. In the wearechintu database `public.profiles` is readable by anon
+-- already -- `CREATE POLICY "profiles readable" ... USING (true)` and
+-- `GRANT SELECT ... TO anon` in that project's 001 -- so anybody can list
+-- every account whatever MO does.
+--
+-- It is kept because it is still the right shape: MO asks for names it already
+-- holds ids for, in one bounded call, and does not depend on the marketplace's
+-- read policy staying open. It is not a privacy control, and nothing in MO
+-- should be written as though it were.
+-- SECURITY INVOKER, deliberately, and it used to be DEFINER.
+--
+-- This reads a table MO does not own. As definer it would keep handing names
+-- to anon even if the marketplace later tightened its own read policy or
+-- dropped `grant select on public.profiles to anon` — silently overriding a
+-- decision made by the feature that owns the data. As invoker it tracks that
+-- decision: if they close it, this stops working, which is the correct
+-- direction for a failure to go.
+create or replace function mo.profile_names(ids uuid[])
 returns table (id uuid, display_name text)
 language sql
 stable
-security definer
-set search_path = public
+set search_path = mo, public
 as $$
-  select p.id, p.display_name
+  -- `coalesce` on paper only. chintu's handle_new_user always sets
+  -- display_name -- to `raw_user_meta_data->>'name'` if there is one, and
+  -- otherwise to the email local part -- so for anybody who signed in with a
+  -- magic link the fallback never fires and this returns their email prefix.
+  -- See the note on attribution in supabase/README.md before assuming that is
+  -- acceptable.
+  select p.id, coalesce(p.display_name, p.username) as display_name
   from public.profiles p
   where p.id = any(ids)
   limit 200;
 $$;
 
-revoke all on function public.profile_names(uuid[]) from public;
-grant execute on function public.profile_names(uuid[]) to anon, authenticated;
+revoke all on function mo.profile_names(uuid[]) from public;
+grant execute on function mo.profile_names(uuid[]) to anon, authenticated;
 
-create view public.public_comments as
+create view mo.public_comments as
 select
   c.id,
   c.report_id,
@@ -125,44 +188,41 @@ select
   c.body,
   c.moderation_status,
   c.created_at
-from public.comments c
+from mo.comments c
 where c.moderation_status = 'approved'
    or c.author_id = auth.uid()
-   or public.is_admin();
+   or mo.is_admin();
 
 -- ---------------------------------------------------------------------------
 -- Enable RLS everywhere
 -- ---------------------------------------------------------------------------
 
-alter table public.profiles        enable row level security;
-alter table public.reports         enable row level security;
-alter table public.report_photos   enable row level security;
-alter table public.votes           enable row level security;
-alter table public.comments        enable row level security;
-alter table public.flags           enable row level security;
-alter table public.moderation_jobs enable row level security;
+alter table mo.admins          enable row level security;
+alter table mo.reports         enable row level security;
+alter table mo.report_photos   enable row level security;
+alter table mo.votes           enable row level security;
+alter table mo.comments        enable row level security;
+alter table mo.flags           enable row level security;
+alter table mo.moderation_jobs enable row level security;
 
 -- ---------------------------------------------------------------------------
--- profiles
+-- admins
 -- ---------------------------------------------------------------------------
 
--- Your own row only. Anything anyone else needs comes from profile_names(),
--- which returns display_name for ids you already hold and never `role`.
-create policy profiles_select_own
-  on public.profiles for select
-  to authenticated
-  using (id = auth.uid());
-
-create policy profiles_insert_self
-  on public.profiles for insert
-  to authenticated
-  with check (id = auth.uid());
-
-create policy profiles_update_self
-  on public.profiles for update
-  to authenticated
-  using (id = auth.uid() or public.is_admin())
-  with check (id = auth.uid() or public.is_admin());
+-- No policies at all, and that is the point.
+--
+-- RLS is on and no policy grants anything, so RLS denies everything: a browser
+-- role cannot read the moderator list, add itself to it, or discover whether
+-- anybody else is on it. The only reachable answer is `mo.is_admin()`, which is
+-- SECURITY DEFINER and tells you about yourself only.
+--
+-- MO's profiles table used to live here, with a trigger stopping people writing
+-- `role = 'admin'` on their own row. Profiles are chintu's now, and MO holds no
+-- column on them -- so there is nothing to guard, which is a better answer than
+-- guarding it.
+--
+-- Adding an admin is a service-role or SQL-editor action. See the bootstrap
+-- note at the bottom of 0004.
 
 -- ---------------------------------------------------------------------------
 -- reports
@@ -172,15 +232,15 @@ create policy profiles_update_self
 -- The author additionally sees their own rejected reports, so a rejection is
 -- not silent to the person it affects.
 create policy reports_select_visible
-  on public.reports for select
+  on mo.reports for select
   using (
     moderation_status <> 'rejected'
     or reporter_id = auth.uid()
-    or public.is_admin()
+    or mo.is_admin()
   );
 
 create policy reports_insert_own
-  on public.reports for insert
+  on mo.reports for insert
   to authenticated
   with check (
     reporter_id = auth.uid()
@@ -194,58 +254,62 @@ create policy reports_insert_own
 
 -- Ordinary users never UPDATE reports directly. Marking cleaned goes through
 -- the mark_report_cleaned RPC, which is narrower and auditable.
-create policy reports_update_admin
-  on public.reports for update
-  to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+
 
 create policy reports_delete_own
-  on public.reports for delete
+  on mo.reports for delete
   to authenticated
-  using (reporter_id = auth.uid() or public.is_admin());
+  using (reporter_id = auth.uid() or mo.is_admin());
 
 -- ---------------------------------------------------------------------------
 -- report_photos
 -- ---------------------------------------------------------------------------
 
+-- Unreachable today, and kept on purpose. Same for comments_select_approved
+-- below.
+--
+-- `mo.report_photos` and `mo.comments` are revoked from both browser roles and
+-- nothing re-grants SELECT, so a policy on them is never evaluated by a
+-- browser: reads go through the views, which run as owner. Every app write to
+-- these two uses a plain `.insert()` with no `.select()`, so not even
+-- `INSERT ... RETURNING` needs it. (`mo.reports` is different -- createReport
+-- does `.select('id')` -- which is why its select policy is live.)
+--
+-- 0005 deletes moderation_jobs' policies for exactly this reason, so the
+-- difference here is a decision rather than an oversight: these two carry the
+-- visibility rules for CONTENT, and the cost of being wrong is an unreviewed
+-- photo or comment becoming readable. If somebody ever adds a select grant --
+-- to debug, or by copying a line -- the rules should already be in place
+-- rather than needing to be remembered. A policy that guards nothing costs
+-- nothing; a missing one costs the thing this whole design protects.
 create policy report_photos_select_visible
-  on public.report_photos for select
+  on mo.report_photos for select
   using (
     moderation_status <> 'rejected'
-    or public.is_admin()
-    or exists (
-      select 1 from public.reports r
-      where r.id = report_id and r.reporter_id = auth.uid()
-    )
+    or mo.is_admin()
+    -- Through the function, not a subquery: `reports` is revoked from browser
+    -- roles, and a policy expression runs with the caller's privileges, so
+    -- reading r.reporter_id here would raise permission denied instead of
+    -- returning false. See owns_report in 0002.
+    or mo.owns_report(report_id)
   );
 
 create policy report_photos_insert_own_report
-  on public.report_photos for insert
+  on mo.report_photos for insert
   to authenticated
   with check (
     moderation_status = 'pending'
-    and exists (
-      select 1 from public.reports r
-      where r.id = report_id and r.reporter_id = auth.uid()
-    )
+    and mo.owns_report(report_id)
   );
 
-create policy report_photos_update_admin
-  on public.report_photos for update
-  to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+
 
 create policy report_photos_delete_own
-  on public.report_photos for delete
+  on mo.report_photos for delete
   to authenticated
   using (
-    public.is_admin()
-    or exists (
-      select 1 from public.reports r
-      where r.id = report_id and r.reporter_id = auth.uid()
-    )
+    mo.is_admin()
+    or mo.owns_report(report_id)
   );
 
 -- ---------------------------------------------------------------------------
@@ -256,32 +320,24 @@ create policy report_photos_delete_own
 -- which is what the map needs; exposing who voted for what is a privacy leak
 -- with no product benefit.
 create policy votes_select_own
-  on public.votes for select
+  on mo.votes for select
   to authenticated
-  using (user_id = auth.uid() or public.is_admin());
+  using (user_id = auth.uid() or mo.is_admin());
 
 create policy votes_insert_own
-  on public.votes for insert
+  on mo.votes for insert
   to authenticated
   with check (
     user_id = auth.uid()
     -- You cannot confirm your own report. The report already contributes its
     -- own weight of 1; letting the author vote would let one person count twice.
-    and not exists (
-      select 1 from public.reports r
-      where r.id = report_id and r.reporter_id = auth.uid()
-    )
+    and not mo.owns_report(report_id)
     -- Nothing unreviewed or already dealt with can be voted up.
-    and exists (
-      select 1 from public.reports r
-      where r.id = report_id
-        and r.moderation_status = 'approved'
-        and r.status = 'open'
-    )
+    and mo.report_accepts_votes(report_id)
   );
 
 create policy votes_delete_own
-  on public.votes for delete
+  on mo.votes for delete
   to authenticated
   using (user_id = auth.uid());
 
@@ -290,31 +346,27 @@ create policy votes_delete_own
 -- ---------------------------------------------------------------------------
 
 create policy comments_select_approved
-  on public.comments for select
+  on mo.comments for select
   using (
     moderation_status = 'approved'
     or author_id = auth.uid()
-    or public.is_admin()
+    or mo.is_admin()
   );
 
 create policy comments_insert_own
-  on public.comments for insert
+  on mo.comments for insert
   to authenticated
   with check (
     author_id = auth.uid()
     and moderation_status = 'pending'
   );
 
-create policy comments_update_admin
-  on public.comments for update
-  to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+
 
 create policy comments_delete_own
-  on public.comments for delete
+  on mo.comments for delete
   to authenticated
-  using (author_id = auth.uid() or public.is_admin());
+  using (author_id = auth.uid() or mo.is_admin());
 
 -- ---------------------------------------------------------------------------
 -- flags
@@ -323,19 +375,25 @@ create policy comments_delete_own
 -- Flags are write-mostly: you can raise one and see your own, but the pile of
 -- complaints about a given item is admin-only.
 create policy flags_select_own
-  on public.flags for select
+  on mo.flags for select
   to authenticated
-  using (flagger_id = auth.uid() or public.is_admin());
+  using (flagger_id = auth.uid() or mo.is_admin());
 
 create policy flags_insert_own
-  on public.flags for insert
+  on mo.flags for insert
   to authenticated
   with check (flagger_id = auth.uid());
 
-create policy flags_delete_admin
-  on public.flags for delete
-  to authenticated
-  using (public.is_admin());
+-- No flags_delete_admin policy.
+--
+-- There was one, and nothing could ever reach it: `mo.flags` has no delete
+-- grant for either browser role, only select and a column-scoped insert. It is
+-- unlike the two unreachable SELECT policies above, which are kept because
+-- they carry content visibility rules and the cost of missing one is an
+-- unreviewed photo becoming readable. A delete policy guards nothing that
+-- another policy does not, and `admin_decide_moderation` resolves a complaint
+-- by setting `resolved_at`, never by deleting the row -- deleting it would
+-- lose the record of who complained.
 
 -- ---------------------------------------------------------------------------
 -- moderation_jobs
@@ -355,23 +413,49 @@ create policy flags_delete_admin
 -- Policies decide rows; grants decide columns. Both are needed: a policy alone
 -- would still let an authenticated user write `role` or `moderation_status`.
 
-grant usage on schema public to anon, authenticated;
+-- No `grant usage on schema public` here. It used to be, and it is the same
+-- class of reach as the `alter default privileges in schema public` removed at
+-- the top of this file: a statement about the marketplace's schema issued from
+-- MO's migrations. Redundant on Supabase, which grants it to both browser
+-- roles already, so nothing is lost by dropping it.
+--
+-- Not because MO does not need it, though — an earlier version of this comment
+-- said `profile_names` was SECURITY DEFINER and therefore needed no usage
+-- grant, and that is wrong twice over. It is SECURITY INVOKER (see the note on
+-- the function), so a signed-out read of an author name needs `anon` to hold
+-- both `usage on schema public` and `select on public.profiles`. Both exist,
+-- and both exist because the marketplace granted them. That is a real
+-- dependency on somebody else's decisions, and it is the point of using
+-- invoker rather than something to paper over.
 
 -- REVOKE, not merely "do not grant".
 --
 -- Supabase ships `alter default privileges in schema public grant all on tables
 -- to anon, authenticated`, so every table gets SELECT the moment it is created.
--- Simply omitting a grant leaves the base tables world-readable and makes the
--- column masking in the views above decorative: `select storage_path from
--- report_photos where moderation_status = 'pending'` would hand an unreviewed
--- photo to a signed-out visitor. These lines are what actually close that.
-revoke all on public.reports         from anon, authenticated;
-revoke all on public.report_photos   from anon, authenticated;
-revoke all on public.comments        from anon, authenticated;
-revoke all on public.votes           from anon, authenticated;
-revoke all on public.flags           from anon, authenticated;
-revoke all on public.profiles        from anon, authenticated;
-revoke all on public.moderation_jobs from anon, authenticated;
+-- That was the reasoning when MO's tables were in `public`, and it is why
+-- these lines were written. In `mo` those defaults do not apply, as the note at
+-- the top of this file says -- so strictly these revokes now have nothing to
+-- undo on a fresh schema.
+--
+-- They stay for two reasons, and both are about the next person rather than
+-- about Postgres. A project CAN have default privileges set on `mo` (somebody
+-- runs `alter default privileges in schema mo ...` to make their own life
+-- easier), and then omitting a grant would be world-readable again. And an
+-- explicit revoke states the intent: these tables are not a read surface, the
+-- views are. `grant select (id) on mo.reports` below is the single exception
+-- and it is easier to see as one when the revoke is right above it.
+--
+-- The hazard they were written for: `select storage_path from report_photos
+-- where moderation_status = 'pending'` handing an unreviewed photo to a
+-- signed-out visitor, with the column masking in the views reduced to
+-- decoration.
+revoke all on mo.reports         from anon, authenticated;
+revoke all on mo.report_photos   from anon, authenticated;
+revoke all on mo.comments        from anon, authenticated;
+revoke all on mo.votes           from anon, authenticated;
+revoke all on mo.flags           from anon, authenticated;
+revoke all on mo.admins          from anon, authenticated;
+revoke all on mo.moderation_jobs from anon, authenticated;
 
 
 
@@ -380,49 +464,114 @@ revoke all on public.moderation_jobs from anon, authenticated;
 -- reviewed, which is exactly what this design exists to prevent.
 -- Explicit, in case these views were created before the default-privileges
 -- change above ever ran (an already-provisioned project, or a re-run).
-revoke all on public.public_reports       from anon, authenticated;
-revoke all on public.public_report_photos from anon, authenticated;
-revoke all on public.public_comments      from anon, authenticated;
+revoke all on mo.public_reports       from anon, authenticated;
+revoke all on mo.public_report_photos from anon, authenticated;
+revoke all on mo.public_comments      from anon, authenticated;
 
 -- SELECT only. These are read surfaces; nothing writes through them.
-grant select on public.public_reports       to anon, authenticated;
-grant select on public.public_report_photos to anon, authenticated;
-grant select on public.public_comments      to anon, authenticated;
+grant select on mo.public_reports       to anon, authenticated;
+grant select on mo.public_report_photos to anon, authenticated;
+grant select on mo.public_comments      to anon, authenticated;
 
 
-grant select on public.votes to authenticated;
-grant select on public.flags to authenticated;
+-- ---------------------------------------------------------------------------
+-- The worker
+-- ---------------------------------------------------------------------------
+--
+-- The moderation worker connects with the service role key. It writes through
+-- the RPCs in 0004, which are SECURITY DEFINER, but it reads these four
+-- directly: the queue, a photo's storage path, and the text of a note or a
+-- comment. Named one by one rather than `grant all on all tables`, so adding a
+-- table to this schema does not silently widen what the worker can reach.
+grant select on mo.moderation_jobs to service_role;
+grant select on mo.report_photos   to service_role;
+grant select on mo.reports         to service_role;
+grant select on mo.comments        to service_role;
 
--- supabase-js sends `Prefer: return=representation` after an insert, which
--- Postgres executes as INSERT ... RETURNING. That needs SELECT on the returned
--- column, so without this every report submission fails with "permission
--- denied for table reports". Exactly one column, and nothing readable.
-grant select (id) on public.reports to authenticated;
+-- One direct write, and only one: `Queue.fail()` marks a job failed without an
+-- RPC in front of it. Every other write the worker makes goes through
+-- claim/record/escalate in 0004, which are SECURITY DEFINER and so need no
+-- table privilege from the caller at all.
+--
+-- Columns named rather than a bare `grant update`, so the worker cannot reach
+-- `verdict` -- the field that records what a machine or a person decided. Its
+-- own guard (`.is('verdict', null)`) is meant to stop it overwriting a
+-- decision; this makes that guard unnecessary rather than merely correct.
+grant update (status, reason, locked_at, locked_by)
+                                   on mo.moderation_jobs to service_role;
 
-grant insert (display_name, id)       on public.profiles      to authenticated;
-grant update (display_name)           on public.profiles      to authenticated;
+grant select on mo.votes to authenticated;
+grant select on mo.flags to authenticated;
+
+-- `createReport` chains `.select('id')` onto its insert, which PostgREST sends
+-- as `Prefer: return=representation` and Postgres executes as
+-- INSERT ... RETURNING id. That needs SELECT on the returned column, so
+-- without this every report submission fails with "permission denied for table
+-- reports". Exactly one column, and nothing readable.
+--
+-- This comment used to say supabase-js sends that preference "after an insert",
+-- full stop. It does not: a bare `.insert()` asks for nothing back. The
+-- distinction matters because the wrong version implies mo.report_photos and
+-- mo.comments need select grants too — they do not, their inserts have no
+-- `.select()`, and adding the grant would open the read path this whole design
+-- exists to keep shut.
+grant select (id) on mo.reports to authenticated;
+
+-- Nothing is granted on public.profiles. It is chintu's table: its own
+-- migrations decide who may read or write it, and MO only ever reaches it
+-- through mo.profile_names(), which runs as the CALLER -- so MO's access is
+-- exactly whatever the marketplace has granted, and stops when they stop it.
 
 grant insert (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7,
               cell_r9, cell_r12, note)
-                                      on public.reports        to authenticated;
-grant delete                          on public.reports        to authenticated;
+                                      on mo.reports        to authenticated;
+grant delete                          on mo.reports        to authenticated;
 
-grant insert (report_id, storage_path) on public.report_photos to authenticated;
-grant delete                           on public.report_photos to authenticated;
+grant insert (report_id, storage_path) on mo.report_photos to authenticated;
+grant delete                           on mo.report_photos to authenticated;
 
-grant insert (report_id, user_id)      on public.votes         to authenticated;
-grant delete                           on public.votes         to authenticated;
+grant insert (report_id, user_id)      on mo.votes         to authenticated;
+grant delete                           on mo.votes         to authenticated;
 
-grant insert (report_id, author_id, body) on public.comments   to authenticated;
-grant delete                              on public.comments   to authenticated;
+grant insert (report_id, author_id, body) on mo.comments   to authenticated;
+grant delete                              on mo.comments   to authenticated;
 
 grant insert (subject_type, subject_id, flagger_id, reason)
-                                       on public.flags         to authenticated;
+                                       on mo.flags         to authenticated;
 
--- Admin-only column writes. RLS still gates these to actual admins; the grant
--- simply makes the column writable at all.
-grant update (moderation_status, note_status, status, cleaned_by, cleaned_at)
-                                       on public.reports        to authenticated;
-grant update (moderation_status)       on public.report_photos  to authenticated;
-grant update (moderation_status)       on public.comments       to authenticated;
-grant update (role)                    on public.profiles       to authenticated;
+-- No admin column writes, and no *_update_admin policies either.
+--
+-- There were both: `grant update (moderation_status, note_status, status,
+-- cleaned_by, cleaned_at) on mo.reports` and the same for moderation_status on
+-- the other two, gated by policies that checked is_admin(). Nothing in the app
+-- used them -- `decideModerationItem` calls admin_decide_moderation and
+-- `markCleaned` calls mark_report_cleaned, both SECURITY DEFINER -- and they
+-- were a way to do the wrong thing.
+--
+-- A direct PATCH would write the content's status without writing
+-- `moderation_jobs.verdict` and without setting `flags.resolved_at`, leaving
+-- the job and the content disagreeing about what was decided. That is the
+-- exact state 0004 and 0005 are built to prevent, reachable by an admin with
+-- a REST client and no intent to break anything.
+--
+-- Every legitimate write here is a definer function, so nothing needs the
+-- grant. The triggers do not either: sync_vote_count is definer, and
+-- touch_updated_at and default_note_status only modify the row being written.
+
+-- ---------------------------------------------------------------------------
+-- Put the session back
+-- ---------------------------------------------------------------------------
+--
+-- `set search_path` at the top of this file is session-scoped, not
+-- transaction-scoped: a plain SET survives the commit. These migrations are
+-- meant to be renumbered into the wearechintu project and applied by that
+-- project's CLI, which uses ONE connection for the whole run -- so without this
+-- line the search path stays `mo, public` for every marketplace migration
+-- applied after MO's, and the next unqualified `create table foo` over there
+-- lands in `mo`.
+--
+-- Nothing breaks today, because all nine of chintu's migrations qualify with
+-- `public.`. That is not a guarantee about the tenth. Leaving a session
+-- modified for somebody else's code is the same reach outside MO that the
+-- `alter default privileges in schema public` statement was removed for.
+reset search_path;

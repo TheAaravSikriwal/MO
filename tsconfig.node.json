@@ -1,0 +1,28 @@
+{
+  // The handful of files that legitimately run in node, kept in their own
+  // compilation so `@types/node`'s globals stay out of the app's.
+  //
+  // With "node" in the main config's `types`, browser code could reference
+  // `process` or `Buffer` and still typecheck, then fail at runtime in the
+  // bundle. Splitting is the only way to scope those globals: a triple-slash
+  // reference does not, because global declarations apply to a whole program.
+  //
+  // `npm run typecheck` runs both configs. Adding a file here is a decision
+  // that it will never run in a browser.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals", "@testing-library/jest-dom"]
+  },
+  // Overriding the inherited `exclude` is not optional. `extends` inherits it,
+  // and `exclude` filters whatever `include` resolves -- so with the parent's
+  // exclude list still in force, the two test files named below were dropped
+  // right back out again and this config covered only vite.config.ts. Both
+  // configs passed, so nothing went red: the two files were typechecked by
+  // neither. Check with `npx tsc -p tsconfig.node.json --listFiles`.
+  "exclude": [],
+  "include": [
+    "vite.config.ts",
+    "src/lib/db/migrations.test.ts",
+    "src/components/map/CellLayer.test.tsx"
+  ]
+}

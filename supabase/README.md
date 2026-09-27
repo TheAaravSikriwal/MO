@@ -1,6 +1,175 @@
 # Database
 
-Schema, policies and RPCs for MO. Five migrations, applied in order.
+Schema, policies and RPCs for MO. Six migrations, applied in order.
+
+## Where this goes
+
+**Into the wearechintu project's existing database, in a `mo` schema.** MO runs
+as a route inside that Next app, so it shares the database rather than having
+one of its own.
+
+That is not a tidiness preference. The marketplace side already has
+`public.reports` — abuse reports against projects — and `public.profiles`.
+A litter report and an abuse report are not the same thing and must not be the
+same table, and nothing about the collision fails loudly: MO's `create table
+reports` either hits a table full of somebody else's rows or ends up being read
+by one feature and written by the other.
+
+So everything MO owns is `mo.*`, and two things follow:
+
+1. **`mo` must be in the project's exposed-schemas list** (Supabase dashboard,
+   API settings). Until it is, every request comes back 406 with "The schema
+   must be one of the following", whatever the client sends.
+2. **MO does not own profiles.** chintu's `handle_new_user` trigger already
+   inserts a `public.profiles` row for every auth user, so MO references that
+   table and creates nothing. Its `display_name` is nullable there, so
+   `mo.profile_names()` falls back to `username`.
+
+**PostGIS has to be enabled, and NOT in `public`.** `0001` installs it `with
+schema extensions`, which is where Supabase keeps extensions and where the
+dashboard would put it. Without the clause, `create extension` lands in the
+first existing schema on the search path — `public`, because `mo` does not
+exist yet — so MO would drop PostGIS's types and its thousand-odd functions
+into the marketplace's schema. `0001` and `0004` set `search_path = mo, public, extensions` at file level,
+because those two are where PostGIS is touched at parse time — `0001` declares
+a `geography` column, and `0004`'s rollup functions are `language sql`, whose
+bodies Postgres validates at CREATE time against the session's path rather
+than the function's own SET clause. The other four set `mo, public`, which is
+all they need.
+
+**The worker needs its own grants, and reading is not enough.** It connects as
+`service_role`, which a brand-new schema gives nothing at all: Supabase's
+default privileges are scoped to `public`, and BYPASSRLS is not a grant. Four
+things together make it work, and the first three alone do not:
+
+1. `0001` grants `usage on schema mo`.
+2. `0003` grants `select` on the tables it reads directly — the queue, a
+   photo's storage path, and a note or comment's text.
+3. `0004` grants `execute` on the three worker RPCs by name, necessary because
+   revoking them from `PUBLIC` removes service_role's implicit execute too.
+4. **Those three RPCs are `security definer`.** They update `moderation_jobs`,
+   `report_photos`, `comments` and `reports`; run as the caller they would need
+   DML on all four, which service_role has not got. This is the step that was
+   missing at first, and the symptom was the whole pipeline failing on its very
+   first statement while every test stayed green.
+
+The single exception is `Queue.fail()`, which writes `moderation_jobs` without
+an RPC. `0003` grants it `update` on four named columns — deliberately not
+`verdict`, so the worker cannot overwrite a decision a machine or a person
+already made.
+
+**Sharing accounts publishes a name derived from the reporter's email address.
+Decide this before applying `0003`.**
+
+`public_reports` exposes `reporter_id` to anon, which it always did. What
+changed is what that id resolves to. The chain, all of it verifiable in the two
+repositories:
+
+1. MO signs people in with a magic link, so there is no OAuth metadata.
+2. chintu's `handle_new_user` sets, for exactly that case,
+   `display_name = split_part(NEW.email, '@', 1)` — the local part of the email
+   address — and `username` to the same thing plus four characters of the uuid.
+3. `public.profiles` is readable by anon in that project:
+   `CREATE POLICY "profiles readable" ... USING (true)` and
+   `GRANT SELECT ... TO anon`.
+4. `mo.profile_names` returns `coalesce(display_name, username)` and is granted
+   to anon.
+
+So every report and comment ends up signed with the author's email prefix, and
+any signed-out visitor can read it off the map. On MO's own database a reporter
+id resolved to nothing public at all.
+
+This is a consequence of "one project and one set of user accounts" rather than
+a defect in either project, and nothing has been applied yet, so nothing is
+exposed. It is also not a default to accept silently. The options, cheapest
+first:
+
+- **Mask the identity columns in the views rather than dropping them.** That
+  is `reporter_id` on `mo.public_reports` and `author_id` on
+  `mo.public_comments`: return them only when the row is the caller's own, or
+  the caller is an admin, and null otherwise — the same `case when` shape the
+  views already use for `note` and `storage_path`. (`cleaned_by` was a third
+  and has already been dropped outright: nothing in the app read it, so it was
+  publishing an identity for nobody's benefit.)
+
+  **Mask, do not drop.** `supabaseSource.ts` computes `viewerIsReporter` from
+  `reporter_id`, so removing the column would quietly break "this is your
+  report" in the UI instead of merely anonymising it.
+
+  Do both columns. Each resolves to the same email prefix through
+  `mo.profile_names`, so leaving either in place leaves the leak open.
+
+  And be clear what it costs: a comment's `authorName` is derived entirely from
+  `author_id`, so masking it means every comment reads as unattributed to a
+  signed-out visitor. For anonymous readers this option and the next are the
+  same thing; they differ only for signed-in ones.
+- **Stop showing author names in MO at all.** Drop `mo.profile_names`, and
+  comments are unattributed for everybody, signed in or not.
+- **Have the marketplace ask for a real display name at signup**, and treat the
+  email-derived default as a bug there rather than a constraint here.
+
+Until one of those is chosen, assume applying `0003` publishes email prefixes.
+
+**A marketplace account deletion would take litter data with it.** Six MO
+tables reference `public.profiles` with `on delete cascade`: `reports`,
+`comments`, `votes`, `flags`, `upload_grants` and `admins`. So a "delete my
+account" feature on the marketplace side — which does not exist today — would
+remove that person's reports from the map rather than merely detach them, and
+could delete the last row of `mo.admins`, which `0004` says there is no in-app
+way to recreate.
+
+`0006` already warns about one narrow consequence of that cascade (it resets
+the upload-grant counter). The broader one is the same mechanism: if account
+deletion is ever built, decide first whether a report should outlive its
+reporter. `on delete set null` on `reporter_id` would keep the map intact, and
+is the same one-word change `upload_grants.report_id` already uses for the same
+reason.
+
+**A ban on the marketplace does not reach MO.** chintu's
+`profiles.publish_tier` has a `'banned'` value and nothing in `mo` consults it,
+so a banned account can still file reports, comment, flag and request upload
+URLs. That is the honest state of "one set of user accounts": it shares
+identity, not standing.
+
+Linking them means a `mo.is_banned()` helper alongside `mo.owns_report()` —
+SECURITY DEFINER, reading `public.profiles.publish_tier`, called from the
+insert policies. Not an `exists` clause in the policies themselves: a policy
+runs with the caller's privileges, and `src/lib/db/migrations.test.ts` refuses
+any policy that selects from `public.profiles` for exactly that reason. It is a
+decision about whether the two moderation models should be joined, not an
+oversight to patch quietly.
+
+**And one consequence that runs the other way: an MO signup is a marketplace
+signup, and it arrives broken.** This is the only one of these that affects the
+marketplace rather than MO, and it is live the moment anybody signs in through
+the map.
+
+MO signs people in with a magic link, so `handle_new_user` writes their profile
+with `github_account_created_at = NULL`. The marketplace's publish gate fails
+closed on NULL (`src/app/api/projects/commit/route.js`) and answers *"Account
+too new to publish. Your GitHub account must be at least N days old."* So
+somebody whose account originated on the litter map is permanently blocked from
+publishing, and told it is because of a GitHub account they never had.
+`protect_profile_admin_fields` makes that column writable only by the service
+role, so there is no in-app remedy.
+
+The backfill the marketplace already plans for itself makes it worse in the
+other direction. The comment above that gate proposes
+`UPDATE profiles SET github_account_created_at = created_at WHERE
+github_account_created_at IS NULL`, which would date every MO account from its
+map signup and grandfather it straight through the age check — so MO's open
+magic-link sign-up quietly becomes a sign-up path into the marketplace, which
+is the thing that gate exists to prevent.
+
+Neither is MO's bug, and neither is fixable from this repo. They are what
+"one set of user accounts" means in both directions, and whoever owns the
+marketplace side needs to decide: either that gate learns about accounts with
+no GitHub history, or the two features stop sharing `auth.users`.
+
+Moderators live in `mo.admins`, not in a `role` column on `public.profiles`.
+Adding a column would have put MO's moderation model in the marketplace's
+table; a separate table can be revoked outright, so the moderator list is
+ungranted rather than merely unreadable.
 
 > **These migrations have never been run.** They were written against the design
 > spec without a live Postgres instance to test on. Everything else in this repo
@@ -13,18 +182,25 @@ Schema, policies and RPCs for MO. Five migrations, applied in order.
 | File | Contents |
 |---|---|
 | `0001_init_schema.sql` | Extensions, enums, tables, indexes |
-| `0002_functions_triggers.sql` | Vote counts, moderation queueing, rate limits, role guard, cleaned RPC |
+| `0002_functions_triggers.sql` | Vote counts, moderation queueing, rate limits, `is_admin`, cleaned RPC |
 | `0003_views_and_rls.sql` | Public views, row-level security, column grants |
 | `0004_rollup_and_worker_rpc.sql` | Map rollup, near-me, the worker's queue interface |
 | `0005_admin_queue.sql` | The admin review queue, and the triggers that make a complaint reach a person |
+| `0006_upload_grants.sql` | The record and rate limit behind every signed photo upload URL |
 
 ## Applying them
 
-Paste each file into the Supabase SQL editor in order, or with the CLI:
+**Renumber them first.** chintu's database already has `001` to `009`, and MO's
+files are `0001` to `0006`, which sort BEFORE all of them as strings. The
+Supabase CLI compares migration versions as text and will refuse them as
+out-of-order. They need to become `010_` to `015_` in that project's
+`supabase/migrations/`, which is step 4 of the plan in `HANDOFF.md`.
 
-```bash
-supabase db push
-```
+Then paste each file into the Supabase SQL editor in order. `supabase db push`
+is not an alternative from THIS repo: there is no `supabase/config.toml` here,
+so the CLI has no project to push to. Once the files live in
+`gitbuddywebsite/supabase/migrations/`, that project's CLI setup handles them
+like any other.
 
 Then create the first admin — see the bottom of `0004`. Nothing can be reviewed
 until you do, because ambiguous content escalates to a human and there is no
@@ -41,6 +217,28 @@ it from that sum, so a cleanup visibly cools the map.
 anti-stuffing control — not application logic, which can be bypassed. You also
 cannot vote on your own report; the report already contributes its own weight,
 so self-voting would let one person count twice.
+
+**Signed uploads are limited here, not in the endpoint.** `upload_grants` exists
+because `api/sign-upload` had no way to bound itself. It counted the photos
+already on the report, which sounds like a limit and is not one: that count only
+rises when the client inserts a photo row, and a caller who never inserts can
+sign and upload 8 MB in a loop forever. Recording each grant is what makes it
+countable, and the trigger on that table is what makes it enforced — the same
+reasoning as the vote primary key. The endpoint inserts with the caller's own
+token, so the policy pins `user_id` to `auth.uid()` and it cannot exempt
+itself.
+
+A grant is not proof that the endpoint issued a key: `authenticated` can insert
+one directly, because the endpoint writes with the caller's own token rather
+than a service role key. What makes it useful is that each object can be
+granted once (`upload_grants_storage_path_key`) and linked once (`linked_at`),
+and that the insert policy pins the key to the caller's own prefix.
+
+The grant deliberately outlives the report: `report_id` is nullable with
+`on delete set null`, because the trigger counts live rows and a reporter may
+delete their own report. Cascading would have made the limit resettable by the
+person it limits — sign thirty, upload, delete, repeat — and a cascade runs
+without consulting RLS, so no policy would have stopped it.
 
 **Six cells per report.** `cell_r1` through `cell_r12` are H3 ancestors of the
 same point, computed client-side. Zooming out changes which column the rollup
@@ -60,9 +258,20 @@ its photo path is withheld until approved.
 That second point is a deliberate departure from the spec. The spec called for
 the client to blur a pending photo — but a blur is CSS, and anyone can strip it
 or read the URL out of the network tab. `public_report_photos` returns `null`
-for `storage_path` until a photo is approved, so an unreviewed image is
-genuinely unreachable rather than merely hidden. `moderation_status` still comes
-through, so the UI knows to show a "not reviewed yet" placeholder.
+for `storage_path` until a photo is approved, so nobody can *discover* an
+unreviewed image through this database. `moderation_status` still comes through,
+so the UI knows to show a "not reviewed yet" placeholder.
+
+**This withholds the path, not the bytes.** An earlier version of this file said
+an unreviewed image was "genuinely unreachable", and that was true when photos
+were going to live in Supabase storage. They live in an R2 bucket served from a
+public Cloudflare hostname now, so anyone *holding* a key can fetch the object
+whatever this view says — and `api/sign-upload` hands the key to the uploader, so
+they always hold their own. The keys are unguessable (three UUIDs), the bucket
+must not be listable, and nobody else is given a pending or rejected path. But a
+photo a human rejected stays retrievable by whoever uploaded it, because nothing
+deletes from the bucket. That is recorded in `HANDOFF.md` under what is not
+done; it is not fixed.
 
 **Read through the views, because there is no other way.** `public_reports`,
 `public_report_photos` and `public_comments` are the ONLY public read path.
@@ -96,11 +305,19 @@ answering, each of which should FAIL:
 
 - Can an anonymous visitor insert a report?
 - Can user A delete user B's report, or edit their comment?
-- Can a user set their own `role` to `admin`?
+- Can a user add themselves to `mo.admins`? (There is no `role` column to set
+  any more; the moderator list is its own table.)
 - Can a user insert a report with `moderation_status` already `approved`?
 - Can a user vote twice on one report, or vote on their own?
 - Can a non-admin read `moderation_jobs`?
 - Does `storage_path` come back non-null for a pending photo?
+- Can a user read `upload_grants`, or insert one against somebody else's
+  report, or with a `user_id` that is not their own?
+- Can a user read `mo.admins`, or add themselves to it? Both must fail: the
+  table is revoked from both browser roles and has no policy at all.
+- Does anything in `mo` resolve to a table in `public`? `mo.reports` and
+  `public.reports` are different tables owned by different features, and the
+  only thing keeping them apart is the schema.
 
 And these should SUCCEED:
 
@@ -108,8 +325,12 @@ And these should SUCCEED:
 - Can an author see their own rejected report?
 - Does `vote_count` match the row count in `votes` after inserts and deletes?
 - Does `reports_rollup` return nothing for a report once it is cleaned?
-- Does creating a report still work? (`INSERT ... RETURNING id` needs the
-  column grant above; without it every submission fails.)
+- Does creating a report still work? `createReport` chains `.select('id')`
+  onto its insert, which makes it `INSERT ... RETURNING id` and needs
+  `grant select (id) on mo.reports`. Without it every submission fails. Note
+  this is not something supabase-js does by default: a bare `.insert()` asks
+  for nothing back, which is why `report_photos` and `comments` need no select
+  grant at all.
 - Does a report with no note become visible immediately, rather than waiting
   for a moderation job that is never created?
 - Does flagging an approved comment put it back in the admin queue, while
@@ -117,3 +338,33 @@ And these should SUCCEED:
 - Does a machine verdict on a flagged item escalate instead of publishing?
 - Does deleting a report clear its moderation jobs and flags?
 - Does rejecting a note leave the pin on the map?
+- Does the 31st `upload_grants` insert in an hour fail, and the 30th succeed?
+- Does ONE insert of a 40-row array fail? This is the check that matters and the
+  one a row-by-row test cannot see: a row-level BEFORE trigger cannot see the
+  other rows of its own statement, and PostgREST posts an array as one
+  statement. Same question for `report_photos` and its three-photo limit.
+- Do thirty simultaneous inserts still stop at thirty? The trigger takes an
+  advisory lock for this; without it every concurrent statement reads the same
+  count and passes.
+- Does inserting a `report_photos` row whose `storage_path` has no matching
+  grant fail? And one naming an object already linked elsewhere?
+- After deleting your own photo row, does re-inserting the same `storage_path`
+  fail? It must: the grant is spent, and re-linking would put an image an admin
+  rejected back in front of the machine tiers for a fresh verdict.
+- Does minting a SECOND `upload_grants` row for a `storage_path` that already
+  has one fail? That index is what stops a spent grant being replaced.
+- Does a `storage_path` with a query string, a `..` segment, a second extension
+  or uppercase hex fail the shape `check` on BOTH tables? Each of those is a
+  second spelling of an object that is already linked, and the unique indexes
+  compare literal strings, so they cannot see it.
+- Did `0006` apply at all? It adds the shape rule to `report_photos` with
+  `add constraint`, not by altering the column type — `public_report_photos`
+  selects that column, and Postgres refuses to alter the type of a column a
+  view depends on. Because the file runs as one transaction, getting that wrong
+  rolls back the rate limit too, and the only symptom is uploads answering
+  "not set up".
+- Does an `upload_grants` insert whose `storage_path` is outside
+  `<your-id>/<report-id>/` fail?
+- Does deleting the report leave its upload grants in place, with `report_id`
+  set to null? A cascade there would let the person the limit applies to reset
+  it by deleting their own report, and would do it without consulting RLS.
