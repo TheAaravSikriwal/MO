@@ -1,4 +1,5 @@
 import { FakeDataSource } from './fakeSource'
+import { largeDemoCountFromSearch, largeDemoReports } from './largeDemo'
 import { SupabaseDataSource } from './supabaseSource'
 import type { DataSource } from './types'
 
@@ -30,9 +31,22 @@ export function createDataSource(env: Record<string, string | undefined>): DataS
   return { source: createDemoSource(), demo: true }
 }
 
-/** A handful of reports around central London, purely so the map is not empty. */
-export function createDemoSource(): FakeDataSource {
+/**
+ * A handful of reports around central London, purely so the map is not empty.
+ * With `?demo=large` in the address, thousands around the world instead, to
+ * see how the map looks at scale (see largeDemo.ts).
+ */
+export function createDemoSource(
+  search: string = globalThis.location?.search ?? '',
+): FakeDataSource {
   const source = new FakeDataSource(null)
+  const large = largeDemoCountFromSearch(search)
+  if (large !== null) {
+    for (const report of largeDemoReports(large)) {
+      source.seed({ ...report, noteStatus: 'approved' })
+    }
+    return source
+  }
   const seeds: Array<[string, number, number, string, number, 'open' | 'cleaned']> = [
     ['demo-1', 51.5074, -0.1278, 'Bags of rubbish by the bus stop', 4, 'open'],
     ['demo-2', 51.5081, -0.1265, 'Broken glass along the path', 1, 'open'],

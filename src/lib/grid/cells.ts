@@ -41,7 +41,29 @@ export function cellsForPoint(lat: number, lng: number): CellColumns {
   return columns
 }
 
-/** The cell's outline as [lat, lng] pairs, ready for a Leaflet polygon. */
+/** The cell's outline as [lat, lng] pairs, exactly as h3 gives it. */
 export function cellBoundary(cell: string): Array<[number, number]> {
   return cellToBoundary(cell) as Array<[number, number]>
+}
+
+type Ring = Array<[number, number]>
+
+/**
+ * What to hand a Leaflet polygon to draw the cell.
+ *
+ * Usually just the outline. But a cell that straddles the 180th meridian comes
+ * back from h3 with corners on both sides, at about 179 and -179, and Leaflet
+ * joins them the long way round: one hexagon near Fiji was drawn as a band
+ * across the whole world. So that cell is drawn twice, whole, once each side of
+ * the line -- Leaflet takes several polygons as one shape. Moving it to one
+ * side only would part it from the pins inside it on the other, which are
+ * drawn at their own longitude.
+ */
+export function cellPositions(cell: string): Ring | Ring[][] {
+  const ring = cellBoundary(cell)
+  const lngs = ring.map(([, lng]) => lng)
+  if (Math.max(...lngs) - Math.min(...lngs) <= 180) return ring
+  const east: Ring = ring.map(([lat, lng]) => [lat, lng < 0 ? lng + 360 : lng])
+  const west: Ring = ring.map(([lat, lng]) => [lat, lng > 0 ? lng - 360 : lng])
+  return [[east], [west]]
 }

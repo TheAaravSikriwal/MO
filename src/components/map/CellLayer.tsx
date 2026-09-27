@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Polygon } from 'react-leaflet'
-import { cellBoundary } from '../../lib/grid/cells'
+import { cellPositions } from '../../lib/grid/cells'
 import { colorForT } from '../../lib/color/ramp'
 import type { NormalisedCell } from '../../lib/severity/percentile'
 
@@ -209,7 +209,7 @@ export function CellLayer({
           {layer.cells.map((cell) => (
             <Polygon
               key={cell.cell}
-              positions={cellBoundary(cell.cell)}
+              positions={cellPositions(cell.cell)}
               // Top level, NOT inside pathOptions.
               //
               // react-leaflet hands the constructor `{pathOptions, pane, ...}`,
