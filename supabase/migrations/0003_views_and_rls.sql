@@ -212,6 +212,7 @@ where c.moderation_status = 'approved'
 
 alter table mo.admins          enable row level security;
 alter table mo.display_names   enable row level security;
+alter table mo.post_log        enable row level security;
 alter table mo.reports         enable row level security;
 alter table mo.report_photos   enable row level security;
 alter table mo.votes           enable row level security;
@@ -494,6 +495,9 @@ revoke all on mo.votes           from anon, authenticated;
 revoke all on mo.flags           from anon, authenticated;
 revoke all on mo.admins          from anon, authenticated;
 revoke all on mo.display_names   from anon, authenticated;
+-- No policy either: written only by the rate-limit triggers, which run as
+-- owner. A person who could delete their own rows here could reset the limit.
+revoke all on mo.post_log        from anon, authenticated;
 revoke all on mo.moderation_jobs from anon, authenticated;
 
 

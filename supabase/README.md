@@ -340,13 +340,13 @@ And these should SUCCEED:
 - Does deleting a report clear its moderation jobs and flags?
 - Does rejecting a note leave the pin on the map?
 - Does the 31st `upload_grants` insert in an hour fail, and the 30th succeed?
-- Does ONE insert of a 40-row array fail? This is the check that matters and the
-  one a row-by-row test cannot see: a row-level BEFORE trigger cannot see the
-  other rows of its own statement, and PostgREST posts an array as one
-  statement. Same question for `report_photos` and its three-photo limit.
-- Do thirty simultaneous inserts still stop at thirty? The trigger takes an
-  advisory lock for this; without it every concurrent statement reads the same
-  count and passes.
+- Does ONE insert of a 40-row array fail? It should, and PGlite says it does
+  for reports and comments. (An earlier version of this line said a row-level
+  trigger could not see the other rows of its own statement; that is false.)
+- Do thirty simultaneous inserts still stop at thirty? This is the check that
+  matters, and the one no test here can make: PGlite has one connection. Every
+  counting trigger takes an advisory lock for it; without that, concurrent
+  statements each read the same count and all pass.
 - Does inserting a `report_photos` row whose `storage_path` has no matching
   grant fail? And one naming an object already linked elsewhere?
 - After deleting your own photo row, does re-inserting the same `storage_path`

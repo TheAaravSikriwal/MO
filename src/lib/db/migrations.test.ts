@@ -43,6 +43,7 @@ const allCode = stripComments(Object.values(sql).join('\n'))
 const TABLES = [
   'admins',
   'display_names',
+  'post_log',
   'reports',
   'report_photos',
   'votes',
@@ -1001,6 +1002,8 @@ describe('migrations — rate limits exist for every table a person can write to
 
   // A limit on the wrong table is no limit at all.
   it.each([
+    ['enforce_report_rate_limit', 'reports'],
+    ['enforce_comment_rate_limit', 'comments'],
     ['enforce_upload_grant_rate_limit', 'upload_grants'],
     ['enforce_photo_limit', 'report_photos'],
     ['enforce_flag_rate_limit', 'flags'],
@@ -1008,23 +1011,27 @@ describe('migrations — rate limits exist for every table a person can write to
     expect(triggerFor(name)).toContain('on mo.' + table)
   })
 
-  // A count-based limit has to be checked once per STATEMENT, over a
-  // transition table -- not once per row. A BEFORE ROW trigger cannot see the
-  // other rows of its own statement: they carry the current command id, so the
-  // count treats them as not yet inserted. PostgREST inserts a JSON array as
-  // one statement, and `authenticated` can insert into both of these tables,
-  // so in the row form one request carrying ten thousand rows had every
-  // invocation read the same pre-statement count and every row pass.
-  it.each(['enforce_upload_grant_rate_limit', 'enforce_photo_limit', 'enforce_flag_rate_limit'])(
-    '%s counts once per statement, over a transition table',
-    (name) => {
-      const trigger = triggerFor(name)
-      expect(trigger).toContain('after insert')
-      expect(trigger).toContain('referencing new table as new_rows')
-      expect(trigger).toContain('for each statement')
-      expect(trigger).not.toContain('for each row')
-    },
-  )
+  const LIMITS = [
+    'enforce_report_rate_limit',
+    'enforce_comment_rate_limit',
+    'enforce_upload_grant_rate_limit',
+    'enforce_photo_limit',
+    'enforce_flag_rate_limit',
+  ]
+
+  // One shape for all five: counted once per statement over a transition
+  // table. Not because a row-level form would miss the other rows of its own
+  // statement -- this file used to say so, and it is false; a row-level BEFORE
+  // trigger sees rows already processed by the same command, which
+  // migrations.run.test.ts shows against a real Postgres. It is one count per
+  // statement instead of one per row, and one shape to check instead of two.
+  it.each(LIMITS)('%s counts once per statement, over a transition table', (name) => {
+    const trigger = triggerFor(name)
+    expect(trigger).toContain('after insert')
+    expect(trigger).toContain('referencing new table as new_rows')
+    expect(trigger).toContain('for each statement')
+    expect(trigger).not.toContain('for each row')
+  })
 
   it('enforces the photo cap the app is built around, not a number of its own', () => {
     // MAX_PHOTOS lives in one place for the app, but the trigger and its
@@ -1040,91 +1047,85 @@ describe('migrations — rate limits exist for every table a person can write to
     expect(fn).toContain(`at most ${MAX_PHOTOS} photos`)
   })
 
-  // Separate from visibility, and missed the first time: counting per statement
-  // still lets two CONCURRENT statements each read a count that excludes the
-  // other's uncommitted rows, so both pass. Two of the three had the lock and
-  // one did not, while HANDOFF.md said all three did.
-  it.each(['enforce_upload_grant_rate_limit', 'enforce_photo_limit', 'enforce_flag_rate_limit'])(
-    '%s takes a transaction-scoped lock before it counts',
-    (name) => {
-      const fn = flat.slice(
-        flat.indexOf('function mo.' + name + '()'),
-        flat.indexOf('create trigger ' + name),
-      )
-      expect(fn).toContain('pg_advisory_xact_lock')
-      // Once per distinct subject in the statement, not once per row.
-      expect(fn).toMatch(/for \w+ in select distinct \w+ from new_rows loop/)
-      // And before the count, or it serialises nothing.
-      expect(fn.indexOf('pg_advisory_xact_lock')).toBeLessThan(fn.indexOf('count(*)'))
-    },
-  )
+  // The part that actually makes a limit hold. Two CONCURRENT requests each
+  // read a count that excludes the other's uncommitted rows, so both pass.
+  // The report and comment limits had no lock at all until 2026-09-26.
+  it.each(LIMITS)('%s takes a transaction-scoped lock before it counts', (name) => {
+    const fn = flat.slice(
+      flat.indexOf('function mo.' + name + '()'),
+      flat.indexOf('create trigger ' + name),
+    )
+    expect(fn).toContain('pg_advisory_xact_lock')
+    // Once per distinct subject in the statement, not once per row.
+    expect(fn).toMatch(/for \w+ in select distinct \w+ from new_rows loop/)
+    // And before the count, or it serialises nothing.
+    expect(fn.indexOf('pg_advisory_xact_lock')).toBeLessThan(fn.indexOf('count(*)'))
+  })
 
-  it.each(['enforce_upload_grant_rate_limit', 'enforce_photo_limit', 'enforce_flag_rate_limit'])(
-    '%s compares against the count INCLUDING the new rows',
-    (name) => {
-      // Counted after the statement, the new rows are already in the total, so
-      // the limit is "more than N" rather than "at least N". Leaving `>=` here
-      // would refuse the last legitimate row of every batch.
-      const fn = flat.slice(
-        flat.indexOf('function mo.' + name + '()'),
-        flat.indexOf('create trigger ' + name),
-      )
-      expect(fn).toMatch(/> \d+/)
-      expect(fn).not.toMatch(/>= \d+/)
-    },
-  )
+  it.each(LIMITS)('%s compares against the count INCLUDING the new rows', (name) => {
+    // Counted after the statement, the new rows are already in the total, so
+    // the limit is "more than N" rather than "at least N". Leaving `>=` here
+    // would refuse the last legitimate row of every batch.
+    const fn = flat.slice(
+      flat.indexOf('function mo.' + name + '()'),
+      flat.indexOf('create trigger ' + name),
+    )
+    expect(fn).toMatch(/> \d+/)
+    expect(fn).not.toMatch(/>= \d+/)
+  })
 })
 
-describe('migrations — no count-based limit hides in a row-level trigger', () => {
-  // This exact defect was found three times, in three separate rounds, because
-  // each round fixed the instances it knew about and then claimed the sweep was
-  // done. A count is only a limit if it is taken once per STATEMENT: a
-  // row-level BEFORE trigger cannot see the other rows of its own statement,
-  // and PostgREST posts a JSON array as one statement.
-  //
-  // So this finds them rather than naming them. Any function whose body counts
-  // rows must be attached per statement, unless it is on the list of known
-  // exceptions below -- and that list is the debt, written down.
-  // Genuinely still wrong, and recorded in HANDOFF.md. Delete these entries
-  // when they are fixed; leaving them here is what keeps this honest.
-  const KNOWN_ROW_LEVEL = ['enforce_report_rate_limit', 'enforce_comment_rate_limit']
+describe('migrations — the report and comment limits count what cannot be deleted', () => {
+  // People can delete their own reports and comments, so a count over those
+  // tables reset every time they did. They count mo.post_log instead.
+  it.each([
+    ['enforce_report_rate_limit', 'report'],
+    ['enforce_comment_rate_limit', 'comment'],
+    ['enforce_flag_rate_limit', 'flag'],
+  ])('%s records to and counts the log, not the live rows', (name, kind) => {
+    const fn = flat.slice(flat.indexOf('function mo.' + name + '()'), flat.indexOf('create trigger ' + name))
+    expect(fn).toContain('insert into mo.post_log (user_id, kind)')
+    expect(fn).toContain(`select count(*) from mo.post_log l`)
+    expect(fn).toContain(`and l.kind = '${kind}'`)
+    expect(fn).not.toMatch(/count\(\*\) from mo\.(reports|comments|flags)/)
+    // Recorded before it counts, so the count includes this statement.
+    expect(fn.indexOf('insert into mo.post_log')).toBeLessThan(fn.indexOf('count(*)'))
+  })
 
-  /** Every trigger statement naming this function, however it is named. */
-  const triggersUsing = (name: string) =>
-    [...flat.matchAll(/create trigger [\s\S]*?;/g)]
-      .map((match) => match[0])
-      .filter((trigger) => trigger.includes('function mo.' + name + '('))
+  it('keeps the log out of reach of both browser roles', () => {
+    expect(flat).toContain('revoke all on mo.post_log from anon, authenticated')
+    expect(flat).not.toMatch(/grant [^;]* on mo\.post_log to (anon|authenticated)/)
+    expect(flat).not.toMatch(/create policy \w+ on mo\.post_log/)
+  })
+})
 
-  // Counts AND refuses on the result. `sync_vote_count` counts too, but it
-  // writes the total rather than rejecting, and per-row is right for that.
+describe('migrations — no counting limit goes without a lock', () => {
+  // Found by what they do, not by name, so a sixth limit added later is held
+  // to the same rule without anybody remembering to list it. A trigger
+  // function that counts rows and refuses on the result is a limit.
+  // `sync_vote_count` counts too, but it writes the total rather than
+  // refusing; `admin_queue_size` counts and raises, but it is not a trigger and
+  // what it raises about is who is asking.
   const limits = [...allCode.matchAll(/create or replace function mo\.(\w+)\(\)/g)]
     .map((match) => match[1])
     .filter((name) => {
       const start = allCode.indexOf('function mo.' + name + '()')
       const body = allCode.slice(start, allCode.indexOf('$$;', start))
-      return /count\(\*\)/.test(body) && /raise exception/.test(body)
+      return /returns\s+trigger/.test(body) && /count\(\*\)/.test(body) && /raise exception/.test(body)
     })
 
   it('finds the counting limits at all, so this is not checking an empty list', () => {
     expect(limits.length).toBeGreaterThanOrEqual(5)
   })
 
-  it('has every counting limit firing once per statement', () => {
-    const offenders = limits.filter(
-      (name) =>
-        !KNOWN_ROW_LEVEL.includes(name) &&
-        triggersUsing(name).some((trigger) => /for each row/.test(trigger)),
-    )
-    expect(offenders).toEqual([])
-  })
-
-  it('still lists exactly the exceptions HANDOFF.md admits to', () => {
-    // If one of these is fixed without being taken off the list, the list stops
-    // meaning anything and the next reader trusts it anyway.
-    const stillRowLevel = KNOWN_ROW_LEVEL.filter((name) =>
-      triggersUsing(name).some((trigger) => /for each row/.test(trigger)),
-    )
-    expect(stillRowLevel).toEqual(KNOWN_ROW_LEVEL)
+  it('has every counting limit take an advisory lock before it counts', () => {
+    const unlocked = limits.filter((name) => {
+      const start = allCode.indexOf('function mo.' + name + '()')
+      const body = allCode.slice(start, allCode.indexOf('$$;', start))
+      const lockAt = body.indexOf('pg_advisory_xact_lock')
+      return lockAt === -1 || lockAt > body.indexOf('count(*)')
+    })
+    expect(unlocked).toEqual([])
   })
 })
 

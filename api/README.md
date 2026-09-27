@@ -79,15 +79,15 @@ endpoint cannot get a URL without inserting there first.
 Thirty an hour is ten reports at the three-photo maximum, which is already the
 most the report rate limit allows anyone to create in an hour.
 
-The count is taken once per **statement**, over a transition table, not once
-per row. That is not a detail: `authenticated` can insert into this table
-directly, PostgREST inserts a JSON array as one statement, and a row-level
-BEFORE trigger cannot see the other rows of its own statement — so in the row
-form one request carrying ten thousand rows had every invocation read the same
-pre-statement count and every row pass. The hourly limit was bypassable in a
-single request. `enforce_photo_limit` in `0002` and `enforce_flag_rate_limit` in
-`0005` had the same shape and are fixed the same way. The report and comment
-rate limits in `0002` still have it — see `HANDOFF.md`.
+The count is taken once per **statement**, over a transition table, behind an
+advisory lock keyed on the person. The lock is what makes it hold: without it,
+two simultaneous requests each read a count that misses the other's rows, and
+both pass. Every counting limit in the migrations has the same shape.
+
+This paragraph used to say the per-statement form was needed because a
+row-level BEFORE trigger cannot see the other rows of its own statement. That
+is false -- such a trigger sees rows already processed by the same command --
+and the note above `enforce_report_rate_limit` in `0002` has the detail.
 
 It is a budget of thirty **attempts**, though, not thirty photos. The grant is
 recorded before the upload and nothing gives it back, so a dropped connection,
@@ -209,9 +209,10 @@ this endpoint is not the only thing that can reach that table.
 directly, somebody can claim a key inside their own prefix that was never
 uploaded, then link it. The result is a `report_photos` row, and a moderation
 job, for an image that does not exist — so an admin is eventually shown
-nothing. It is capped at thirty an hour per account by the same trigger — which is true
-only because that trigger counts per statement; in its original row-level form
-the rows could be minted in bulk and the cap was not a cap. It does not touch
+nothing. It is capped at thirty an hour per account by the same trigger, which counts
+grants a person cannot delete, behind a lock that stops simultaneous requests
+all passing. (This used to credit the per-statement form, on the false premise
+that a row-level trigger could not see its own statement's rows.) It does not touch
 anybody else's data. Closing it properly needs the grant insert
 to be something a browser cannot perform, which is the privileged-credential
 decision above.

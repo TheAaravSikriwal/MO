@@ -15,10 +15,10 @@ export const MAX_PHOTO_BYTES = 8 * 1024 * 1024
  *
  * Two places, not three. The form stops you picking a fourth, and the
  * `enforce_photo_limit` trigger in `0002_functions_triggers.sql` is the control
- * that actually holds — which took two goes to be true of it, because a count
- * in a row-level trigger cannot see the rest of its own statement and a count
- * without a lock cannot see a concurrent one. It is now per statement, over a
- * transition table, behind a per-report advisory lock.
+ * that actually holds, because it counts behind a per-report advisory lock: a
+ * count without one cannot see a concurrent statement's rows. (This comment
+ * used to add that a row-level trigger cannot see the rest of its own
+ * statement. It can; see the note above enforce_report_rate_limit in 0002.)
  *
  * The signing endpoint does NOT check it. It bounds volume by recording every
  * signed URL in `upload_grants` and letting a trigger rate-limit that instead,

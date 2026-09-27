@@ -157,7 +157,7 @@ sample reports around central London, so the map is populated and every screen
 works. That is deliberate — see `src/lib/data/createDataSource.ts`.
 
 ```bash
-npm test              # 877 tests, including real Postgres via PGlite
+npm test              # 896 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
 cd worker && npm test # 123 tests
 ```
@@ -260,36 +260,38 @@ Eight things. The first two are blocked on accounts rather than on code:
    it trades this for one account being able to deny uploads to everybody;
    invite-only sign-up or a human-raised quota are the better answers and both
    are product decisions. `api/README.md` has the reasoning.
-6. **Two of the older rate limits can still be bypassed in one request.**
-   `enforce_report_rate_limit` and `enforce_comment_rate_limit` in `0002` are
-   row-level BEFORE triggers doing `count(*)`, and a row-level BEFORE trigger
-   cannot see the other rows of its own statement — they carry the current
-   command id, so the count treats them as not yet inserted. PostgREST posts a
-   JSON array as one statement, and `authenticated` can insert into both
-   tables, so one request carrying ten thousand rows passes every check. Ten
-   reports an hour is not ten.
+6. **Rate limits: fixed in code on 2026-09-26, one check left for the real
+   database.** This item used to say the report and comment limits could be
+   bypassed in one request, because a row-level BEFORE trigger "cannot see the
+   other rows of its own statement". That is false: Postgres documents that
+   such a trigger sees rows already processed by the same command, and the
+   PGlite harness confirmed it -- eleven reports in one insert were refused by
+   the old per-row triggers. Three earlier rounds rewrote three other limits
+   to fix a bug that did not exist.
 
-   `enforce_upload_grant_rate_limit`, `enforce_photo_limit` and
-   `enforce_flag_rate_limit` had the same bug and are fixed: `after insert ...
-   referencing new table as new_rows ... for each statement`, comparing `> N`
-   because the new rows are in the count by then, each behind a
-   transaction-scoped advisory lock for the separate concurrency case — a
-   count taken per statement still misses a CONCURRENT statement's uncommitted
-   rows. `src/lib/db/migrations.test.ts` asserts the statement shape, the
-   comparison, the lock, and the table, for all three. The lock was the part
-   that went in late: two of the three had it and one did not, while this file
-   already said all three did.
+   The real gaps were two others, both now closed in the migrations:
 
-   These last two want exactly the same change. They were left out of this
-   piece of work because nothing here made them worse, and getting it wrong
-   breaks reports and comments rather than uploads.
+   * **Deleting your own posts reset the limit.** The report and comment limits
+     counted live rows, and people can delete their own reports and comments,
+     so "post ten, delete, post ten more" had no end. The flag limit reset the
+     same way, because deleting a comment deletes the flags on it and you can
+     flag your own. All three now count `mo.post_log`, which the triggers
+     write and no browser role can read or delete. `migrations.run.test.ts`
+     proves it for each: ten reports deleted and the eleventh still refused,
+     and the same for comments and flags.
+   * **Simultaneous requests could all pass.** The report and comment limits
+     took no lock. All five counting limits now share one shape --
+     statement-level, advisory lock per person before the count, `> N` -- and
+     `migrations.test.ts` finds every counting trigger by what it does and
+     fails if one counts without the lock.
 
-   Do not count them by hand. `migrations.test.ts` now finds every function
-   that counts rows and then refuses on the result, and fails if any of them
-   fires per row -- with these two named as the known exceptions. Take a name
-   off that list when you fix it. Three rounds of this audit each fixed the
-   instances they knew about and then said the sweep was finished; the test is
-   there so the fourth round does not have to be a person.
+   **Still to verify:** PGlite runs on one connection, so no test here has
+   ever sent two requests at once. Against the real project, thirty
+   simultaneous inserts should stop at the limit. Until that has been tried,
+   the lock is proven by reading the SQL, not by running it.
+
+   The comments in `0002`, `0005`, `0006`, `api/README.md` and
+   `supabase/README.md` that repeated the false reason are corrected.
 7. **There is no in-app way to take a pin off the map.**
    `mo.reports.moderation_status` governs whether a pin is visible and defaults
    to `'approved'`, and nothing ever writes it: the moderation subjects are

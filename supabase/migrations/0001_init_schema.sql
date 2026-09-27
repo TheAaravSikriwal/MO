@@ -366,6 +366,43 @@ create index comments_report_idx on mo.comments (report_id, created_at desc)
 create index comments_author_idx on mo.comments (author_id, created_at desc);
 
 -- ---------------------------------------------------------------------------
+-- post_log  --  what the report, comment and flag rate limits count
+-- ---------------------------------------------------------------------------
+--
+-- One row per report, comment or flag a person has posted, written by the
+-- rate-limit triggers in 0002 and 0005 and never by a browser.
+--
+-- The limits used to count live rows in mo.reports and mo.comments. People can
+-- delete their own of both, so "post ten, delete them, post ten more" reset
+-- the count as often as anybody liked -- the pins went straight onto the map,
+-- and every note and comment still became a moderation job. 0006 already warned
+-- that a count over live rows is only safe while nothing a person can do
+-- removes their own rows; for these two tables that was never true.
+--
+-- Flags too. A person can flag their own comment, and deleting the comment
+-- deletes every flag on it (cleanup_moderation_for_deleted in 0005), so the
+-- flag limit reset the same way: post, flag, delete, repeat.
+--
+-- Revoked from both browser roles in 0003, with no policy, so nobody can read
+-- or trim their own record.
+--
+-- Pruning is partial, and deliberately cheap. Each trigger deletes that
+-- person's rows of its own kind older than its own window -- an hour for
+-- reports and flags, a minute for comments -- and only when they post that
+-- kind again. Rows belonging to somebody who stops posting stay. They are a
+-- few dozen bytes each and every count filters on created_at, so they change
+-- no answer; if the table ever matters, a periodic
+-- `delete from mo.post_log where created_at < now() - interval '1 day'`
+-- bounds it without touching any limit.
+create table mo.post_log (
+  user_id    uuid not null references public.profiles (id) on delete cascade,
+  kind       text not null check (kind in ('report', 'comment', 'flag')),
+  created_at timestamptz not null default now()
+);
+
+create index post_log_user_kind_idx on mo.post_log (user_id, kind, created_at);
+
+-- ---------------------------------------------------------------------------
 -- flags  --  the community "report this" button
 -- ---------------------------------------------------------------------------
 

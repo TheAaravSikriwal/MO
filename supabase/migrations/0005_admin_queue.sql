@@ -421,14 +421,14 @@ create trigger validate_flag_subject
 -- The other tables are rate limited; without the same here, one account can
 -- still generate unlimited review work even if it cannot take content down.
 --
--- AFTER ... FOR EACH STATEMENT, over a transition table, for the reason spelled
--- out above enforce_upload_grant_rate_limit in 0006: a row-level BEFORE trigger
--- cannot see the other rows of its own statement, and PostgREST posts a JSON
--- array as one statement. In the row form this limit was decorative -- one
--- request carrying thousands of flags across distinct subjects passed every
--- invocation, which is exactly the unlimited review work the comment above says
--- it exists to stop. Counted after the statement the new rows are in the total,
--- so the test is `> 20` rather than `>= 20`.
+-- The same shape as every counting limit here -- statement-level, locked per
+-- person, counted with the new rows included so the test is `> 20`. The note
+-- above enforce_report_rate_limit in 0002 explains why the lock is the part
+-- that matters, and corrects the reason this comment used to give.
+--
+-- Counted in mo.post_log, not mo.flags, for the same reason as reports and
+-- comments: flags disappear when their subject is deleted, and the subject can
+-- be the flagger's own comment.
 create or replace function mo.enforce_flag_rate_limit()
 returns trigger
 language plpgsql
@@ -443,12 +443,22 @@ begin
     perform pg_advisory_xact_lock(hashtext('flag:' || flagger::text));
   end loop;
 
+  insert into mo.post_log (user_id, kind)
+  select flagger_id, 'flag' from new_rows;
+
+  delete from mo.post_log l
+   using (select distinct flagger_id from new_rows) n
+   where l.user_id = n.flagger_id
+     and l.kind = 'flag'
+     and l.created_at <= now() - interval '1 hour';
+
   select n.flagger_id into offender
     from (select distinct flagger_id from new_rows) n
    where (
-     select count(*) from mo.flags f
-      where f.flagger_id = n.flagger_id
-        and f.created_at > now() - interval '1 hour'
+     select count(*) from mo.post_log l
+      where l.user_id = n.flagger_id
+        and l.kind = 'flag'
+        and l.created_at > now() - interval '1 hour'
    ) > 20
    limit 1;
 

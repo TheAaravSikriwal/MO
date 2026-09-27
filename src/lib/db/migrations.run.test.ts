@@ -424,3 +424,158 @@ describe('invisible names, in the real database', () => {
     expect(rows[0].n).toBe(4)
   })
 })
+
+describe('rate limits hold against a request carrying many rows', () => {
+  // PostgREST posts a JSON array as ONE statement. These tests were written to
+  // prove the old per-row report and comment triggers let such a request
+  // through -- and they passed against them. A row-level BEFORE trigger sees
+  // the rows its own statement has already inserted, so there never was a
+  // single-request bypass. They stay, to keep it that way.
+  //
+  // What they cannot show is the case the advisory locks exist for: two
+  // requests at the same moment. PGlite has one connection.
+  const HANK = '99999999-9999-4999-8999-999999999999'
+  const IVY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const JO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+
+  beforeAll(async () => {
+    for (const [id, prefix, name] of [
+      [HANK, 'hank.h', 'Hank'],
+      [IVY, 'ivy.i', 'Ivy'],
+      [JO, 'jo.j', 'Jo'],
+    ] as const) {
+      await addProfile(db, id, prefix)
+      await setName(id, name)
+    }
+  })
+
+  /** Many report rows in one INSERT, the way one PostgREST request sends them. */
+  const reportsInOneStatement = (userId: string, count: number) =>
+    as(userId, () => {
+      const rows = Array.from(
+        { length: count },
+        (_, i) => `($1, ${51 + i / 1000}, -0.12, $2, $2, $2, $2, $2, $2, null)`,
+      ).join(', ')
+      return db.query(
+        `insert into mo.reports
+           (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7, cell_r9, cell_r12, note)
+         values ${rows}`,
+        [userId, CELL],
+      )
+    })
+
+  const reportCount = async (userId: string) =>
+    (await db.query<{ n: number }>('select count(*)::int as n from mo.reports where reporter_id = $1', [userId]))
+      .rows[0].n
+
+  it('refuses eleven reports sent as one request, and keeps none of them', async () => {
+    expect(await failure(() => reportsInOneStatement(HANK, 11))).toMatch(/too many reports in the last hour/)
+    expect(await reportCount(HANK)).toBe(0)
+  })
+
+  it('takes ten in one request, which is the limit, and then refuses the next', async () => {
+    await reportsInOneStatement(IVY, 10)
+    expect(await reportCount(IVY)).toBe(10)
+    expect(await failure(() => addReport(IVY))).toMatch(/too many reports in the last hour/)
+  })
+
+  it('refuses six comments sent as one request', async () => {
+    const reportId = await addReport(JO)
+    const sent = await failure(() =>
+      as(JO, () => {
+        const rows = Array.from({ length: 6 }, (_, i) => `($1, $2, 'comment ${i}')`).join(', ')
+        return db.query(`insert into mo.comments (report_id, author_id, body) values ${rows}`, [reportId, JO])
+      }),
+    )
+    expect(sent).toMatch(/too many comments in the last minute/)
+    const { rows } = await db.query<{ n: number }>('select count(*)::int as n from mo.comments where author_id = $1', [JO])
+    expect(rows[0].n).toBe(0)
+  })
+})
+
+describe('rate limits cannot be reset by deleting your own posts', () => {
+  const KIM = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const LEO = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+
+  beforeAll(async () => {
+    await addProfile(db, KIM, 'kim.k')
+    await addProfile(db, LEO, 'leo.l')
+    await setName(KIM, 'Kim')
+    await setName(LEO, 'Leo')
+  })
+
+  it('still refuses the eleventh report after the first ten are deleted', async () => {
+    const ids: string[] = []
+    for (let i = 0; i < 10; i += 1) ids.push(await addReport(KIM))
+    // By id, the way the app deletes a report: browsers may read `id` and
+    // nothing else on the table.
+    for (const id of ids) await as(KIM, () => db.query('delete from mo.reports where id = $1', [id]))
+    const { rows } = await db.query<{ n: number }>('select count(*)::int as n from mo.reports where reporter_id = $1', [KIM])
+    expect(rows[0].n).toBe(0)
+    expect(await failure(() => addReport(KIM))).toMatch(/too many reports in the last hour/)
+  })
+
+  it('still refuses the sixth comment after the first five are deleted', async () => {
+    const reportId = await addReport(LEO)
+    for (let i = 0; i < 5; i += 1) await addComment(LEO, reportId, `comment ${i}`)
+    // A bare DELETE, as an unfiltered PostgREST request sends it. It needs no
+    // select privilege, and the delete policy narrows it to your own rows.
+    await as(LEO, () => db.query('delete from mo.comments'))
+    const { rows } = await db.query<{ n: number }>('select count(*)::int as n from mo.comments where author_id = $1', [LEO])
+    expect(rows[0].n).toBe(0)
+    expect(await failure(() => addComment(LEO, reportId, 'one more'))).toMatch(
+      /too many comments in the last minute/,
+    )
+  })
+
+  it('keeps the record out of reach of the person it limits', async () => {
+    expect(await failure(() => as(KIM, () => db.query('select * from mo.post_log')))).toMatch(/permission denied/)
+    expect(await failure(() => as(KIM, () => db.query('delete from mo.post_log')))).toMatch(/permission denied/)
+  })
+})
+
+describe('the flag limit cannot be reset by deleting what you flagged', () => {
+  const MIA = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+  const NED = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+
+  it('still refuses the twenty-first flag after the flagged comments are deleted', async () => {
+    await addProfile(db, MIA, 'mia.m')
+    await addProfile(db, NED, 'ned.n')
+    await setName(MIA, 'Mia')
+    await setName(NED, 'Ned')
+    const reportId = await addReport(NED)
+
+    // Setup, as the table owner: twenty comments of Mia's own and one of Ned's,
+    // with the comment limit switched off so the setup is not what is tested.
+    await db.exec('alter table mo.comments disable trigger enforce_comment_rate_limit')
+    const own: string[] = []
+    for (let i = 0; i < 20; i += 1) {
+      const { rows } = await db.query<{ id: string }>(
+        "insert into mo.comments (report_id, author_id, body) values ($1, $2, $3) returning id",
+        [reportId, MIA, `mine ${i}`],
+      )
+      own.push(rows[0].id)
+    }
+    const { rows: neds } = await db.query<{ id: string }>(
+      "insert into mo.comments (report_id, author_id, body) values ($1, $2, 'his') returning id",
+      [reportId, NED],
+    )
+    await db.exec('alter table mo.comments enable trigger enforce_comment_rate_limit')
+
+    const flag = (subject: string) =>
+      as(MIA, () =>
+        db.query(
+          "insert into mo.flags (subject_type, subject_id, flagger_id, reason) values ('comment', $1, $2, 'x')",
+          [subject, MIA],
+        ),
+      )
+    for (const id of own) await flag(id)
+
+    // Deleting the comments deletes the flags on them.
+    await as(MIA, () => db.query('delete from mo.comments'))
+    const { rows } = await db.query<{ n: number }>('select count(*)::int as n from mo.flags where flagger_id = $1', [MIA])
+    expect(rows[0].n).toBe(0)
+
+    expect(await failure(() => flag(neds[0].id))).toMatch(/too many reports in the last hour/)
+  })
+})

@@ -410,12 +410,11 @@ create trigger sync_vote_count_on_delete
 -- A report carries at most three photos
 -- ---------------------------------------------------------------------------
 
--- AFTER ... FOR EACH STATEMENT, for the same reason as the upload grant limit
--- in 0006: a BEFORE ROW trigger cannot see the other rows of its own
--- statement, and PostgREST inserts a JSON array as one statement. In the row
--- form, one request could attach any number of photos to a report -- every
--- invocation read the same pre-statement count of zero. Counted after the
--- statement the rows are visible, so the test is `> 3` rather than `>= 3`.
+-- AFTER ... FOR EACH STATEMENT, counted once over everything the statement
+-- inserted, so the test is `> 3` rather than `>= 3`. What makes the limit
+-- hold is the advisory lock below; see the note on counting limits above
+-- enforce_report_rate_limit for why, and for the claim this comment used to
+-- make that turned out to be false.
 --
 -- `enforce_photo_has_grant` (0006) stays a BEFORE ROW trigger: it spends one
 -- grant per row, which is per-row work. If this statement trigger then raises,
@@ -462,27 +461,83 @@ create trigger enforce_photo_limit
 -- Rate limits
 -- ---------------------------------------------------------------------------
 
+-- How every counting limit in these migrations works, and a correction.
+--
+-- Each one is an AFTER ... FOR EACH STATEMENT trigger over a transition table,
+-- takes a transaction-scoped advisory lock per person (or per report), and
+-- only then counts. The count includes the statement's own rows, so the test
+-- is "more than N", not "at least N".
+--
+-- THE LOCK is what makes a limit hold. Two requests arriving at the same
+-- moment are two transactions, and each one's count misses the other's
+-- uncommitted rows, so both pass. Taking the lock first makes the second wait
+-- until the first commits, and then count with its rows included. Keyed on
+-- the person, so one account's burst never blocks anybody else.
+--
+-- THE CORRECTION. These comments, HANDOFF.md and a test used to say a
+-- row-level BEFORE trigger "cannot see the other rows of its own statement",
+-- so that one request carrying a JSON array of ten thousand rows would pass a
+-- per-row count. That is false. Postgres's documentation says commands in a
+-- row-level BEFORE trigger see the effects of rows already processed in the
+-- same outer command, and it was confirmed against a real Postgres (PGlite)
+-- on 2026-09-26: eleven reports in one insert were refused by the old per-row
+-- form of the trigger below. So there never was a single-request bypass. The
+-- gap these two triggers really had was the missing lock, which the three
+-- rewritten earlier had gained along the way.
+--
+-- The statement form is kept for all five because it counts once per
+-- statement instead of once per row, and because one shape is easier to
+-- check than two.
+--
+-- WHAT IS COUNTED matters as much as the lock. These two count mo.post_log
+-- (0001), not the live rows: people can delete their own reports and comments,
+-- and a count over live rows reset every time they did.
 create or replace function mo.enforce_report_rate_limit()
 returns trigger
 language plpgsql
 security definer
 set search_path = mo, public
 as $$
+declare
+  reporter uuid;
+  offender uuid;
 begin
-  if (
-    select count(*) from mo.reports
-    where reporter_id = new.reporter_id
-      and created_at > now() - interval '1 hour'
-  ) >= 10 then
+  for reporter in select distinct reporter_id from new_rows loop
+    perform pg_advisory_xact_lock(hashtext('report:' || reporter::text));
+  end loop;
+
+  -- Recorded first, so the count below includes this statement. If it then
+  -- raises, the whole statement rolls back and these rows go with it.
+  insert into mo.post_log (user_id, kind)
+  select reporter_id, 'report' from new_rows;
+
+  delete from mo.post_log l
+   using (select distinct reporter_id from new_rows) n
+   where l.user_id = n.reporter_id
+     and l.kind = 'report'
+     and l.created_at <= now() - interval '1 hour';
+
+  select n.reporter_id into offender
+    from (select distinct reporter_id from new_rows) n
+   where (
+     select count(*) from mo.post_log l
+      where l.user_id = n.reporter_id
+        and l.kind = 'report'
+        and l.created_at > now() - interval '1 hour'
+   ) > 10
+   limit 1;
+
+  if offender is not null then
     raise exception 'too many reports in the last hour; please slow down';
   end if;
-  return new;
+  return null;
 end;
 $$;
 
 create trigger enforce_report_rate_limit
-  before insert on mo.reports
-  for each row execute function mo.enforce_report_rate_limit();
+  after insert on mo.reports
+  referencing new table as new_rows
+  for each statement execute function mo.enforce_report_rate_limit();
 
 create or replace function mo.enforce_comment_rate_limit()
 returns trigger
@@ -490,21 +545,44 @@ language plpgsql
 security definer
 set search_path = mo, public
 as $$
+declare
+  author uuid;
+  offender uuid;
 begin
-  if (
-    select count(*) from mo.comments
-    where author_id = new.author_id
-      and created_at > now() - interval '1 minute'
-  ) >= 5 then
+  for author in select distinct author_id from new_rows loop
+    perform pg_advisory_xact_lock(hashtext('comment:' || author::text));
+  end loop;
+
+  insert into mo.post_log (user_id, kind)
+  select author_id, 'comment' from new_rows;
+
+  delete from mo.post_log l
+   using (select distinct author_id from new_rows) n
+   where l.user_id = n.author_id
+     and l.kind = 'comment'
+     and l.created_at <= now() - interval '1 minute';
+
+  select n.author_id into offender
+    from (select distinct author_id from new_rows) n
+   where (
+     select count(*) from mo.post_log l
+      where l.user_id = n.author_id
+        and l.kind = 'comment'
+        and l.created_at > now() - interval '1 minute'
+   ) > 5
+   limit 1;
+
+  if offender is not null then
     raise exception 'too many comments in the last minute; please slow down';
   end if;
-  return new;
+  return null;
 end;
 $$;
 
 create trigger enforce_comment_rate_limit
-  before insert on mo.comments
-  for each row execute function mo.enforce_comment_rate_limit();
+  after insert on mo.comments
+  referencing new table as new_rows
+  for each statement execute function mo.enforce_comment_rate_limit();
 
 -- ---------------------------------------------------------------------------
 -- Queue everything a human might object to

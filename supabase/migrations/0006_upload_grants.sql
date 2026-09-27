@@ -163,29 +163,20 @@ create unique index upload_grants_storage_path_key on mo.upload_grants (storage_
 -- see the note on `user_id`. Do not add a delete policy, a delete grant, or a
 -- second cascade onto this table without re-reading both notes.
 
--- AFTER ... FOR EACH STATEMENT, with a transition table. Both halves of that
--- matter, and a row-level BEFORE trigger -- which is what this was -- gets the
--- limit wrong in two different ways.
+-- AFTER ... FOR EACH STATEMENT, with a transition table, counted with the new
+-- rows included so the comparison is `> 30` rather than `>= 30`.
 --
--- VISIBILITY. A BEFORE ROW trigger cannot see the other rows of its own
--- statement: they carry the current command id, so a count taken inside the
--- trigger treats them as not yet inserted. `authenticated` holds an insert
--- privilege on this table, and PostgREST inserts a JSON ARRAY as one
--- statement -- so one request carrying ten thousand rows had every invocation
--- read the same pre-statement count, and every row pass. The hourly limit was
--- bypassable in a single request. Counting AFTER the statement, over a
--- transition table, is what fixes that: by then the rows are visible, so the
--- count includes them and the comparison is `> 30` rather than `>= 30`.
+-- The advisory lock is what makes it hold: two concurrent statements would
+-- each read a count that did not include the other's uncommitted rows. The
+-- lock is transaction-scoped, so whichever statement takes it first holds it
+-- until commit and the second one counts afterwards, with the first one's
+-- rows committed and visible. Keyed on the person, so one account's burst
+-- never blocks anybody else.
 --
--- CONTENTION. Separately, two concurrent statements would each read a count
--- that did not include the other's uncommitted rows. The advisory lock is
--- transaction-scoped, so whichever statement takes it first holds it until
--- commit and the second one counts afterwards, with the first one's rows
--- committed and visible. Keyed on the person, so one account's burst never
--- blocks anybody else.
---
--- Note the other count-based triggers in 0002 have the row-level shape and the
--- same visibility bug. See HANDOFF.md.
+-- This comment used to give a second reason -- that a row-level BEFORE
+-- trigger cannot see the other rows of its own statement, so one request of
+-- ten thousand rows would pass. That is false; see the note above
+-- enforce_report_rate_limit in 0002.
 create or replace function mo.enforce_upload_grant_rate_limit()
 returns trigger
 language plpgsql
