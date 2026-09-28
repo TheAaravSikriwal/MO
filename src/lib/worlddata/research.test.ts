@@ -25,6 +25,7 @@ const findings: Findings = {
   fromSaved: [],
   savedOn: '2026-09-28',
   readOn: '2026-09-28',
+  totals: { oceanPlasticTonnes: 1_000_000, oceanPlasticYear: 2019, firesToday: 16000, firesSavedOn: null },
   years: { life: [2023, 2023], gdp: [2022, 2024], air: [2024, 2024], plasticPerPerson: [2019, 2019], water: [2020, 2023] },
 }
 const paper = researchPaper(findings)

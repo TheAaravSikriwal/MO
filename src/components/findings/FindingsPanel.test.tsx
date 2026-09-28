@@ -27,6 +27,7 @@ const findings = (over: Partial<Findings> = {}): Findings => ({
   savedOn: '2026-09-28',
   readOn: '2026-09-28',
   years: { life: [2023, 2023] },
+  totals: { oceanPlasticTonnes: 1_000_000, oceanPlasticYear: 2019, firesToday: 16000, firesSavedOn: null },
   ...over,
 })
 const ready = (over: Partial<Findings> = {}) => ({ status: 'ready' as const, findings: findings(over) })

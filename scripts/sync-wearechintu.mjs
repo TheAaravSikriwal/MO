@@ -255,8 +255,12 @@ const LIVE_TESTS = `  it('stays "not connected" on the store\\'s Supabase keys a
     await settle()
     expect(side(/Real world/)).toHaveTextContent('Not connected yet')
     expect(screen.getByText(/not connected to the real reports yet/)).toBeInTheDocument()
-    // And the database, which has no map tables yet, is never asked.
-    expect(asked).not.toHaveBeenCalled()
+    // And the database, which has no map tables yet, is never asked. (The
+    // introduction's world figures come from public files; those may load.)
+    const toDatabase = (asked.mock.calls as unknown as Array<[RequestInfo | URL]>).filter(([url]) =>
+      String(url).includes('project.supabase.co'),
+    )
+    expect(toDatabase).toEqual([])
     vi.unstubAllGlobals()
   })
 

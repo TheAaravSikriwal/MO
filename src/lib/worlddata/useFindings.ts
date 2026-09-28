@@ -4,6 +4,7 @@ import {
   COUNTRIES_URL,
   COUNTRY_COLUMNS,
   GDP_PER_PERSON_CSV,
+  OCEAN_PLASTIC_CSV,
   PLASTIC_PER_PERSON_CSV,
   QUALITY_OF_LIFE_CSV,
   SAVED_COPIES,
@@ -42,10 +43,16 @@ export interface Findings {
   years: Partial<Record<MetricId, [number, number]>>
   /** The day these figures were read, as YYYY-MM-DD. */
   readOn: string
+  /**
+   * World totals for the introduction: plastic into the ocean in tonnes a
+   * year, summed over every country (NaN if its file could not be read), and
+   * fire hot spots seen in the last 24 hours.
+   */
+  totals: { oceanPlasticTonnes: number; oceanPlasticYear: number; firesToday: number; firesSavedOn: string | null }
 }
 
 /** One figure, live if it can be had, else the saved copy; throws if neither reads. */
-async function figure(get: Fetcher, source: (typeof FIGURES)[number]) {
+async function figure(get: Fetcher, source: { id: string; live: string; saved: string; column: string }) {
   for (const [url, saved] of [
     [source.live, false],
     [source.saved, true],
@@ -62,10 +69,14 @@ async function figure(get: Fetcher, source: (typeof FIGURES)[number]) {
 
 /** Every figure, joined country by country. */
 export async function loadFindings(get: Fetcher = defaultFetch): Promise<Findings> {
-  const [figures, countriesText, fires] = await Promise.all([
+  const [figures, countriesText, fires, ocean] = await Promise.all([
     Promise.all(FIGURES.map((source) => figure(get, source))),
     get(COUNTRIES_URL),
     loadWorldLayer('fires', get),
+    // Only for the introduction's total: its failing must not stop the findings.
+    figure(get, { id: 'plastic', live: OCEAN_PLASTIC_CSV, saved: SAVED_COPIES.plastic, column: COUNTRY_COLUMNS.plastic }).catch(
+      () => null,
+    ),
   ])
   const table: CountryTable = new Map()
   const fromSaved: MetricId[] = []
@@ -93,7 +104,14 @@ export async function loadFindings(get: Fetcher = defaultFetch): Promise<Finding
       if (row) row.fires = density
     }
   }
-  return { table, fromSaved, savedOn: SAVED_ON, years, readOn: new Date().toISOString().slice(0, 10) }
+  const oceanValues = ocean ? [...ocean.values.values()] : []
+  const totals = {
+    oceanPlasticTonnes: ocean ? oceanValues.reduce((sum, v) => sum + v.value, 0) : Number.NaN,
+    oceanPlasticYear: oceanValues.length ? Math.max(...oceanValues.map((v) => v.year)) : Number.NaN,
+    firesToday: fires.kind === 'fires' ? fires.fires.length : Number.NaN,
+    firesSavedOn: fires.kind === 'fires' ? fires.savedOn : null,
+  }
+  return { table, fromSaved, savedOn: SAVED_ON, years, readOn: new Date().toISOString().slice(0, 10), totals }
 }
 
 let kept: Promise<Findings> | null = null

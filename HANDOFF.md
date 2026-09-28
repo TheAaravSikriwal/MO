@@ -278,6 +278,20 @@ self-hosted through `NEXT_PUBLIC_NSFW_MODULE_URL`, which that repo's
   glossary. It downloads as Markdown, and the country data as CSV. It is the
   one place that uses statistical terms, because a formal write-up needs them;
   the glossary defines each.
+* **The introduction** (`src/components/intro/HighlightReel.tsx`) plays on a
+  first visit, remembered in localStorage (`tidy:introduction-seen`): an
+  animated "Welcome to tidy", then one big figure at a time -- air above the
+  WHO's safe limit, plastic into the ocean, fires today, water in good
+  condition, what goes with a cleaner planet -- each with what is behind it
+  and its source, worked out live in `src/lib/worlddata/highlights.ts`, then
+  "Litter is local. So is cleaning it up." Next, Enter or the arrow keys move
+  on; Skip or Escape end it. Then the globe flies in from far out and the
+  panels slide in from the edges (`.mo-enter`, `data-entered` on `main`).
+  Tests that inject a data source get the bare map unless they pass
+  `intro`. Forest-and-leaves styling: `.mo-reel` in `src/index.css`.
+* **About** (`src/components/about/AboutPanel.tsx`), beside the name: why
+  tidy exists, in the maker's own words, a Share button (the share sheet, or
+  the link copied) and "Watch the introduction again".
 * **Saved copies** of every source -- the three layers above, quality of life,
   water, GDP per person and plastic per person -- sit in
   `public/data/*-saved.csv`, dated by `SAVED_ON` in
@@ -358,7 +372,7 @@ The choice is kept in the address as `?world=idea` or `?world=real`. See
 `src/lib/data/worlds.ts` and `src/lib/data/largeDemo.ts`.
 
 ```bash
-npm test              # 1325 tests, including real Postgres via PGlite
+npm test              # 1338 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
 cd worker && npm test # 138 tests
 ```

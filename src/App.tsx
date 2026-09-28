@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { GlobeMap, type FlyTarget, type MapView2 } from './components/map/GlobeMap'
 import { LayerPanel } from './components/map/LayerPanel'
 import { CellCatalog, type CatalogState } from './components/map/CellCatalog'
 import { FindingsPanel } from './components/findings/FindingsPanel'
+import { HighlightReel } from './components/intro/HighlightReel'
+import { AboutPanel } from './components/about/AboutPanel'
 import { useFindings } from './lib/worlddata/useFindings'
 import { getResolution } from 'h3-js'
 import { useWorldData } from './lib/worlddata/useWorldData'
@@ -53,16 +55,71 @@ const PLACE_ZOOM = 16
 export interface AppProps {
   /** Injected in tests; production picks a source from the environment. */
   data?: DataSource
+  /**
+   * Whether the introduction plays first. Production plays it on a first
+   * visit; a test that injects a source gets the bare map unless it asks.
+   */
+  intro?: boolean
+}
+
+/** Remembered in the browser, so the introduction plays on a first visit only. */
+const INTRO_SEEN_KEY = 'tidy:introduction-seen'
+const introSeen = () => {
+  try {
+    return globalThis.localStorage?.getItem(INTRO_SEEN_KEY) === 'yes'
+  } catch {
+    return false
+  }
+}
+const rememberIntroSeen = () => {
+  try {
+    globalThis.localStorage?.setItem(INTRO_SEEN_KEY, 'yes')
+  } catch {
+    // A browser that will not store it plays the introduction again. That is all.
+  }
+}
+
+/**
+ * The introduction, over whatever it introduces. `waiting` is true while it
+ * plays, so the map can hold back its panels and its zoom until it ends;
+ * `replay` plays it again.
+ */
+function Introduced({ first, children }: { first: boolean; children: (waiting: boolean, replay: () => void) => ReactNode }) {
+  const [open, setOpen] = useState(first)
+  // The figures load while the welcome plays, and are kept for the Findings tab.
+  const figures = useFindings(open)
+  return (
+    <>
+      {children(open, () => setOpen(true))}
+      {open && (
+        <HighlightReel
+          state={figures}
+          onDone={() => {
+            rememberIntroSeen()
+            setOpen(false)
+          }}
+        />
+      )}
+    </>
+  )
 }
 
 /** A phone-sized screen: below Tailwind's `md`, where the panels stack. */
 const isPhone = () =>
   typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 767.98px)').matches
 
-export default function App({ data: injected }: AppProps = {}) {
+export default function App({ data: injected, intro }: AppProps = {}) {
   // An injected source is a test's: the bare map, with no switch above it.
-  if (injected) return <MapScreen data={injected} />
-  return <Worlds />
+  if (injected) {
+    return (
+      <Introduced first={intro ?? false}>
+        {(waiting, replay) => <MapScreen data={injected} waiting={waiting} onReplayIntro={replay} />}
+      </Introduced>
+    )
+  }
+  return (
+    <Introduced first={intro ?? !introSeen()}>{(waiting, replay) => <Worlds waiting={waiting} onReplayIntro={replay} />}</Introduced>
+  )
 }
 
 /**
@@ -72,7 +129,7 @@ export default function App({ data: injected }: AppProps = {}) {
  * switching starts it fresh: an open report, a signed-in person or a list of
  * pins from one side can never be shown against the other's data.
  */
-function Worlds() {
+function Worlds({ waiting, onReplayIntro }: { waiting: boolean; onReplayIntro: () => void }) {
   const chosen = useMemo(() => createDataSource(import.meta.env), [])
   const realConnected = !chosen.demo
   const [world, setWorld] = useState<World>(() =>
@@ -110,6 +167,8 @@ function Worlds() {
       key={world}
       data={sourceFor(world)}
       worlds={{ value: world, onChange: setWorld, realConnected }}
+      waiting={waiting}
+      onReplayIntro={onReplayIntro}
     />
   )
 }
@@ -118,15 +177,38 @@ interface MapScreenProps {
   data: DataSource
   /** The switch above the map. Absent when a test renders the map bare. */
   worlds?: { value: World; onChange: (world: World) => void; realConnected: boolean }
+  /** The introduction is playing: hold the panels back, and the globe far out. */
+  waiting?: boolean
+  onReplayIntro?: () => void
 }
 
-function MapScreen({ data, worlds }: MapScreenProps) {
+/**
+ * Where the globe starts while the introduction plays: far out and turned
+ * away, so that when it ends the map can fly in and round to the whole world.
+ */
+const FAR_VIEW = { center: [WORLD_VIEW.center[0] - 25, WORLD_VIEW.center[1] - 110] as [number, number], zoom: 1 }
+
+function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenProps) {
+  // Whether the panels are in. False only from a start behind the introduction.
+  const [entered, setEntered] = useState(!waiting)
+  // Fixed at the first render: where the globe starts.
+  const [start] = useState(() => (waiting ? FAR_VIEW : WORLD_VIEW))
+  const [aboutOpen, setAboutOpen] = useState(false)
   // "Real world" with no database behind it. Nothing can be read, and nothing
   // may be written: a report added here would look real and go nowhere.
   const unconnected = worlds?.value === 'real' && !worlds.realConnected
 
   const [view, setView] = useState<MapView2>({ ...WORLD_VIEW, bounds: WHOLE_WORLD })
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null)
+  useEffect(() => {
+    if (waiting || entered) return
+    setEntered(true)
+    setFlyTo({ center: WORLD_VIEW.center, zoom: WORLD_VIEW.zoom, nonce: Date.now() })
+  }, [waiting, entered])
+  // Played again from About: close it, and let the reel play over the map.
+  useEffect(() => {
+    if (waiting) setAboutOpen(false)
+  }, [waiting])
   /**
    * The aggregated cells AND the resolution they were computed at, set
    * together.
@@ -507,12 +589,15 @@ function MapScreen({ data, worlds }: MapScreenProps) {
   }
 
   return (
-    <main className="mo-space relative h-full w-full">
+    <main className="mo-space relative h-full w-full" data-entered={entered ? 'yes' : 'no'}>
       {/*
         The log behind a tower: on the right, under the map's own buttons; on a
         phone, a sheet along the bottom, clear of the name, tabs and search.
       */}
-      <div className="pointer-events-none absolute inset-x-3 bottom-3 z-[1002] md:inset-x-auto md:bottom-auto md:right-14 md:top-4 md:z-[1001] md:w-[22rem]">
+      <div
+        className="mo-enter mo-enter--right pointer-events-none absolute inset-x-3 bottom-3 z-[1002] md:inset-x-auto md:bottom-auto md:right-14 md:top-4 md:z-[1001] md:w-[22rem]"
+        style={{ '--delay': '350ms' } as CSSProperties}
+      >
         <div className="pointer-events-auto">
           <Reveal show={picked !== null} from="above">
             {picked && (
@@ -527,7 +612,8 @@ function MapScreen({ data, worlds }: MapScreenProps) {
         </div>
       </div>
       <div
-        className={`pointer-events-none absolute bottom-24 right-3 z-[1000] w-[min(19rem,calc(100vw-1.5rem))] md:bottom-10 md:right-4 ${
+        style={{ '--delay': '450ms' } as CSSProperties}
+        className={`mo-enter mo-enter--right pointer-events-none absolute bottom-24 right-3 z-[1000] w-[min(19rem,calc(100vw-1.5rem))] md:bottom-10 md:right-4 ${
           // Under the list's sheet on a phone: out of the way while it is open.
           picked ? 'max-md:hidden' : ''
         }`}
@@ -575,6 +661,13 @@ function MapScreen({ data, worlds }: MapScreenProps) {
         on a wide screen, below the name and tabs on a phone. Over the list and
         the layer switches, which are about the map it covers.
       */}
+      {aboutOpen && (
+        <div className="pointer-events-none absolute inset-3 z-[1004] md:inset-x-[max(1rem,calc(50%-26rem))] md:bottom-10 md:top-6">
+          <div className="mo-swap-in pointer-events-auto h-full">
+            <AboutPanel onClose={() => setAboutOpen(false)} onReplay={() => onReplayIntro?.()} />
+          </div>
+        </div>
+      )}
       {tab === 'findings' && (
         <div className="pointer-events-none absolute inset-x-3 bottom-3 top-[12.5rem] z-[1003] md:bottom-10 md:left-[26.5rem] md:right-4 md:top-4 xl:top-28">
           <div className="mo-swap-in pointer-events-auto h-full">
@@ -599,7 +692,10 @@ function MapScreen({ data, worlds }: MapScreenProps) {
         report open under the filters ran off the bottom of the screen. Only
         the panels take the pointer; the gaps between them are still the map.
       */}
-      <div className="mo-column pointer-events-none absolute inset-0 z-[1000] flex flex-col gap-3 overflow-y-auto p-4">
+      <div
+        className="mo-column mo-enter mo-enter--left pointer-events-none absolute inset-0 z-[1000] flex flex-col gap-3 overflow-y-auto p-4"
+        style={{ '--delay': '200ms' } as CSSProperties}
+      >
         {worlds && (
           <div className="pointer-events-auto w-[min(26rem,calc(100vw-2rem))] xl:absolute xl:left-1/2 xl:top-4 xl:-translate-x-1/2">
             <WorldSwitch
@@ -610,10 +706,20 @@ function MapScreen({ data, worlds }: MapScreenProps) {
           </div>
         )}
         <div className="pointer-events-auto w-[min(24rem,calc(100vw-2rem))]">
-          {/* The app's name. Lower case on purpose. */}
-          <p className="mo-glass inline-block rounded-2xl px-3.5 py-1 text-xl font-semibold tracking-tight text-emerald-800">
-            tidy
-          </p>
+          {/* The app's name, lower case on purpose, and what it is about. */}
+          <div className="flex items-center gap-2">
+            <p className="mo-glass inline-block rounded-2xl px-3.5 py-1 text-xl font-semibold tracking-tight text-emerald-800">
+              tidy
+            </p>
+            <button
+              type="button"
+              onClick={() => setAboutOpen(true)}
+              aria-expanded={aboutOpen}
+              className="mo-glass rounded-2xl px-3.5 py-1.5 text-sm font-medium text-slate-800 hover:text-slate-950"
+            >
+              About
+            </button>
+          </div>
           <div className="mt-2">
           <MapTabs
             value={tab}
@@ -852,8 +958,8 @@ function MapScreen({ data, worlds }: MapScreenProps) {
       </div>
 
       <GlobeMap
-        initialCenter={WORLD_VIEW.center}
-        initialZoom={WORLD_VIEW.zoom}
+        initialCenter={start.center}
+        initialZoom={start.zoom}
         flyTo={flyTo}
         onViewChange={setView}
         // Towers while aggregated. Handing it none -- pins taking over, or

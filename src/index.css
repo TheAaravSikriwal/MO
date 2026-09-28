@@ -71,6 +71,84 @@ body,
   scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
 }
 
+/* The introduction: a forest at dusk, leaves moving in the air. */
+.mo-reel {
+  background:
+    radial-gradient(ellipse at 22% 18%, rgba(149, 213, 178, 0.18), transparent 55%),
+    radial-gradient(ellipse at 80% 85%, rgba(82, 183, 136, 0.16), transparent 50%),
+    radial-gradient(ellipse at 50% 40%, #1b4332 0%, #10301f 55%, #081c12 100%);
+  color: #f4f1e6;
+}
+
+@keyframes mo-leaf-sway {
+  from { transform: rotate(-7deg) translateY(0); }
+  to { transform: rotate(7deg) translateY(-10px); }
+}
+.mo-reel-leaf {
+  transform-box: fill-box;
+  transform-origin: 10% 50%;
+  animation: mo-leaf-sway 5.5s ease-in-out infinite alternate;
+}
+
+@keyframes mo-draw {
+  from { stroke-dashoffset: var(--length, 1200); }
+  to { stroke-dashoffset: 0; }
+}
+.mo-reel-vine {
+  stroke-dasharray: var(--length, 1200);
+  animation: mo-draw 2.4s cubic-bezier(0.3, 0.7, 0.2, 1) both;
+}
+
+@keyframes mo-rise {
+  from { opacity: 0; transform: translateY(28px); filter: blur(6px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+.mo-reel-rise {
+  animation: mo-rise 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: var(--delay, 0ms);
+}
+
+@keyframes mo-sprout {
+  from { opacity: 0; transform: scale(0); }
+  to { opacity: 1; transform: scale(1); }
+}
+.mo-reel-sprout {
+  transform-box: fill-box;
+  animation: mo-sprout 800ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: var(--delay, 0ms);
+}
+
+/* Once the introduction ends, the panels come in from the edges, one after another. */
+.mo-enter {
+  transition:
+    transform 900ms cubic-bezier(0.2, 0.8, 0.2, 1) var(--delay, 0ms),
+    opacity 700ms ease-out var(--delay, 0ms);
+}
+[data-entered='no'] .mo-enter--left {
+  transform: translateX(-120%);
+  opacity: 0;
+}
+[data-entered='no'] .mo-enter--right {
+  transform: translateX(120%);
+  opacity: 0;
+}
+[data-entered='no'] .mo-enter--top {
+  transform: translateY(-140%);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mo-reel-leaf,
+  .mo-reel-vine,
+  .mo-reel-rise,
+  .mo-reel-sprout {
+    animation: none;
+  }
+  .mo-enter {
+    transition: opacity 200ms linear;
+  }
+}
+
 /* Frosted glass for everything that floats over the map. */
 .mo-glass {
   background: rgba(255, 255, 255, 0.82);
