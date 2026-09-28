@@ -4,6 +4,14 @@ import { FadeBook } from './fades'
 const book = () => new FadeBook<string>((s) => s, 200)
 const opacities = (b: FadeBook<string>) => Object.fromEntries(b.shown().map((e) => [e.key, e.opacity]))
 
+/** Fade points all the way in, then pause, so a test starts from them fully shown. */
+const shownFully = (b: FadeBook<string>, items: string[]) => {
+  b.set(items)
+  b.step(-100_000)
+  b.step(-90_000)
+  b.pause()
+}
+
 describe('FadeBook', () => {
   it('fades a new point in over the fade, rather than showing it at once', () => {
     const b = book()
@@ -18,7 +26,7 @@ describe('FadeBook', () => {
 
   it('keeps a removed point, marked leaving, while it fades out, then drops it', () => {
     const b = book()
-    b.set(['a', 'b'], true)
+    shownFully(b, ['a', 'b'])
     b.set(['a'])
     b.step(0)
     expect(b.shown().find((e) => e.key === 'b')?.leaving).toBe(true)
@@ -30,7 +38,7 @@ describe('FadeBook', () => {
 
   it('turns round a point that comes back part-way through leaving', () => {
     const b = book()
-    b.set(['a'], true)
+    shownFully(b, ['a'])
     b.set([])
     b.step(0)
     b.step(100)
@@ -50,7 +58,7 @@ describe('FadeBook', () => {
 
   it('does not count time spent idle after a pause', () => {
     const b = book()
-    b.set(['a'], true)
+    shownFully(b, ['a'])
     b.step(0)
     b.pause()
     b.set([])
@@ -58,13 +66,5 @@ describe('FadeBook', () => {
     expect(opacities(b).a).toBe(1)
     b.step(10_100)
     expect(opacities(b).a).toBeCloseTo(0.5)
-  })
-
-  it('shows and hides at once for anyone who has asked for reduced motion', () => {
-    const b = book()
-    b.set(['a', 'b'], true)
-    expect(opacities(b)).toEqual({ a: 1, b: 1 })
-    b.set(['a'], true)
-    expect(Object.keys(opacities(b))).toEqual(['a'])
   })
 })

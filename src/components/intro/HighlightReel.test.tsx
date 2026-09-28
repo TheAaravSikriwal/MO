@@ -96,6 +96,22 @@ describe('HighlightReel', () => {
     }
   })
 
+  it('lets each slide leave in full even on a machine set to reduce motion', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
+    try {
+      render(<HighlightReel state={ready} onDone={vi.fn()} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Begin' }))
+      expect(screen.getByTestId('foliage')).toHaveAttribute('data-leaving', 'yes')
+      expect(screen.queryByText('59 of 60')).not.toBeInTheDocument()
+      act(() => vi.advanceTimersByTime(SLIDE_EXIT_MS))
+      expect(screen.getByText('59 of 60')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('gives every slide its own leaves, the same each time', () => {
     const where = (n: number) => JSON.stringify(leafSpots(n))
     expect(where(0)).not.toBe(where(1))

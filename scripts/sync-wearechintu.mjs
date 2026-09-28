@@ -48,6 +48,9 @@ const SKIP = new Set([
   'lib/worlddata/saved.test.ts',
   'lib/geo/countries.test.ts',
   'App.findings.test.tsx',
+  // Reads MO's src/index.css off disk; the site's map.css is held to the same
+  // rules by the style drift check instead.
+  'test/stylesheet.test.ts',
 ])
 const SKIP_DIRS = new Set(['lib/db'])
 

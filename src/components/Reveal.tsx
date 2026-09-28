@@ -21,28 +21,18 @@ export interface RevealProps {
   keepMounted?: boolean
 }
 
-export const prefersReducedMotion = () =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
 /**
  * Keeps something around for the length of its exit, then lets it go.
  *
  * `mounted` is whether to draw it at all; `visible` whether it should be in
  * its "on" state. Entering, both turn true together; leaving, `visible` goes
- * at once and `mounted` follows `ms` later. With "reduce motion" switched on
- * both go at once.
+ * at once and `mounted` follows `ms` later.
  */
 export function useLinger(show: boolean, ms: number = REVEAL_MS) {
   const [mounted, setMounted] = useState(show)
   useEffect(() => {
     if (show) {
       setMounted(true)
-      return
-    }
-    if (prefersReducedMotion()) {
-      setMounted(false)
       return
     }
     const timer = setTimeout(() => setMounted(false), ms)
@@ -83,12 +73,11 @@ export function useLingeringList<T>(
   const [, rerender] = useState(0)
 
   const present = new Set(items.map(keyOf))
-  const reduced = prefersReducedMotion()
   // Newly dropped since the last render: keep them where they were. Only what
   // was really there last time -- one that had already finished leaving would
   // otherwise be picked up again and leave for ever.
   lastShown.current.forEach((entry, index) => {
-    if (!entry.leaving && !present.has(entry.key) && !leaving.current.has(entry.key) && !reduced) {
+    if (!entry.leaving && !present.has(entry.key) && !leaving.current.has(entry.key)) {
       leaving.current.set(entry.key, { item: entry.item, index, timed: false })
     }
   })
@@ -146,9 +135,8 @@ export function useLingeringList<T>(
  * overflow that the height animation needs, so once it has arrived the clip
  * is lifted.
  *
- * With "reduce motion" switched on it neither moves nor waits: things simply
- * appear and disappear. Some people get sick from motion, and a panel sliding
- * about is never worth that.
+ * It moves for everyone, including machines set to reduce motion, as the rest
+ * of the site does (its src/lib/motion.js): the movement is part of the app.
  */
 export function Reveal({ show, children, from = 'below', gap = '', keepMounted = false }: RevealProps) {
   const { mounted } = useLinger(show)
@@ -171,10 +159,6 @@ export function Reveal({ show, children, from = 'below', gap = '', keepMounted =
     if (!show) {
       setOn(false)
       setSettled(false)
-      return
-    }
-    if (prefersReducedMotion()) {
-      setSettled(true)
       return
     }
     const timer = setTimeout(() => setSettled(true), REVEAL_MS)
@@ -204,7 +188,7 @@ export function Reveal({ show, children, from = 'below', gap = '', keepMounted =
       // `translate`, not `transform`: in Tailwind 4 the translate-y utilities set
       // the CSS translate property, so a transition on transform left the slide
       // snapping while only the fade and the height moved.
-      className={`grid transition-[grid-template-rows,opacity,translate] duration-200 ease-out motion-reduce:transition-none ${
+      className={`grid transition-[grid-template-rows,opacity,translate] duration-200 ease-out ${
         arrived ? 'grid-rows-[1fr] translate-y-0 opacity-100' : `grid-rows-[0fr] ${off} opacity-0`
       }`}
     >
@@ -248,7 +232,7 @@ export function Swap({ id, children, inline = false }: SwapProps) {
             if (leaving) element.setAttribute('inert', '')
             else element.removeAttribute('inert')
           }}
-          className={`transition-opacity duration-200 ease-out motion-reduce:transition-none ${
+          className={`transition-opacity duration-200 ease-out ${
             leaving ? 'pointer-events-none opacity-0' : 'mo-swap-in opacity-100'
           }`}
         >

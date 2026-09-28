@@ -21,6 +21,7 @@
   // neither. Check with `npx tsc -p tsconfig.node.json --listFiles`.
   "exclude": [],
   "include": [
+    "src/test/stylesheet.test.ts",
     "vite.config.ts",
     "src/lib/db/migrations.test.ts",
     "src/lib/db/migrations.run.test.ts",

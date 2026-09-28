@@ -106,11 +106,6 @@ export interface GlobeMapProps {
   selectedCell: string | null
 }
 
-const prefersReducedMotion = () =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
 const CELL_LAYERS = ['mo-cells-0', 'mo-cells-1'] as const
 const CELL_OPACITY = 0.9
 
@@ -248,12 +243,11 @@ export function GlobeMap(props: GlobeMapProps) {
   ) => {
     const map = mapRef.current
     if (!map || !ready.current) return
-    const instant = prefersReducedMotion()
-    book.set(features, instant)
+    book.set(features)
     const shown = book.shown()
     ;(map.getSource(source) as GeoJSONSource).setData({ type: 'FeatureCollection', features: shown.map((e) => e.item) })
     for (const entry of shown) map.setFeatureState({ source, id: entry.key }, { o: entry.opacity })
-    if (!instant) animatePoints()
+    animatePoints()
   }
 
   const drawCells = () => {
@@ -261,8 +255,7 @@ export function GlobeMap(props: GlobeMapProps) {
     if (!map || !ready.current) return
     const { cells, cellsKey } = latest.current
     const data = withNight(cellFeatures(cells), new Date())
-    const reduced = prefersReducedMotion()
-    const transition = { duration: reduced ? 0 : 320, delay: 0 }
+    const transition = { duration: 320, delay: 0 }
     const show = (i: number, data: GeoJSON.FeatureCollection) => {
       const timer = clearTimers.current[i]
       if (timer !== null) clearTimeout(timer)
@@ -316,12 +309,6 @@ export function GlobeMap(props: GlobeMapProps) {
   const fadeWorld = (map: LibreMap, target: number, done?: () => void) => {
     if (worldFrame.current !== null) cancelAnimationFrame(worldFrame.current)
     worldFrame.current = null
-    if (prefersReducedMotion()) {
-      worldOn.current = target
-      setWorldOpacity(map, target)
-      done?.()
-      return
-    }
     let last: number | null = null
     const tick = (now: number) => {
       const dt = last === null ? 16 : now - last
@@ -655,8 +642,9 @@ export function GlobeMap(props: GlobeMapProps) {
     if (!map || !target) return
     const next = { center: [target.center[1], target.center[0]] as [number, number], zoom: toLibreZoom(target.zoom) }
     // Keyed on the nonce, not the place: asking to go somewhere twice still moves the map.
-    if (prefersReducedMotion()) map.jumpTo(next)
-    else map.flyTo({ ...next, essential: true, speed: 1.4 })
+    // `essential`: MapLibre would otherwise jump for anyone set to reduce
+    // motion. Here it flies for everyone, as the rest of the site moves.
+    map.flyTo({ ...next, essential: true, speed: 1.4 })
   }, [nonce])
 
   return (

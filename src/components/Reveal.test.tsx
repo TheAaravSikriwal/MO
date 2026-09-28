@@ -123,11 +123,15 @@ describe('Reveal', () => {
     expect(screen.getByRole('button', { name: 'Hello' })).toBeInTheDocument()
   })
 
-  it('does not move or wait for anyone who has asked for reduced motion', () => {
+  it('moves for everyone, even on a machine set to reduce motion, as the rest of the site does', () => {
+    vi.useFakeTimers()
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
     const { rerender } = render(<Panel show />)
-    expect(box().className).toContain('motion-reduce:transition-none')
+    expect(box().className).not.toContain('motion-reduce')
     rerender(<Panel show={false} />)
+    // Still there, leaving, for the length of its exit.
+    expect(screen.getByText('Hello')).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(REVEAL_MS))
     expect(screen.queryByText('Hello')).not.toBeInTheDocument()
   })
 })
@@ -188,10 +192,13 @@ describe('useLingeringList', () => {
     expect(rows()).toEqual(['a:no', 'b:no'])
   })
 
-  it('drops removed items at once for anyone who has asked for reduced motion', () => {
+  it('lets removed items leave slowly even on a machine set to reduce motion', () => {
+    vi.useFakeTimers()
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
     const { rerender } = render(<List items={['a', 'b']} />)
     rerender(<List items={['a']} />)
+    expect(rows()).toEqual(['a:no', 'b:yes'])
+    act(() => vi.advanceTimersByTime(REVEAL_MS))
     expect(rows()).toEqual(['a:no'])
   })
 })
@@ -219,10 +226,13 @@ describe('Swap', () => {
     expect(screen.getByRole('button', { name: 'Leave' })).toBeInTheDocument()
   })
 
-  it('swaps at once for anyone who has asked for reduced motion', () => {
+  it('cross-fades even on a machine set to reduce motion', () => {
+    vi.useFakeTimers()
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
     const { rerender } = render(<Button state="join" />)
     rerender(<Button state="leave" />)
+    expect(screen.getByText('Join')).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(REVEAL_MS))
     expect(screen.queryByText('Join')).not.toBeInTheDocument()
   })
 })

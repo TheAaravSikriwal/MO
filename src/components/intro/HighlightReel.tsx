@@ -22,11 +22,6 @@ type Slide =
 /** How long a slide takes to leave before the next arrives. Matches .mo-reel-leave. */
 export const SLIDE_EXIT_MS = 440
 
-const reducedMotion = () =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
 /** One leaf: a curved blade with a vein down the middle. */
 function Blade({ colour }: { colour: string }) {
   return (
@@ -197,10 +192,6 @@ export function HighlightReel({ state, onDone }: HighlightReelProps) {
   /** Let the slide leave, then do what comes after. */
   const leaveThen = (then: () => void) => {
     if (leaving) return
-    if (reducedMotion()) {
-      then()
-      return
-    }
     setLeaving(true)
     timer.current = setTimeout(() => {
       timer.current = null

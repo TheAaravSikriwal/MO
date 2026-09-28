@@ -29,10 +29,9 @@ export class FadeBook<T> {
 
   /**
    * What should be shown now. New items start invisible and fade in; items no
-   * longer listed fade out, and are kept until they have. `instant` skips the
-   * fading altogether, for anyone who has asked for reduced motion.
+   * longer listed fade out, and are kept until they have.
    */
-  set(items: readonly T[], instant = false): void {
+  set(items: readonly T[]): void {
     const wanted = new Set<string>()
     for (const item of items) {
       const key = this.keyOf(item)
@@ -41,15 +40,13 @@ export class FadeBook<T> {
       if (existing) {
         existing.item = item
         existing.target = 1
-        if (instant) existing.opacity = 1
       } else {
-        this.entries.set(key, { item, opacity: instant ? 1 : 0, target: 1 })
+        this.entries.set(key, { item, opacity: 0, target: 1 })
       }
     }
     for (const [key, entry] of this.entries) {
       if (wanted.has(key)) continue
       entry.target = 0
-      if (instant) this.entries.delete(key)
     }
   }
 

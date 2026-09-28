@@ -293,6 +293,10 @@ self-hosted through `NEXT_PUBLIC_NSFW_MODULE_URL`, which that repo's
   panels slide in from the edges (`.mo-enter`, `data-entered` on `main`).
   Tests that inject a data source get the bare map unless they pass
   `intro`. Forest-and-leaves styling: `.mo-reel` in `src/index.css`.
+* **Motion plays for everyone**, including machines set to reduce motion, as
+  on the rest of wearechintu (its src/lib/motion.js): no prefers-reduced-motion
+  gates in the CSS (src/test/stylesheet.test.ts keeps it so) or the components,
+  and the globe flies with `essential: true` so MapLibre does not jump.
 * **Green and white throughout.** The app's greys and violets are redefined
   on `main.mo-space` (`src/index.css`) as forest greens and leaf lime, so every
   Tailwind class takes them: the idea side is lime, the real side emerald,
@@ -380,7 +384,7 @@ The choice is kept in the address as `?world=idea` or `?world=real`. See
 `src/lib/data/worlds.ts` and `src/lib/data/largeDemo.ts`.
 
 ```bash
-npm test              # 1341 tests, including real Postgres via PGlite
+npm test              # 1344 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
 cd worker && npm test # 138 tests
 ```

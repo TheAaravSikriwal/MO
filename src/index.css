@@ -30,12 +30,9 @@ body,
 
 /* Some people get sick from motion like this, and a cleanup should never cost
    them that. The state still changes; only the movement stops. */
-@media (prefers-reduced-motion: reduce) {
-  .mo-scrub--playing,
-  .mo-scrub--playing .mo-sparkle {
-    animation: none;
-  }
-}
+/* Motion plays for everyone, including machines that ask for less of it,
+   as on the rest of the site: the movement is part of what tidy is. So there
+   are no prefers-reduced-motion gates here or in the components. */
 
 /* A state that replaces another fades in over it (Swap in Reveal.tsx). */
 @keyframes mo-swap-in {
@@ -45,12 +42,6 @@ body,
 
 .mo-swap-in {
   animation: mo-swap-in 200ms ease-out both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mo-swap-in {
-    animation: none;
-  }
 }
 
 /* Space, behind the globe: black, with faint stars. */
@@ -217,14 +208,6 @@ body,
 .mo-reel-leave {
   animation: mo-reel-leave 420ms cubic-bezier(0.55, 0, 0.8, 0.4) both;
 }
-@media (prefers-reduced-motion: reduce) {
-  .mo-leaf-in,
-  .mo-leaf-out,
-  .mo-reel-leave {
-    animation: none;
-  }
-}
-
 /* Once the introduction ends, the panels come in from the edges, one after another. */
 .mo-enter {
   transition:
@@ -242,18 +225,6 @@ body,
 [data-entered='no'] .mo-enter--top {
   transform: translateY(-140%);
   opacity: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mo-reel-leaf,
-  .mo-reel-vine,
-  .mo-reel-rise,
-  .mo-reel-sprout {
-    animation: none;
-  }
-  .mo-enter {
-    transition: opacity 200ms linear;
-  }
 }
 
 /* tidy's colours, in the app itself: the forest and the leaves of its

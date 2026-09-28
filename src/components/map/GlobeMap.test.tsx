@@ -127,6 +127,20 @@ const props = () => ({
   selectedCell: null,
 })
 
+/**
+ * Runs every animation frame straight away, each 16 ms after the last, so a
+ * fade finishes inside the test that starts it.
+ */
+function framesAtOnce() {
+  let clock = 0
+  vi.stubGlobal('requestAnimationFrame', (fn: (now: number) => void) => {
+    clock += 16
+    fn(clock)
+    return clock
+  })
+  vi.stubGlobal('cancelAnimationFrame', () => {})
+}
+
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
@@ -273,7 +287,7 @@ describe('GlobeMap — world data on the flat map', () => {
   })
 
   it('draws the tint as a plain fill, under the litter towers, and fades both together', () => {
-    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
+    framesAtOnce()
     const world = { layer: 'air' as const, features: { type: 'FeatureCollection' as const, features: [] } }
     render(<GlobeMap {...props()} world={world} />)
     act(() => FakeMap.last.fire('style.load'))
@@ -290,7 +304,7 @@ describe('GlobeMap — world data on the flat map', () => {
 describe('GlobeMap — every layer is one MapLibre accepts', () => {
   it('passes the style validator, with every paint value it sets later', async () => {
     const { validateStyleMin } = await import('@maplibre/maplibre-gl-style-spec')
-    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
+    framesAtOnce()
     const cell = latLngToCell(51.5, -0.12, 4)
     const world = { layer: 'fires' as const, features: { type: 'FeatureCollection' as const, features: [] } }
     render(<GlobeMap {...props()} cells={[{ cell, weight: 3, reportCount: 4, t: 1 }]} world={world} />)
@@ -387,7 +401,7 @@ describe('GlobeMap — what the app draws is in the dark too', () => {
   })
 
   it('gives each tower its night colours, and works them out again as the night moves', () => {
-    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
+    framesAtOnce()
     let everyMinute: (() => void) | null = null
     const real = window.setInterval.bind(window)
     vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
@@ -409,5 +423,23 @@ describe('GlobeMap — what the app draws is in the dark too', () => {
     act(() => everyMinute!())
     expect(drawn().length).toBeGreaterThan(before)
     vi.restoreAllMocks()
+  })
+})
+
+describe('GlobeMap — motion for everyone', () => {
+  it('flies, and fades the world in, even on a machine set to reduce motion', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }))
+    const frames: Array<(now: number) => void> = []
+    vi.stubGlobal('requestAnimationFrame', (fn: (now: number) => void) => frames.push(fn))
+    const flown = vi.spyOn(FakeMap.prototype, 'flyTo')
+    const jumped = vi.spyOn(FakeMap.prototype, 'jumpTo')
+    const world = { layer: 'air' as const, features: { type: 'FeatureCollection' as const, features: [] } }
+    const { rerender } = render(<GlobeMap {...props()} world={world} />)
+    act(() => FakeMap.last.fire('style.load'))
+    // The world fades in over frames rather than appearing at once.
+    expect(frames.length).toBeGreaterThan(0)
+    rerender(<GlobeMap {...props()} world={world} flyTo={{ center: [10, 20], zoom: 3, nonce: 1 }} />)
+    expect(flown).toHaveBeenCalledWith(expect.objectContaining({ essential: true }))
+    expect(jumped).not.toHaveBeenCalled()
   })
 })
