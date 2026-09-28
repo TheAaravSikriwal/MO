@@ -178,6 +178,53 @@ body,
   animation-delay: var(--delay, 0ms);
 }
 
+/* Each slide's leaves grow in from the edge as it arrives, and drift off as
+   it goes; its words fade up and away. --dx, --dy and --spin say where each
+   leaf comes from, set per leaf. */
+@keyframes mo-leaf-enter {
+  from {
+    opacity: 0;
+    transform: translate(var(--dx, -60px), var(--dy, 40px)) rotate(var(--spin, -50deg)) scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mo-leaf-exit {
+  to {
+    opacity: 0;
+    transform: translate(calc(var(--dx, -60px) * -0.8), calc(var(--dy, 40px) * -1 + 70px)) rotate(calc(var(--spin, -50deg) * -1.4)) scale(0.6);
+  }
+}
+.mo-leaf-in {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mo-leaf-enter 950ms cubic-bezier(0.2, 0.8, 0.2, 1) var(--delay, 0ms) both;
+}
+.mo-leaf-out {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mo-leaf-exit 460ms cubic-bezier(0.55, 0, 0.8, 0.4) both;
+}
+@keyframes mo-reel-leave {
+  to {
+    opacity: 0;
+    transform: translateY(-22px);
+    filter: blur(5px);
+  }
+}
+.mo-reel-leave {
+  animation: mo-reel-leave 420ms cubic-bezier(0.55, 0, 0.8, 0.4) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mo-leaf-in,
+  .mo-leaf-out,
+  .mo-reel-leave {
+    animation: none;
+  }
+}
+
 /* Once the introduction ends, the panels come in from the edges, one after another. */
 .mo-enter {
   transition:
@@ -209,15 +256,47 @@ body,
   }
 }
 
+/* tidy's colours, in the app itself: the forest and the leaves of its
+   introduction. Tailwind 4 reads every colour from a variable, so redefining
+   the families here recolours the whole app at once. Slate, its greys, becomes
+   a scale from near-white through moss to deep forest; violet, which marks
+   "The idea", becomes leaf lime, so the two sides stay plainly apart
+   (lime against the real side's emerald). Rose and amber keep their meaning:
+   a problem, a caution. */
+main.mo-space {
+  --color-slate-50: oklch(0.985 0.008 155);
+  --color-slate-100: oklch(0.965 0.015 155);
+  --color-slate-200: oklch(0.925 0.024 155);
+  --color-slate-300: oklch(0.86 0.036 155);
+  --color-slate-400: oklch(0.71 0.05 155);
+  --color-slate-500: oklch(0.56 0.055 155);
+  --color-slate-600: oklch(0.46 0.056 155);
+  --color-slate-700: oklch(0.39 0.052 155);
+  --color-slate-800: oklch(0.31 0.048 155);
+  --color-slate-900: oklch(0.27 0.052 155);
+  --color-slate-950: oklch(0.18 0.04 155);
+  --color-violet-50: oklch(0.986 0.03 125);
+  --color-violet-100: oklch(0.965 0.06 125);
+  --color-violet-200: oklch(0.93 0.11 126);
+  --color-violet-300: oklch(0.89 0.15 127);
+  --color-violet-400: oklch(0.82 0.17 128);
+  --color-violet-500: oklch(0.7 0.17 130);
+  --color-violet-600: oklch(0.52 0.15 132);
+  --color-violet-700: oklch(0.45 0.13 132);
+  --color-violet-800: oklch(0.38 0.11 133);
+  --color-violet-900: oklch(0.31 0.08 134);
+}
+
 /* Frosted glass for everything that floats over the map. */
 .mo-glass {
-  background: rgba(255, 255, 255, 0.82);
+  /* White with a breath of leaf in it, and forest-dark shadows. */
+  background: rgba(248, 252, 246, 0.86);
   -webkit-backdrop-filter: blur(18px) saturate(1.5);
   backdrop-filter: blur(18px) saturate(1.5);
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(216, 243, 220, 0.75);
   box-shadow:
-    0 18px 40px -18px rgba(2, 6, 23, 0.45),
-    0 2px 6px -2px rgba(2, 6, 23, 0.12),
+    0 18px 40px -18px rgba(8, 28, 18, 0.5),
+    0 2px 6px -2px rgba(8, 28, 18, 0.14),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 

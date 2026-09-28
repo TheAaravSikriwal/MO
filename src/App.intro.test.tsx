@@ -33,21 +33,21 @@ describe('the introduction', () => {
     expect(main()).toHaveAttribute('data-entered', 'no')
     expect(mapControl.flyTo).not.toHaveBeenCalled()
 
-    await user.click(within(reel).getByRole('button', { name: 'Skip introduction' }))
+    await user.click(within(reel).getByRole('button', { name: 'Skip intro' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Introduction to tidy' })).not.toBeInTheDocument())
     expect(main()).toHaveAttribute('data-entered', 'yes')
     // The zoom into Earth: to the whole globe.
     expect(mapControl.flyTo).toHaveBeenCalledWith([20, 10], 2.9)
   })
 
-  it('is remembered, so it does not play again on the next visit', async () => {
+  it('plays every time the map is opened, even after it has been skipped', async () => {
     const user = userEvent.setup()
     const { unmount } = render(<App intro={undefined} />)
-    await user.click(screen.getByRole('button', { name: 'Skip introduction' }))
+    await user.click(screen.getByRole('button', { name: 'Skip intro' }))
     unmount()
     render(<App intro={undefined} />)
-    expect(screen.queryByRole('dialog', { name: 'Introduction to tidy' })).not.toBeInTheDocument()
-    expect(main()).toHaveAttribute('data-entered', 'yes')
+    expect(screen.getByRole('dialog', { name: 'Introduction to tidy' })).toBeInTheDocument()
+    expect(main()).toHaveAttribute('data-entered', 'no')
   })
 
   it('does not play for a map shown without it, and the panels are in from the start', () => {

@@ -56,27 +56,11 @@ export interface AppProps {
   /** Injected in tests; production picks a source from the environment. */
   data?: DataSource
   /**
-   * Whether the introduction plays first. Production plays it on a first
-   * visit; a test that injects a source gets the bare map unless it asks.
+   * Whether the introduction plays first. Production plays it every time the
+   * map is opened, with a large skip button; a test that injects a source
+   * gets the bare map unless it asks.
    */
   intro?: boolean
-}
-
-/** Remembered in the browser, so the introduction plays on a first visit only. */
-const INTRO_SEEN_KEY = 'tidy:introduction-seen'
-const introSeen = () => {
-  try {
-    return globalThis.localStorage?.getItem(INTRO_SEEN_KEY) === 'yes'
-  } catch {
-    return false
-  }
-}
-const rememberIntroSeen = () => {
-  try {
-    globalThis.localStorage?.setItem(INTRO_SEEN_KEY, 'yes')
-  } catch {
-    // A browser that will not store it plays the introduction again. That is all.
-  }
 }
 
 /**
@@ -94,10 +78,7 @@ function Introduced({ first, children }: { first: boolean; children: (waiting: b
       {open && (
         <HighlightReel
           state={figures}
-          onDone={() => {
-            rememberIntroSeen()
-            setOpen(false)
-          }}
+          onDone={() => setOpen(false)}
         />
       )}
     </>
@@ -118,7 +99,7 @@ export default function App({ data: injected, intro }: AppProps = {}) {
     )
   }
   return (
-    <Introduced first={intro ?? !introSeen()}>{(waiting, replay) => <Worlds waiting={waiting} onReplayIntro={replay} />}</Introduced>
+    <Introduced first={intro ?? true}>{(waiting, replay) => <Worlds waiting={waiting} onReplayIntro={replay} />}</Introduced>
   )
 }
 

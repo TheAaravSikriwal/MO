@@ -5,9 +5,12 @@ import type { FindingsState } from '../../lib/worlddata/useFindings'
 /**
  * The introduction to tidy: a short reel of where the planet stands, one big
  * figure at a time, with what is behind it. A welcome first, the figures,
- * then what anyone can do about the litter near them. One button moves on;
- * the arrow keys and Enter do too, and Escape, or "Skip", goes straight to
- * the map.
+ * then what anyone can do about the litter near them.
+ *
+ * Every slide arrives and leaves: its leaves grow in from the edges and drift
+ * off again, and its words rise in and fade away, before the next one comes.
+ * One button moves on; the arrow keys and Enter do too. "Skip intro", large
+ * at the top, or Escape, goes straight to the map at any point.
  */
 
 type Slide =
@@ -16,46 +19,124 @@ type Slide =
   | { kind: 'fact'; fact: Highlight }
   | { kind: 'finale' }
 
+/** How long a slide takes to leave before the next arrives. Matches .mo-reel-leave. */
+export const SLIDE_EXIT_MS = 440
+
+const reducedMotion = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
 /** One leaf: a curved blade with a vein down the middle. */
-function Leaf({ x, y, size, rotate, colour, delay }: { x: number; y: number; size: number; rotate: number; colour: string; delay: number }) {
+function Blade({ colour }: { colour: string }) {
   return (
-    <g transform={`translate(${x} ${y}) rotate(${rotate}) scale(${size})`}>
-      <g className="mo-reel-leaf" style={{ animationDelay: `${delay}ms` } as CSSProperties}>
-        <path d="M0 0 C 18 -26 58 -30 84 0 C 58 30 18 26 0 0 Z" fill={colour} />
-        <path d="M2 0 C 30 -2 56 -1 80 0" stroke="rgba(8, 28, 18, 0.35)" strokeWidth="1.6" fill="none" />
-      </g>
-    </g>
+    <>
+      <path d="M0 0 C 18 -26 58 -30 84 0 C 58 30 18 26 0 0 Z" fill={colour} />
+      <path d="M2 0 C 30 -2 56 -1 80 0" stroke="rgba(8, 28, 18, 0.35)" strokeWidth="1.6" fill="none" />
+    </>
   )
 }
 
-/** Branches and leaves round the edges of the screen, and a vine that grows along the bottom. */
-function Foliage() {
-  const leaves = [
-    { x: -20, y: 70, size: 1.6, rotate: 18, colour: '#2d6a4f', delay: 0 },
-    { x: 40, y: 20, size: 1.1, rotate: 48, colour: '#40916c', delay: 600 },
-    { x: 10, y: 150, size: 1.2, rotate: -12, colour: '#52b788', delay: 1200 },
-    { x: 1030, y: 40, size: 1.5, rotate: 150, colour: '#2d6a4f', delay: 300 },
-    { x: 990, y: 120, size: 1, rotate: 200, colour: '#74c69d', delay: 900 },
-    { x: 1060, y: 610, size: 1.7, rotate: 210, colour: '#40916c', delay: 450 },
-    { x: -30, y: 640, size: 1.4, rotate: -30, colour: '#2d6a4f', delay: 750 },
+interface LeafSpot {
+  x: number
+  y: number
+  size: number
+  rotate: number
+  colour: string
+}
+
+const GREENS = ['#2d6a4f', '#40916c', '#52b788', '#74c69d', '#95d5b2']
+
+/**
+ * Where the leaves sit on a slide. A different arrangement for each slide,
+ * worked out from its number, so moving on visibly changes the scene rather
+ * than replaying the same one. Always round the edges, never over the words.
+ */
+export function leafSpots(slide: number): LeafSpot[] {
+  // A small, steady shuffle: the same slide always gets the same leaves.
+  let seed = 7 + slide * 131
+  const next = () => {
+    seed = (seed * 9301 + 49297) % 233280
+    return seed / 233280
+  }
+  const corners = [
+    { x: -20, y: 60, rotate: 20 },
+    { x: 30, y: 10, rotate: 50 },
+    { x: 0, y: 170, rotate: -15 },
+    { x: 1040, y: 30, rotate: 150 },
+    { x: 990, y: 130, rotate: 200 },
+    { x: 1070, y: 600, rotate: 210 },
+    { x: -30, y: 630, rotate: -30 },
+    { x: 1000, y: 690, rotate: 190 },
   ]
+  return corners
+    .filter((_, i) => (i + slide) % 4 !== 3)
+    .map((c) => ({
+      x: c.x + (next() - 0.5) * 60,
+      y: c.y + (next() - 0.5) * 60,
+      size: 0.9 + next() * 0.9,
+      rotate: c.rotate + (next() - 0.5) * 40,
+      colour: GREENS[Math.floor(next() * GREENS.length)],
+    }))
+}
+
+/** Branches and leaves round the edges, and a vine along the bottom; each leaf arrives and leaves with the slide. */
+function Foliage({ slide, leaving }: { slide: number; leaving: boolean }) {
+  const spots = useMemo(() => leafSpots(slide), [slide])
   const vine = 'M -20 690 C 160 640 260 700 420 660 S 700 610 860 660 S 1060 700 1120 640'
   const sprigs = [
-    { x: 170, y: 655, rotate: -60, colour: '#52b788', delay: 900 },
-    { x: 390, y: 662, rotate: -110, colour: '#74c69d', delay: 1300 },
-    { x: 620, y: 632, rotate: -70, colour: '#95d5b2', delay: 1700 },
-    { x: 870, y: 660, rotate: -115, colour: '#52b788', delay: 2100 },
+    { x: 170, y: 655, rotate: -60, colour: '#52b788' },
+    { x: 390, y: 662, rotate: -110, colour: '#74c69d' },
+    { x: 620, y: 632, rotate: -70, colour: '#95d5b2' },
+    { x: 870, y: 660, rotate: -115, colour: '#52b788' },
   ]
   return (
-    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1100 720" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-      {leaves.map((leaf, i) => (
-        <Leaf key={i} {...leaf} />
-      ))}
-      <path className="mo-reel-vine" d={vine} stroke="#40916c" strokeWidth="5" strokeLinecap="round" fill="none" style={{ '--length': 1300 } as CSSProperties} />
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox="0 0 1100 720"
+      preserveAspectRatio="xMidYMid slice"
+      aria-hidden="true"
+      data-testid="foliage"
+      data-leaving={leaving ? 'yes' : 'no'}
+    >
+      {spots.map((s, i) => {
+        // Each comes in from beyond its own edge.
+        const fromLeft = s.x < 550
+        const motion = {
+          '--dx': `${fromLeft ? -140 : 140}px`,
+          '--dy': `${s.y < 360 ? -90 : 90}px`,
+          '--spin': `${fromLeft ? -70 : 70}deg`,
+          '--delay': `${i * 90}ms`,
+        } as CSSProperties
+        return (
+          <g key={`${slide}-${i}`} transform={`translate(${s.x} ${s.y}) rotate(${s.rotate}) scale(${s.size})`}>
+            <g className={leaving ? 'mo-leaf-out' : 'mo-leaf-in'} style={motion} data-testid="leaf">
+              <g className="mo-reel-leaf" style={{ animationDelay: `${i * 400}ms` } as CSSProperties}>
+                <Blade colour={s.colour} />
+              </g>
+            </g>
+          </g>
+        )
+      })}
+      <g className={leaving ? 'mo-leaf-out' : undefined} style={{ '--dx': '0px', '--dy': '60px', '--spin': '0deg' } as CSSProperties}>
+        <path
+          key={`vine-${slide}`}
+          className="mo-reel-vine"
+          d={vine}
+          stroke="#40916c"
+          strokeWidth="5"
+          strokeLinecap="round"
+          fill="none"
+          style={{ '--length': 1300 } as CSSProperties}
+        />
+      </g>
       {sprigs.map((s, i) => (
-        <g key={i} transform={`translate(${s.x} ${s.y}) rotate(${s.rotate}) scale(0.55)`}>
-          <g className="mo-reel-sprout" style={{ '--delay': `${s.delay}ms` } as CSSProperties}>
-            <Leaf x={0} y={0} size={1} rotate={0} colour={s.colour} delay={s.delay} />
+        <g key={`${slide}-sprig-${i}`} transform={`translate(${s.x} ${s.y}) rotate(${s.rotate}) scale(0.55)`}>
+          <g
+            className={leaving ? 'mo-leaf-out' : 'mo-reel-sprout'}
+            style={{ '--delay': `${700 + i * 280}ms`, '--dx': '0px', '--dy': '40px', '--spin': '30deg' } as CSSProperties}
+          >
+            <Blade colour={s.colour} />
           </g>
         </g>
       ))}
@@ -95,16 +176,49 @@ export function HighlightReel({ state, onDone }: HighlightReelProps) {
   const slides: Slide[] = useMemo(
     () => [
       { kind: 'welcome' },
-      ...(state.status === 'ready' ? facts.map((fact): Slide => ({ kind: 'fact', fact })) : state.status === 'failed' ? [] : [{ kind: 'loading' } as Slide]),
+      ...(state.status === 'ready'
+        ? facts.map((fact): Slide => ({ kind: 'fact', fact }))
+        : state.status === 'failed'
+          ? []
+          : [{ kind: 'loading' } as Slide]),
       { kind: 'finale' },
     ],
     [state, facts],
   )
   const [at, setAt] = useState(0)
-  const slide = slides[Math.min(at, slides.length - 1)]
-  const last = at >= slides.length - 1
-  const next = () => (last ? onDone() : setAt((i) => i + 1))
+  // True while a slide is on its way out and the next is not yet in.
+  const [leaving, setLeaving] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const index = Math.min(at, slides.length - 1)
+  const slide = slides[index]
+  const last = index >= slides.length - 1
   const button = useRef<HTMLButtonElement>(null)
+
+  /** Let the slide leave, then do what comes after. */
+  const leaveThen = (then: () => void) => {
+    if (leaving) return
+    if (reducedMotion()) {
+      then()
+      return
+    }
+    setLeaving(true)
+    timer.current = setTimeout(() => {
+      timer.current = null
+      setLeaving(false)
+      then()
+    }, SLIDE_EXIT_MS)
+  }
+  const next = () => leaveThen(() => (last ? onDone() : setAt((i) => i + 1)))
+  const back = () => {
+    if (index > 0) leaveThen(() => setAt((i) => Math.max(0, i - 1)))
+  }
+  // Skipping never waits for anything.
+  const skip = () => {
+    if (timer.current) clearTimeout(timer.current)
+    onDone()
+  }
+
+  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), [])
 
   useEffect(() => {
     button.current?.focus()
@@ -112,9 +226,9 @@ export function HighlightReel({ state, onDone }: HighlightReelProps) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onDone()
+      if (event.key === 'Escape') skip()
       else if (event.key === 'ArrowRight') next()
-      else if (event.key === 'ArrowLeft') setAt((i) => Math.max(0, i - 1))
+      else if (event.key === 'ArrowLeft') back()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -122,16 +236,23 @@ export function HighlightReel({ state, onDone }: HighlightReelProps) {
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Introduction to tidy" className="mo-reel fixed inset-0 z-[3000] flex flex-col overflow-hidden">
-      <Foliage />
+      <Foliage slide={index} leaving={leaving} />
       <div className="relative flex items-center justify-between px-6 py-5">
         <span className="text-lg font-bold tracking-tight text-[#b7e4c7]">tidy</span>
-        <button type="button" onClick={onDone} className="rounded-full px-3 py-1 text-sm text-[#d8f3dc]/80 hover:bg-white/10 hover:text-white">
-          Skip introduction
+        <button
+          type="button"
+          onClick={skip}
+          className="flex items-center gap-2 rounded-full border-2 border-[#b5e48c] bg-[#081c12]/60 px-5 py-2.5 text-base font-bold text-[#f4f1e6] shadow-lg shadow-black/30 backdrop-blur transition-colors duration-200 hover:bg-[#b5e48c] hover:text-[#081c12] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#d8f3dc]/60"
+        >
+          Skip intro
+          <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true">
+            <path d="M4 4 L11 10 L4 16 M10 4 L17 10 L10 16" stroke="currentColor" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
       </div>
 
       <div className="relative flex flex-1 items-center justify-center px-6">
-        <div key={`${at}-${slide.kind}`} className="max-w-4xl text-center" aria-live="polite">
+        <div key={`${index}-${slide.kind}`} className={`max-w-4xl text-center ${leaving ? 'mo-reel-leave' : ''}`} aria-live="polite">
           {slide.kind === 'welcome' ? (
             <>
               <Seedling />
@@ -183,7 +304,7 @@ export function HighlightReel({ state, onDone }: HighlightReelProps) {
         </div>
       </div>
 
-      <div className="relative flex flex-col items-center gap-4 px-6 pb-10">
+      <div className="relative flex flex-col items-center gap-3 px-6 pb-10">
         <button
           ref={button}
           type="button"
@@ -192,11 +313,16 @@ export function HighlightReel({ state, onDone }: HighlightReelProps) {
         >
           {slide.kind === 'welcome' ? 'Begin' : last ? 'Start exploring' : 'Next'}
         </button>
-        <ol className="flex gap-2" aria-label={`Slide ${at + 1} of ${slides.length}`}>
+        {!last && (
+          <button type="button" onClick={skip} className="text-sm font-semibold text-[#d8f3dc] underline decoration-[#b5e48c] decoration-2 underline-offset-4 hover:text-white">
+            or skip straight to the map
+          </button>
+        )}
+        <ol className="flex gap-2" aria-label={`Slide ${index + 1} of ${slides.length}`}>
           {slides.map((_, i) => (
             <li key={i} aria-hidden="true">
-              <svg viewBox="0 0 20 12" className={`h-3 w-5 transition-opacity duration-300 ${i === at ? 'opacity-100' : 'opacity-35'}`}>
-                <path d="M1 6 C 5 0 15 0 19 6 C 15 12 5 12 1 6 Z" fill={i <= at ? '#b5e48c' : '#d8f3dc'} />
+              <svg viewBox="0 0 20 12" className={`h-3 w-5 transition-opacity duration-300 ${i === index ? 'opacity-100' : 'opacity-35'}`}>
+                <path d="M1 6 C 5 0 15 0 19 6 C 15 12 5 12 1 6 Z" fill={i <= index ? '#b5e48c' : '#d8f3dc'} />
               </svg>
             </li>
           ))}
