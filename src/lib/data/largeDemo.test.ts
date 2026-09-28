@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   largeDemoReports,
   ideaCountFromSearch,
+  largeDemoGroups,
   DEFAULT_LARGE_COUNT,
   MAX_LARGE_COUNT,
 } from './largeDemo'
@@ -60,6 +61,38 @@ describe('the demo sources', () => {
 
   it('fills "The idea" with the large set, at the count the address asks for', async () => {
     expect(await createIdeaSource('?count=300').countReportsInView(WORLD)).toBe(300)
+  })
+})
+
+describe('largeDemoGroups', () => {
+  it('gives the same made-up groups every time, all on the map, each with people in it', () => {
+    const groups = largeDemoGroups()
+    expect(groups).toEqual(largeDemoGroups())
+    expect(new Set(groups.map((g) => g.id)).size).toBe(groups.length)
+    for (const g of groups) {
+      expect(Math.abs(g.lat)).toBeLessThanOrEqual(85)
+      expect(Math.abs(g.lng)).toBeLessThanOrEqual(180)
+      expect(g.members).toBeGreaterThanOrEqual(3)
+      expect(g.name.length).toBeGreaterThanOrEqual(3)
+    }
+  })
+
+  it('puts them on "The idea" side, approved, so they show without anybody signed in', async () => {
+    const shown = await createIdeaSource('?count=10').listGroupsInView(WORLD)
+    expect(shown).toHaveLength(largeDemoGroups().length)
+    expect(shown.every((g) => g.status === 'approved' && !g.viewerIsMember)).toBe(true)
+  })
+
+  it('accepts a group started there at once, since nothing there checks it', async () => {
+    const idea = createIdeaSource('?count=10')
+    idea.setUser({ id: 'visitor', email: 'visitor@the-idea.example', isAdmin: false })
+    await idea.setDisplayName('Visitor')
+    const { id } = await idea.createGroup({ name: 'Canal Clean Crew', description: '', lat: 51.5, lng: -0.12 })
+    expect(idea.groupStatusOf(id)).toBe('approved')
+  })
+
+  it('keeps them off the real side', async () => {
+    expect(await createDataSource({}).source.listGroupsInView(WORLD)).toEqual([])
   })
 })
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { parseJudgeResponse, createLlmJudge, JUDGE_RUBRIC, NAME_JUDGE_RUBRIC } from './llmJudge.js'
+import { parseJudgeResponse, createLlmJudge, JUDGE_RUBRIC, NAME_JUDGE_RUBRIC, GROUP_JUDGE_RUBRIC } from './llmJudge.js'
 
 const reply = (content: string) => ({
   ok: true,
@@ -166,6 +166,33 @@ describe('createLlmJudge — names', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
     await createLlmJudge(options).judgeText('rubbish by the bins', 'report')
     expect(sent().messages[0].content).toBe(JUDGE_RUBRIC)
+  })
+})
+
+describe('createLlmJudge — cleaning groups', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const options = {
+    endpoint: 'http://localhost:11434/v1',
+    textModel: 'qwen3:8b',
+    visionModel: 'qwen2.5vl:7b',
+  }
+
+  it('judges a group by the group rules, and says it is a group', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(SAFE)))
+    await createLlmJudge(options).judgeText('Riverside Litter Pickers', 'group')
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)
+    expect(body.messages[0].content).toBe(GROUP_JUDGE_RUBRIC)
+    expect(body.messages[1].content).toContain('cleaning group')
+    expect(body.messages[1].content).toContain('Riverside Litter Pickers')
+  })
+})
+
+describe('the group rubric', () => {
+  it('does not turn a group down for describing no litter, and keeps the house rules', () => {
+    expect(GROUP_JUDGE_RUBRIC).not.toContain('unrelated to litter')
+    expect(GROUP_JUDGE_RUBRIC).toContain('a place, a neighbourhood, or the people who live there')
+    expect(GROUP_JUDGE_RUBRIC).toContain('meet somewhere unsafe')
   })
 })
 

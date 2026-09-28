@@ -53,6 +53,8 @@ const TABLES = [
   'flags',
   'moderation_jobs',
   'upload_grants',
+  'cleaning_groups',
+  'group_members',
 ]
 
 /**
@@ -998,7 +1000,7 @@ describe('migrations — a policy never reads a table the caller cannot', () => 
 })
 
 describe('migrations — rate limits exist for every table a person can write to', () => {
-  it.each(['report', 'comment', 'flag', 'upload_grant'])('limits %s inserts', (kind) => {
+  it.each(['report', 'comment', 'flag', 'upload_grant', 'group'])('limits %s inserts', (kind) => {
     expect(allCode).toContain('enforce_' + kind + '_rate_limit')
   })
 
@@ -1007,6 +1009,7 @@ describe('migrations — rate limits exist for every table a person can write to
     ['enforce_report_rate_limit', 'reports'],
     ['enforce_comment_rate_limit', 'comments'],
     ['enforce_upload_grant_rate_limit', 'upload_grants'],
+    ['enforce_group_rate_limit', 'cleaning_groups'],
     ['enforce_photo_limit', 'report_photos'],
     ['enforce_flag_rate_limit', 'flags'],
   ])('attaches %s to %s', (name, table) => {
@@ -1019,6 +1022,7 @@ describe('migrations — rate limits exist for every table a person can write to
     'enforce_upload_grant_rate_limit',
     'enforce_photo_limit',
     'enforce_flag_rate_limit',
+    'enforce_group_rate_limit',
   ]
 
   // One shape for all five: counted once per statement over a transition
@@ -1058,8 +1062,10 @@ describe('migrations — rate limits exist for every table a person can write to
       flat.indexOf('create trigger ' + name),
     )
     expect(fn).toContain('pg_advisory_xact_lock')
-    // Once per distinct subject in the statement, not once per row.
-    expect(fn).toMatch(/for \w+ in select distinct \w+ from new_rows loop/)
+    // Once per distinct subject in the statement, not once per row. Rows with
+    // no subject may be skipped (a group only the database can insert has no
+    // founder to limit), but nothing else may narrow the loop.
+    expect(fn).toMatch(/for (\w+) in select distinct (\w+) from new_rows( where \2 is not null)? loop/)
     // And before the count, or it serialises nothing.
     expect(fn.indexOf('pg_advisory_xact_lock')).toBeLessThan(fn.indexOf('count(*)'))
   })
@@ -1084,6 +1090,7 @@ describe('migrations — the report and comment limits count what cannot be dele
     ['enforce_report_rate_limit', 'report'],
     ['enforce_comment_rate_limit', 'comment'],
     ['enforce_flag_rate_limit', 'flag'],
+    ['enforce_group_rate_limit', 'group'],
   ])('%s records to and counts the log, not the live rows', (name, kind) => {
     const fn = flat.slice(flat.indexOf('function mo.' + name + '()'), flat.indexOf('create trigger ' + name))
     expect(fn).toContain('insert into mo.post_log (user_id, kind)')
@@ -1496,7 +1503,7 @@ describe('migrations — the name a person posts under', () => {
   // could leak one again are pinned here too.
 
   it('is a kind of thing that can be reviewed', () => {
-    expect(flat).toContain("create type mo.subject_type as enum ('photo', 'comment', 'note', 'name')")
+    expect(flat).toContain("create type mo.subject_type as enum ('photo', 'comment', 'note', 'name', 'group')")
   })
 
   it('refuses an email address as a name in the table itself', () => {

@@ -158,7 +158,8 @@ describe('AdminQueue — deciding', () => {
     await user.click(await screen.findByRole('button', { name: /allow/i }))
 
     await waitFor(() => expect(onDecided).toHaveBeenCalled())
-    expect(screen.queryByText('fine')).not.toBeInTheDocument()
+    // Gone once it has faded out of the list.
+    await waitFor(() => expect(screen.queryByText('fine')).not.toBeInTheDocument())
     expect(await data.listModerationQueue()).toHaveLength(0)
   })
 

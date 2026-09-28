@@ -175,6 +175,51 @@ export function largeDemoReports(count: number, now: number = Date.now()): DemoR
   return reports
 }
 
+export interface DemoGroup {
+  id: string
+  name: string
+  description: string
+  lat: number
+  lng: number
+  members: number
+}
+
+/** Friendly and plain, and about the cleaning, never about the place. */
+const GROUP_NAMES = [
+  (city: string) => `${city} Litter Pickers`,
+  (city: string) => `Friends of ${city} Parks`,
+  (city: string) => `${city} Weekend Tidy-Up`,
+]
+
+const GROUP_ABOUT = [
+  'We meet on Saturday mornings and bring gloves, bags and pickers for everyone.',
+  'A monthly clean-up of the parks and paths. Families welcome.',
+  'Short after-work sessions along the river. Come for as long as you can.',
+  'We clear the streets around the market once a week.',
+]
+
+/**
+ * A few made-up cleaning groups in every sample city, the same ones every
+ * load. Placed near the busy spots, where a group would start.
+ */
+export function largeDemoGroups(): DemoGroup[] {
+  const next = random(27092026)
+  const groups: DemoGroup[] = []
+  CITIES.forEach(([city, lat, lng], c) => {
+    GROUP_NAMES.forEach((name, g) => {
+      groups.push({
+        id: `idea-group-${c}-${g}`,
+        name: name(city),
+        description: GROUP_ABOUT[Math.floor(next() * GROUP_ABOUT.length)],
+        lat: clampLat(lat + normal(next) * 0.03),
+        lng: wrapLng(lng + (normal(next) * 0.03) / Math.cos((lat * Math.PI) / 180)),
+        members: 3 + Math.floor(next() * 58),
+      })
+    })
+  })
+  return groups
+}
+
 /**
  * How many made-up reports "The idea" shows: the default, or what `?count=` in
  * the address asks for, within limits.

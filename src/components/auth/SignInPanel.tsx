@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import type { CurrentUser, DataSource } from '../../lib/data/types'
+import { Reveal, Swap } from '../Reveal'
 
 export interface SignInPanelProps {
   data: DataSource
@@ -11,21 +12,6 @@ export function SignInPanel({ data, user }: SignInPanelProps) {
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-
-  if (user) {
-    return (
-      <div className="flex items-center gap-2 text-sm">
-        <span className="truncate text-slate-600">{user.email ?? 'Signed in'}</span>
-        <button
-          type="button"
-          onClick={() => void data.signOut()}
-          className="rounded-lg px-2 py-1 text-slate-600 hover:bg-slate-100"
-        >
-          Sign out
-        </button>
-      </div>
-    )
-  }
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -39,6 +25,26 @@ export function SignInPanel({ data, user }: SignInPanelProps) {
     } finally {
       setBusy(false)
     }
+  }
+
+  // Signed in, link sent, or the form: each fades into the next rather than
+  // replacing it in one frame.
+  return <Swap id={user ? 'signed-in' : sent ? 'sent' : 'form'}>{panel()}</Swap>
+
+  function panel() {
+  if (user) {
+    return (
+      <div className="flex items-center gap-2 text-sm">
+        <span className="truncate text-slate-600">{user.email ?? 'Signed in'}</span>
+        <button
+          type="button"
+          onClick={() => void data.signOut()}
+          className="rounded-lg px-2 py-1 text-slate-600 hover:bg-slate-100"
+        >
+          Sign out
+        </button>
+      </div>
+    )
   }
 
   if (sent) {
@@ -73,11 +79,12 @@ export function SignInPanel({ data, user }: SignInPanelProps) {
         </button>
       </div>
       <p className="text-xs text-slate-500">We email you a link. No password needed.</p>
-      {error && (
+      <Reveal show={!!(error)}>{(error) && (
         <p role="alert" className="text-sm text-rose-900">
           {error}
         </p>
-      )}
+      )}</Reveal>
     </form>
   )
+  }
 }

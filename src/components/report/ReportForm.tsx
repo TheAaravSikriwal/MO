@@ -3,9 +3,10 @@ import { checkText } from '../../lib/moderation/clientGate'
 import { ALLOWED_PHOTO_TYPES, MAX_PHOTOS } from '../../lib/upload/photoLimits'
 import { NAME_NEEDED, plainError } from '../../lib/moderation/plainWords'
 import { screenPhotoWithModel, type PhotoScreener } from '../../lib/moderation/screenPhoto'
-import { PIN_ZOOM_THRESHOLD } from '../../lib/grid/zoomResolution'
+import { REPORT_PLACE_ZOOM } from '../../lib/grid/zoomResolution'
 import type { DataSource } from '../../lib/data/types'
 import { NameField, nameProblem, useDisplayName } from './NameField'
+import { Reveal } from '../Reveal'
 
 export const MAX_NOTE_LENGTH = 500
 
@@ -47,7 +48,7 @@ export function ReportForm({
   const [nameDraft, setNameDraft] = useState('')
   const name = useDisplayName(data, signedIn)
 
-  const tooFarOut = zoom < PIN_ZOOM_THRESHOLD
+  const tooFarOut = zoom < REPORT_PLACE_ZOOM
 
   const onChoosePhotos = async (files: FileList | null) => {
     setError(null)
@@ -159,7 +160,7 @@ export function ReportForm({
 
   if (!signedIn) {
     return (
-      <div className="rounded-xl bg-white p-4 shadow-lg">
+      <div className="mo-glass rounded-2xl p-4">
         <h2 className="text-lg font-semibold text-slate-900">Add a report</h2>
         <p className="mt-2 text-sm text-slate-600">Sign in to add a report.</p>
         <button
@@ -174,7 +175,7 @@ export function ReportForm({
   }
 
   return (
-    <form onSubmit={onSubmit} className="rounded-xl bg-white p-4 shadow-lg" aria-label="Add a report">
+    <form onSubmit={onSubmit} className="mo-glass rounded-2xl p-4" aria-label="Add a report">
       <h2 className="text-lg font-semibold text-slate-900">Add a report</h2>
 
       {tooFarOut ? (
@@ -187,7 +188,7 @@ export function ReportForm({
         </p>
       )}
 
-      {name.needed && (
+      <Reveal show={!!(name.needed)}>{(name.needed) && (
         <div className="mt-4">
           <NameField
             id="report-name"
@@ -196,7 +197,7 @@ export function ReportForm({
             rejected={name.mine?.status === 'rejected' ? name.mine.name : null}
           />
         </div>
-      )}
+      )}</Reveal>
 
       <div className="mt-4">
         <label htmlFor="report-photos" className="block text-sm font-medium text-slate-800">
@@ -217,12 +218,12 @@ export function ReportForm({
           onChange={(event) => void onChoosePhotos(event.target.files)}
           className="mt-2 block w-full text-sm"
         />
-        {checking && (
+        <Reveal show={!!(checking)}>{(checking) && (
           <p role="status" className="mt-2 text-xs text-slate-600">
             Checking the photo…
           </p>
-        )}
-        {photos.length > 0 && (
+        )}</Reveal>
+        <Reveal show={!!(photos.length > 0)}>{(photos.length > 0) && (
           <ul className="mt-2 space-y-1">
             {photos.map((photo, index) => (
               <li
@@ -241,7 +242,7 @@ export function ReportForm({
               </li>
             ))}
           </ul>
-        )}
+        )}</Reveal>
       </div>
 
       <div className="mt-4">
@@ -262,16 +263,16 @@ export function ReportForm({
         </p>
       </div>
 
-      {notice && (
+      <Reveal show={!!(notice)}>{(notice) && (
         <p role="status" className="mt-2 rounded-lg bg-slate-100 p-3 text-sm text-slate-700">
           {notice}
         </p>
-      )}
-      {error && (
+      )}</Reveal>
+      <Reveal show={!!(error)}>{(error) && (
         <p role="alert" className="mt-2 rounded-lg bg-rose-50 p-3 text-sm text-rose-900">
           {error}
         </p>
-      )}
+      )}</Reveal>
 
       <p className="mt-4 text-xs text-slate-500">
         Photos and notes are checked before they appear.

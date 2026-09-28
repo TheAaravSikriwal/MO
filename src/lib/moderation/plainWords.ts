@@ -57,6 +57,25 @@ const ERROR_RULES: Array<[RegExp, string]> = [
   // Actionable causes come first. Collapsing these into "please try again"
   // told someone to retry the one thing guaranteed to keep failing, and left
   // every other cause with the same wording.
+  // Cleaning groups, 0007. First: the photo rule's "at most N" would turn "a
+  // group name can be at most 60 characters" into a sentence about photos, and
+  // the name rules would read "a group name cannot contain tabs" as a display
+  // name problem.
+  [/choose a name before you post/i, NAME_NEEDED],
+  [/group name needs at least 3/i, 'Please give the group a name of at least 3 letters.'],
+  [/group name can be at most 60/i, 'Please keep the group name to 60 characters or fewer.'],
+  [/group name cannot contain tabs|cleaning_groups_name_check/i, 'Please give the group a name without tabs or line breaks.'],
+  [/group description can be at most 500/i, 'Please keep the description to 500 characters or fewer.'],
+  [/group description cannot contain tabs/i, 'Please take the tabs out of the description. Line breaks are fine.'],
+  // The table's own check, reached only if the function above let something
+  // through. It covers the length and the characters, so it names both.
+  [/cleaning_groups_description_check/i, 'Please keep the description to 500 characters or fewer, without tabs.'],
+  [/too many groups started today/i, 'You have started several groups today. Please try again tomorrow.'],
+  [/cannot report your own group/i, 'You cannot report your own group.'],
+  [/no such group/i, 'That group could not be found. It may have been removed.'],
+  [/only the person who started a group/i, 'Only the person who started a group can delete it.'],
+  [/sign in to (start|join|leave|delete) a group/i, 'Please sign in first.'],
+  [/not a place on the map/i, 'Move the map to where the group will clean up, then try again.'],
   [/last minute/i, 'You are posting quickly. Please wait a moment.'],
   [
     /added several photos recently|too many photo uploads/i,

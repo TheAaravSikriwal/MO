@@ -1,5 +1,8 @@
 # MO — working notes
 
+The app is called **tidy**, in lower case, wherever a person sees it. The repo,
+the `mo` database schema and the code still say MO; those are internal names.
+
 A community pollution map. People report litter with a photo and a precise
 location, other people confirm those reports, and the map shows where litter has
 been reported from street level out to a world view. When a spot gets cleaned up,
@@ -17,11 +20,13 @@ the situation.
 | Path | What it is |
 |---|---|
 | `src/lib/` | Pure logic: grid, severity, colour, geocoding, moderation gate |
-| `src/components/` | Map, report, auth UI |
+| `src/components/` | Map (`map/GlobeMap.tsx`, MapLibre), report, auth UI |
+| `src/lib/map/` | How the globe draws things: towers, pins, groups, fades, zoom. Tested without a browser |
+| `src/lib/worlddata/` | Real world data layers (air, ocean plastic, fires): sources, parsing, loading |
 | `src/lib/data/` | The `DataSource` seam; UI never touches Supabase directly |
 | `worker/` | Standalone moderation worker, its own package and deps |
 | `supabase/migrations/` | Schema, RLS, RPCs — **applied only in the PGlite tests, never to Supabase** |
-| `scripts/sync-wearechintu.mjs` | Copies MO into the wearechintu app (`src/mo/`, migrations `010`–`015`). Edit MO, then sync; never edit the copies |
+| `scripts/sync-wearechintu.mjs` | Copies MO into the wearechintu app (`src/mo/`, migrations `010`–`016`). Edit MO, then sync; never edit the copies |
 | `docs/superpowers/` | Design spec and implementation plans |
 | `.claude/agents/` | The blind auditor. See the audit gate below |
 

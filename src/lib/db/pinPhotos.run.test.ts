@@ -31,8 +31,8 @@ beforeAll(async () => {
   pin = await as(OWNER, async () => {
     const { rows } = await db.query<{ id: string }>(
       `insert into mo.reports
-         (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7, cell_r9, cell_r12)
-       values ($1, 51.5, -0.12, $2, $2, $2, $2, $2, $2) returning id`,
+         (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5, cell_r6, cell_r7, cell_r9, cell_r12)
+       values ($1, 51.5, -0.12, $2, $2, $2, $2, $2, $2, $2, $2, $2) returning id`,
       [OWNER, CELL],
     )
     return rows[0].id

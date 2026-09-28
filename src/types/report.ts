@@ -8,7 +8,7 @@ export interface WeighableReport {
   moderationStatus: ModerationStatus
   /** Distinct people who confirmed this report. Severity is derived, never chosen. */
   voteCount: number
-  /** The six stored H3 cells, keyed `cell_r1` … `cell_r12`. */
+  /** The stored H3 cells, keyed `cell_r1` … `cell_r12` (see STORED_RESOLUTIONS). */
   cells: Record<string, string>
 }
 

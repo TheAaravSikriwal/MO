@@ -68,6 +68,8 @@ begin
       when 'comment' then (select c.body from mo.comments c where c.id = j.subject_id)
       when 'note'    then (select r.note from mo.reports  r where r.id = j.subject_id)
       when 'name'    then (select d.name from mo.display_names d where d.user_id = j.subject_id)
+      -- Created in 0007. The name and description together, as the worker judges them.
+      when 'group'   then (select g.review_text from mo.cleaning_groups g where g.id = j.subject_id)
       else null
     end,
     case j.subject_type
@@ -204,6 +206,8 @@ begin
     update mo.reports set note_status = new_verdict where id = job.subject_id;
   elsif job.subject_type = 'name' then
     update mo.display_names set moderation_status = new_verdict where user_id = job.subject_id;
+  elsif job.subject_type = 'group' then
+    update mo.cleaning_groups set moderation_status = new_verdict where id = job.subject_id;
   end if;
 end;
 $$;
@@ -480,6 +484,9 @@ begin
   elsif new.subject_type = 'name' then
     update mo.display_names set moderation_status = 'pending'
      where user_id = new.subject_id and moderation_status = 'approved';
+  elsif new.subject_type = 'group' then
+    update mo.cleaning_groups set moderation_status = 'pending'
+     where id = new.subject_id and moderation_status = 'approved';
   end if;
   return null;
 end;
@@ -565,6 +572,21 @@ begin
     -- of the human queue.
     if new.subject_id = new.flagger_id then
       raise exception 'you cannot report your own name';
+    end if;
+  elsif new.subject_type = 'group' then
+    -- Only a group the person can see: an approved one. Complaining about a
+    -- pending group would only reveal it exists.
+    if not exists (
+      select 1 from mo.cleaning_groups
+       where id = new.subject_id and moderation_status = 'approved'
+    ) then
+      raise exception 'no such group';
+    end if;
+    if exists (
+      select 1 from mo.cleaning_groups
+       where id = new.subject_id and created_by = new.flagger_id
+    ) then
+      raise exception 'you cannot report your own group';
     end if;
   else
     -- Every kind is handled above. Without this, a kind added to the enum
@@ -656,6 +678,8 @@ begin
   kind := case tg_table_name
             when 'report_photos' then 'photo'::subject_type
             when 'comments'      then 'comment'::subject_type
+            -- Attached to mo.cleaning_groups in 0007.
+            when 'cleaning_groups' then 'group'::subject_type
             else 'note'::subject_type
           end;
 

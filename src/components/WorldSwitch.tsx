@@ -25,7 +25,7 @@ export function WorldSwitch({ value, onChange, realConnected }: WorldSwitchProps
     <div
       role="radiogroup"
       aria-label="Which reports to show"
-      className="flex w-full rounded-2xl bg-white p-1.5 shadow-lg ring-1 ring-slate-200"
+      className="mo-glass flex w-full rounded-2xl p-1.5"
     >
       {SIDES.map(({ world, title, detail }) => {
         const on = value === world

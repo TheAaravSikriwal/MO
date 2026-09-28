@@ -96,7 +96,8 @@ create type mo.report_status     as enum ('open', 'cleaned');
 create type mo.moderation_status as enum ('pending', 'approved', 'rejected');
 -- 'name' is the display name a person chooses before their first post. It is
 -- free text shown in public, so it is judged like a note or a comment.
-create type mo.subject_type      as enum ('photo', 'comment', 'note', 'name');
+-- 'group' is a cleaning group's name and description (0007), judged the same way.
+create type mo.subject_type      as enum ('photo', 'comment', 'note', 'name', 'group');
 create type mo.job_status        as enum ('pending', 'in_progress', 'done', 'failed');
 
 -- ---------------------------------------------------------------------------
@@ -246,16 +247,22 @@ create table mo.reports (
   -- identically everywhere.
   geom              geography(Point, 4326),
 
-  -- The six nested H3 cells. r12 is the precision floor (~300 m2); the coarser
-  -- five exist only so zoomed-out rollup is a plain GROUP BY.
+  -- The nine nested H3 cells. r12 is the precision floor (~300 m2); the coarser
+  -- eight exist only so zoomed-out rollup is a plain GROUP BY. One for each
+  -- step of zoom from the globe to street level (r1 to r7, and r9 for the
+  -- hexagons just before pins), so hexagons shrink steadily as you zoom
+  -- instead of jumping seven times smaller every other step.
   --
   -- These are computed client-side by h3-js. Postgres cannot recompute them
   -- without the H3 extension, so lat/lng stays authoritative and these are a
   -- display index derived from it. The format check is a sanity guard, not a
   -- correctness guarantee.
   cell_r1           text not null check (cell_r1  ~ '^[0-9a-f]{15,16}$'),
+  cell_r2           text not null check (cell_r2  ~ '^[0-9a-f]{15,16}$'),
   cell_r3           text not null check (cell_r3  ~ '^[0-9a-f]{15,16}$'),
+  cell_r4           text not null check (cell_r4  ~ '^[0-9a-f]{15,16}$'),
   cell_r5           text not null check (cell_r5  ~ '^[0-9a-f]{15,16}$'),
+  cell_r6           text not null check (cell_r6  ~ '^[0-9a-f]{15,16}$'),
   cell_r7           text not null check (cell_r7  ~ '^[0-9a-f]{15,16}$'),
   cell_r9           text not null check (cell_r9  ~ '^[0-9a-f]{15,16}$'),
   cell_r12          text not null check (cell_r12 ~ '^[0-9a-f]{15,16}$'),
@@ -316,8 +323,11 @@ create table mo.reports (
 -- One index per resolution: the rollup groups on exactly one of these, chosen
 -- by zoom level. Partial on approved, since nothing else contributes weight.
 create index reports_cell_r1_idx  on mo.reports (cell_r1)  where moderation_status = 'approved';
+create index reports_cell_r2_idx  on mo.reports (cell_r2)  where moderation_status = 'approved';
 create index reports_cell_r3_idx  on mo.reports (cell_r3)  where moderation_status = 'approved';
+create index reports_cell_r4_idx  on mo.reports (cell_r4)  where moderation_status = 'approved';
 create index reports_cell_r5_idx  on mo.reports (cell_r5)  where moderation_status = 'approved';
+create index reports_cell_r6_idx  on mo.reports (cell_r6)  where moderation_status = 'approved';
 create index reports_cell_r7_idx  on mo.reports (cell_r7)  where moderation_status = 'approved';
 create index reports_cell_r9_idx  on mo.reports (cell_r9)  where moderation_status = 'approved';
 create index reports_cell_r12_idx on mo.reports (cell_r12) where moderation_status = 'approved';
@@ -433,7 +443,7 @@ create index comments_author_idx on mo.comments (author_id, created_at desc);
 -- bounds it without touching any limit.
 create table mo.post_log (
   user_id    uuid not null references public.profiles (id) on delete cascade,
-  kind       text not null check (kind in ('report', 'comment', 'flag')),
+  kind       text not null check (kind in ('report', 'comment', 'flag', 'group')),
   created_at timestamptz not null default now()
 );
 

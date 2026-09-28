@@ -9,14 +9,7 @@ import { OFF_MAP_IN_VIEW } from './lib/data/types'
  * none, without a word would pass a partial list off as the whole one.
  */
 
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: { children: unknown }) => <div data-testid="map">{children as never}</div>,
-  TileLayer: () => <div data-testid="tiles" />,
-  Polygon: () => <div data-testid="cell" />,
-  CircleMarker: () => <span data-testid="pin" />,
-  useMap: () => ({ flyTo: vi.fn() }),
-  useMapEvents: () => null,
-}))
+vi.mock('./components/map/GlobeMap', () => import('./test/globeMapMock'))
 
 describe('App — the off-map pins it could not show', () => {
   it('says when there are more than it draws', async () => {

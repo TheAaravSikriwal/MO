@@ -85,8 +85,11 @@ select
   r.lat,
   r.lng,
   r.cell_r1,
+  r.cell_r2,
   r.cell_r3,
+  r.cell_r4,
   r.cell_r5,
+  r.cell_r6,
   r.cell_r7,
   r.cell_r9,
   r.cell_r12,
@@ -606,8 +609,8 @@ grant select (id) on mo.reports to authenticated;
 -- Nothing is granted on public.profiles, and nothing in MO reads it. It is
 -- chintu's table; MO references it only as the target of foreign keys.
 
-grant insert (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7,
-              cell_r9, cell_r12, note)
+grant insert (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5,
+              cell_r6, cell_r7, cell_r9, cell_r12, note)
                                       on mo.reports        to authenticated;
 grant delete                          on mo.reports        to authenticated;
 

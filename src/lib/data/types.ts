@@ -58,7 +58,7 @@ export interface ReportView {
   removalReason: string | null
 }
 
-export type QueueSubject = 'photo' | 'comment' | 'note' | 'name'
+export type QueueSubject = 'photo' | 'comment' | 'note' | 'name' | 'group'
 
 /**
  * What a reader may flag directly. Not a name: its subject is a person's id,
@@ -66,6 +66,46 @@ export type QueueSubject = 'photo' | 'comment' | 'note' | 'name'
  * flagCommentAuthorName and flagReporterName instead.
  */
 export type DirectFlagSubject = Exclude<QueueSubject, 'name'>
+
+/**
+ * People who clean up an area together.
+ *
+ * Who is in it is never given out, only how many: a member list is a list of
+ * people who are in one place at predictable times. A group that is not
+ * approved is only ever shown to the people in it: at first, just the person
+ * who started it.
+ */
+export interface CleaningGroup {
+  id: string
+  name: string
+  description: string
+  /** Its home area on the map. */
+  lat: number
+  lng: number
+  status: ModerationStatus
+  memberCount: number
+  viewerIsMember: boolean
+  /** The viewer started it, so may delete it and sees it while it waits. */
+  viewerIsFounder: boolean
+}
+
+export interface NewGroup {
+  name: string
+  description: string
+  lat: number
+  lng: number
+}
+
+/**
+ * How many groups one viewport shows. listGroupsInView returns one more when
+ * there are more, so the panel can say the list is not complete.
+ */
+export const GROUPS_IN_VIEW = 200
+
+/** Limits on a group's text, the same as the database's. */
+export const GROUP_NAME_MIN = 3
+export const GROUP_NAME_MAX = 60
+export const GROUP_DESCRIPTION_MAX = 500
 
 /**
  * The name you post under, and where its review has got to.
@@ -106,8 +146,9 @@ export interface QueueItem {
  * How many individual reports one viewport will return.
  *
  * The aggregated view does not use this — it is a real GROUP BY over every
- * matching row — so a capped page only ever limits how many pins are drawn at
- * street level, where far fewer than this are on screen anyway.
+ * matching row — so a capped page only limits how many dots are drawn. Dots
+ * start at city level, where a busy place can have more than this: the app
+ * says so when it does, rather than drawing a page as if it were everything.
  */
 export const REPORT_PAGE_LIMIT = 500
 
@@ -197,6 +238,13 @@ export interface DataSource {
   /** Pins on the map. Never one that is off it: those are listOffMapInView's. */
   listReportsInView(bounds: ViewBounds, filters: RollupFilters): Promise<ReportView[]>
   /**
+   * The approved reports in one hexagon, most confirmed first: the list behind
+   * a tower. Asked of the hexagon itself, not the box round it, so a busier
+   * neighbour in the box can never take its place in the page. `more` says
+   * there were more than a page.
+   */
+  listReportsInCell(cell: string, filters: RollupFilters): Promise<{ reports: ReportView[]; more: boolean }>
+  /**
    * Pins off the map in this viewport that the viewer may still see: their own,
    * or every one for an admin. Kept apart from listReportsInView so they take no
    * room in its page and are never counted as reports on the map.
@@ -236,6 +284,17 @@ export interface DataSource {
   addComment(reportId: string, body: string): Promise<void>
 
   markCleaned(reportId: string): Promise<void>
+
+  // --- cleaning groups ------------------------------------------------------
+
+  /** Approved groups with a home in this viewport, and the viewer's own. */
+  listGroupsInView(bounds: ViewBounds): Promise<CleaningGroup[]>
+  /** Start a group. Its founder joins it, and it waits for review. */
+  createGroup(group: NewGroup): Promise<{ id: string }>
+  joinGroup(groupId: string): Promise<void>
+  leaveGroup(groupId: string): Promise<void>
+  /** Only its founder, or an admin. */
+  deleteGroup(groupId: string): Promise<void>
 
   flag(subjectType: DirectFlagSubject, subjectId: string, reason: string): Promise<void>
   /**

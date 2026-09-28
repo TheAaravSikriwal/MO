@@ -204,6 +204,8 @@ describe('Queue.fetchSubject', () => {
     // what the old ternary did for anything that was not a comment -- finds
     // nothing, and the job is discarded as deleted with the name left pending.
     ['name', 'display_names', 'user_id', 'name'],
+    // A group is judged on its name and description at once.
+    ['group', 'cleaning_groups', 'id', 'review_text'],
   ] as const)('reads a %s from %s by %s', async (subjectType, table, key, column) => {
     const { client, calls } = makeReadClient({ [column]: 'some words' })
     const subject = await new Queue(config, '', client).fetchSubject({
@@ -217,7 +219,7 @@ describe('Queue.fetchSubject', () => {
     expect(subject).toEqual({
       kind: 'text',
       text: 'some words',
-      purpose: subjectType === 'name' ? 'name' : 'report',
+      purpose: subjectType === 'name' || subjectType === 'group' ? subjectType : 'report',
     })
   })
 

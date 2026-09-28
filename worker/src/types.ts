@@ -1,4 +1,4 @@
-export type SubjectType = 'photo' | 'comment' | 'note' | 'name'
+export type SubjectType = 'photo' | 'comment' | 'note' | 'name' | 'group'
 export type ModerationStatus = 'pending' | 'approved' | 'rejected'
 export type JobStatus = 'pending' | 'in_progress' | 'done' | 'failed'
 
@@ -42,7 +42,7 @@ export interface ModerationJob {
  * same rubric, "Sam" is unrelated to litter and gets rejected, which locks
  * that person out of posting.
  */
-export type TextPurpose = 'report' | 'name'
+export type TextPurpose = 'report' | 'name' | 'group'
 
 /** Content pulled from the database for a job. */
 export type Subject =

@@ -76,7 +76,7 @@ describe('ReportForm — photos', () => {
     const { user } = setup()
     await user.upload(screen.getByLabelText(/^photo$/i), photo())
     await user.click(await screen.findByRole('button', { name: /remove litter\.jpg/i }))
-    expect(screen.queryByText('litter.jpg')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('litter.jpg')).not.toBeInTheDocument())
   })
 
   it('blocks a file that is not a photo, in plain words', async () => {

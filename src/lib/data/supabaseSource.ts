@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { MO_SCHEMA } from './schema'
 import { cellsForPoint } from '../grid/cells'
 import { crossesAntimeridian, boundsAround, intersectBounds } from '../geo/bounds'
+import { cellColumn } from '../grid/cells'
 import { distanceMetres } from '../geo/distance'
 import { uploadPhoto } from '../upload/uploadPhoto'
 import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE, REPORT_PAGE_LIMIT } from './types'
@@ -22,11 +23,13 @@ function createMoClient(url: string, anonKey: string) {
   return createClient(url, anonKey, { db: { schema: MO_SCHEMA } })
 }
 import type {
+  CleaningGroup,
   CommentView,
   CurrentUser,
   DataSource,
   DirectFlagSubject,
   MyDisplayName,
+  NewGroup,
   RejectedPhoto,
   NewReport,
   PhotoView,
@@ -287,6 +290,30 @@ export class SupabaseDataSource implements DataSource {
     const user = await this.getCurrentUser()
     const { rows } = await this.filteredRows(bounds, filters, 'on', REPORT_PAGE_LIMIT)
     return this.toReports(rows, user?.id ?? null)
+  }
+
+  async listReportsInCell(cell: string, filters: RollupFilters): Promise<{ reports: ReportView[]; more: boolean }> {
+    const user = await this.getCurrentUser()
+    // Through an RPC: every filter, distance included, is applied by the
+    // database before the page is cut (see mo.reports_in_cell). One more than
+    // a page, so a cut-short list can say so.
+    const { data, error } = await this.client.rpc('reports_in_cell', {
+      cell,
+      resolution: Number(cellColumn(cell).slice('cell_r'.length)),
+      status_filter: filters.status,
+      min_confirmations: filters.minConfirmations,
+      since: filters.since,
+      origin_lat: filters.origin?.lat ?? null,
+      origin_lng: filters.origin?.lng ?? null,
+      within_metres: filters.withinMetres,
+      page_limit: REPORT_PAGE_LIMIT + 1,
+    })
+    if (error) throw new Error(error.message)
+    const rows = (data ?? []) as Array<Record<string, unknown>>
+    return {
+      reports: await this.toReports(rows.slice(0, REPORT_PAGE_LIMIT), user?.id ?? null),
+      more: rows.length > REPORT_PAGE_LIMIT,
+    }
   }
 
   async listOffMapInView(
@@ -573,6 +600,58 @@ export class SupabaseDataSource implements DataSource {
     // Goes through the RPC, not a table update, so no ordinary user needs
     // UPDATE permission on reports at all.
     const { error } = await this.client.rpc('mark_report_cleaned', { target_report: reportId })
+    if (error) throw new Error(error.message)
+  }
+
+  // --- cleaning groups ------------------------------------------------------
+  //
+  // All through RPCs: neither table is readable or writable directly (0007).
+
+  async listGroupsInView(bounds: ViewBounds): Promise<CleaningGroup[]> {
+    const { data, error } = await this.client.rpc('cleaning_groups_in_view', {
+      min_lat: bounds.minLat,
+      min_lng: bounds.minLng,
+      max_lat: bounds.maxLat,
+      max_lng: bounds.maxLng,
+    })
+    if (error) throw new Error(error.message)
+    return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      id: row.id as string,
+      name: row.name as string,
+      description: (row.description as string | null) ?? '',
+      lat: row.home_lat as number,
+      lng: row.home_lng as number,
+      status: row.moderation_status as CleaningGroup['status'],
+      // A bigint, which PostgREST may send as a string.
+      memberCount: Number(row.member_count ?? 0),
+      viewerIsMember: row.viewer_is_member === true,
+      viewerIsFounder: row.viewer_is_founder === true,
+    }))
+  }
+
+  async createGroup(group: NewGroup): Promise<{ id: string }> {
+    const { data, error } = await this.client.rpc('create_cleaning_group', {
+      group_name: group.name,
+      about: group.description,
+      lat: group.lat,
+      lng: group.lng,
+    })
+    if (error) throw new Error(error.message)
+    return { id: data as string }
+  }
+
+  async joinGroup(groupId: string): Promise<void> {
+    const { error } = await this.client.rpc('join_cleaning_group', { target: groupId })
+    if (error) throw new Error(error.message)
+  }
+
+  async leaveGroup(groupId: string): Promise<void> {
+    const { error } = await this.client.rpc('leave_cleaning_group', { target: groupId })
+    if (error) throw new Error(error.message)
+  }
+
+  async deleteGroup(groupId: string): Promise<void> {
+    const { error } = await this.client.rpc('delete_cleaning_group', { target: groupId })
     if (error) throw new Error(error.message)
   }
 

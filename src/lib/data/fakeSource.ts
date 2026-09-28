@@ -1,7 +1,8 @@
 import { cellsForPoint } from '../grid/cells'
 import { weighCells } from '../severity/weight'
 import { applyFilters, DEFAULT_FILTERS } from '../filters/reportFilters'
-import { containsPoint } from '../geo/bounds'
+import { containsPoint, WHOLE_WORLD } from '../geo/bounds'
+import { cellColumn } from '../grid/cells'
 import {
   MAX_NAME_LENGTH,
   MIN_NAME_LENGTH,
@@ -10,6 +11,8 @@ import {
   visibleLength,
 } from '../names/displayName'
 import type {
+  CleaningGroup,
+  NewGroup,
   CommentView,
   DirectFlagSubject,
   CurrentUser,
@@ -24,7 +27,16 @@ import type {
   RollupFilters,
   ViewBounds,
 } from './types'
-import { OFF_MAP_IN_VIEW, OFF_MAP_PAGE, REJECTED_PAGE, REPORT_PAGE_LIMIT } from './types'
+import {
+  OFF_MAP_IN_VIEW,
+  OFF_MAP_PAGE,
+  REJECTED_PAGE,
+  REPORT_PAGE_LIMIT,
+  GROUP_NAME_MIN,
+  GROUP_NAME_MAX,
+  GROUP_DESCRIPTION_MAX,
+  GROUPS_IN_VIEW,
+} from './types'
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -36,6 +48,11 @@ const DAY = 24 * 60 * 60 * 1000
  * report, nothing is approved on arrival — so a component that behaves here has
  * been tested against the real contract rather than a permissive stub.
  */
+type FakeGroup = Omit<CleaningGroup, 'memberCount' | 'viewerIsMember' | 'viewerIsFounder'> & {
+  founderId: string | null
+  members: Set<string>
+}
+
 export class FakeDataSource implements DataSource {
   private user: CurrentUser | null
   private reports = new Map<string, ReportView>()
@@ -58,10 +75,21 @@ export class FakeDataSource implements DataSource {
    */
   constructor(
     user: CurrentUser | null = null,
-    options: { displayName?: string; now?: () => number } = {},
+    options: {
+      displayName?: string
+      now?: () => number
+      /**
+       * Accept a new cleaning group at once instead of leaving it pending.
+       * Only for "The idea": nothing there runs the moderation worker and its
+       * made-up visitor is no admin, so a group started there would otherwise
+       * wait to be checked for ever.
+       */
+      approveGroupsAtOnce?: boolean
+    } = {},
   ) {
     this.user = user
     this.now = options.now ?? (() => Date.now())
+    this.approveGroupsAtOnce = options.approveGroupsAtOnce ?? false
     if (user && options.displayName) {
       this.names.set(user.id, {
         name: options.displayName,
@@ -74,6 +102,7 @@ export class FakeDataSource implements DataSource {
   }
 
   private readonly now: () => number
+  private readonly approveGroupsAtOnce: boolean
 
   // --- auth ---------------------------------------------------------------
 
@@ -219,6 +248,14 @@ export class FakeDataSource implements DataSource {
     return this.matchingInView(bounds, filters)
       .sort((a, b) => b.voteCount - a.voteCount || b.createdAt.localeCompare(a.createdAt))
       .slice(0, REPORT_PAGE_LIMIT)
+  }
+
+  async listReportsInCell(cell: string, filters: RollupFilters) {
+    const column = cellColumn(cell)
+    const inside = this.matchingInView(WHOLE_WORLD, filters)
+      .filter((r) => r.cells[column] === cell && r.moderationStatus === 'approved')
+      .sort((a, b) => b.voteCount - a.voteCount || b.createdAt.localeCompare(a.createdAt))
+    return { reports: inside.slice(0, REPORT_PAGE_LIMIT), more: inside.length > REPORT_PAGE_LIMIT }
   }
 
   /** Every live report in the box that the filters allow, uncapped. */
@@ -443,6 +480,160 @@ export class FakeDataSource implements DataSource {
     report.status = 'cleaned'
   }
 
+  // --- cleaning groups ------------------------------------------------------
+  //
+  // The rules of 0007, and its wording: a new group waits for review and is
+  // seen only by the people in it until then, three may be started a day, and
+  // who is in one is never given out.
+
+  private groups = new Map<string, FakeGroup>()
+  /** When each person started a group, kept like mo.post_log: deleting one gives nothing back. */
+  private groupsStarted: Array<{ userId: string; at: number }> = []
+
+  async listGroupsInView(bounds: ViewBounds): Promise<CleaningGroup[]> {
+    const me = this.user?.id ?? null
+    return [...this.groups.values()]
+      .filter(
+        (g) =>
+          (g.status === 'approved' || (me !== null && (g.founderId === me || g.members.has(me)))) &&
+          containsPoint(bounds, g.lat, g.lng),
+      )
+      .map((g) => this.presentGroup(g))
+      // As cleaning_groups_in_view: your own first, then the busiest, and one
+      // more than a page so the panel can say it is not all of them.
+      .sort(
+        (a, b) =>
+          Number(b.viewerIsMember || b.viewerIsFounder) - Number(a.viewerIsMember || a.viewerIsFounder) ||
+          b.memberCount - a.memberCount,
+      )
+      .slice(0, GROUPS_IN_VIEW + 1)
+  }
+
+  private presentGroup(g: FakeGroup): CleaningGroup {
+    const me = this.user?.id ?? null
+    return {
+      id: g.id,
+      name: g.name,
+      description: g.description,
+      lat: g.lat,
+      lng: g.lng,
+      status: g.status,
+      memberCount: g.members.size,
+      viewerIsMember: me !== null && g.members.has(me),
+      viewerIsFounder: me !== null && g.founderId === me,
+    }
+  }
+
+  async createGroup(group: NewGroup): Promise<{ id: string }> {
+    if (!this.user) throw new Error('sign in to start a group')
+    const name = this.names.get(this.user.id)
+    if (!name || name.status === 'rejected') throw new Error('choose a name before you post')
+    const clean = group.name.trim()
+    const about = group.description.trim()
+    if (clean.length < GROUP_NAME_MIN || visibleLength(clean) < GROUP_NAME_MIN) {
+      throw new Error('a group name needs at least 3 letters')
+    }
+    if (clean.length > GROUP_NAME_MAX) throw new Error('a group name can be at most 60 characters')
+    if (hasControlCharacter(clean)) throw new Error('a group name cannot contain tabs or line breaks')
+    if (about.length > GROUP_DESCRIPTION_MAX) {
+      throw new Error('a group description can be at most 500 characters')
+    }
+    if (hasControlCharacter(about.split(String.fromCharCode(10)).join(''))) {
+      throw new Error('a group description cannot contain tabs')
+    }
+    if (!(group.lat >= -90 && group.lat <= 90 && group.lng >= -180 && group.lng <= 180)) {
+      throw new Error('that is not a place on the map')
+    }
+    const me = this.user.id
+    const today = this.groupsStarted.filter((g) => g.userId === me && g.at > this.now() - DAY)
+    if (today.length >= 3) throw new Error('too many groups started today; please try again tomorrow')
+    this.groupsStarted.push({ userId: me, at: this.now() })
+
+    const id = `group-${this.nextId++}`
+    this.groups.set(id, {
+      id,
+      name: clean,
+      description: about,
+      lat: group.lat,
+      lng: group.lng,
+      status: this.approveGroupsAtOnce ? 'approved' : 'pending',
+      founderId: me,
+      members: new Set([me]),
+    })
+    if (this.approveGroupsAtOnce) return { id }
+    this.queue.push({
+      jobId: `group-job-${this.nextId++}`,
+      subjectType: 'group',
+      subjectId: id,
+      reportId: null,
+      text: `${clean}\n\n${about}`,
+      photoUrl: null,
+      reason: 'The automatic checks could not decide this one.',
+      tierResults: {},
+      flagCount: 0,
+      pinOnMap: null,
+      createdAt: new Date(this.now()).toISOString(),
+    })
+    return { id }
+  }
+
+  async joinGroup(groupId: string) {
+    if (!this.user) throw new Error('sign in to join a group')
+    const g = this.groups.get(groupId)
+    if (!g || (g.status !== 'approved' && g.founderId !== this.user.id)) {
+      throw new Error('no such group')
+    }
+    g.members.add(this.user.id)
+  }
+
+  async leaveGroup(groupId: string) {
+    if (!this.user) throw new Error('sign in to leave a group')
+    this.groups.get(groupId)?.members.delete(this.user.id)
+  }
+
+  async deleteGroup(groupId: string) {
+    if (!this.user) throw new Error('sign in to delete a group')
+    const g = this.groups.get(groupId)
+    if (!g || (g.founderId !== this.user.id && !this.user.isAdmin)) {
+      throw new Error('only the person who started a group can delete it')
+    }
+    this.groups.delete(groupId)
+    // Its review job and complaints go with it, as the delete trigger does.
+    this.queue = this.queue.filter((q) => !(q.subjectType === 'group' && q.subjectId === groupId))
+    for (let i = this.raisedFlags.length - 1; i >= 0; i -= 1) {
+      const f = this.raisedFlags[i]
+      if (f.subjectType === 'group' && f.subjectId === groupId) this.raisedFlags.splice(i, 1)
+    }
+  }
+
+  /** Test and sample-data seam: a group as it would already be in the table. */
+  seedGroup(
+    group: Partial<Omit<CleaningGroup, 'memberCount' | 'viewerIsMember' | 'viewerIsFounder'>> & {
+      id: string
+      lat: number
+      lng: number
+    },
+    options: { founderId?: string | null; members?: number | string[] } = {},
+  ) {
+    const members =
+      typeof options.members === 'number'
+        ? new Set(Array.from({ length: options.members }, (_, i) => `${group.id}-member-${i}`))
+        : new Set(options.members ?? [])
+    this.groups.set(group.id, {
+      name: 'Riverside Litter Pickers',
+      description: '',
+      status: 'approved',
+      ...group,
+      founderId: options.founderId ?? null,
+      members,
+    })
+  }
+
+  /** Test seam: what an admin or the worker would decide about a group. */
+  groupStatusOf(groupId: string): CleaningGroup['status'] | null {
+    return this.groups.get(groupId)?.status ?? null
+  }
+
   readonly raisedFlags: Array<{
     subjectType: QueueSubject
     subjectId: string
@@ -480,6 +671,11 @@ export class FakeDataSource implements DataSource {
     if (!this.user) throw new Error('you must be signed in to report this')
     if (subjectType === 'name' && subjectId === this.user.id) {
       throw new Error('you cannot report your own name')
+    }
+    if (subjectType === 'group') {
+      const g = this.groups.get(subjectId)
+      if (!g || g.status !== 'approved') throw new Error('no such group')
+      if (g.founderId === this.user.id) throw new Error('you cannot report your own group')
     }
     // As validate_flag_subject: nobody complains about their own post.
     if (this.isOwnPost(subjectType, subjectId)) throw new Error('you cannot report your own post')
@@ -556,6 +752,10 @@ export class FakeDataSource implements DataSource {
       const found = this.names.get(subjectId)
       if (found && found.status === 'approved') found.status = 'pending'
     }
+    if (subjectType === 'group') {
+      const g = this.groups.get(subjectId)
+      if (g && g.status === 'approved') g.status = 'pending'
+    }
   }
 
   /** The same checks, and the same wording, as flag_comment_author in 0005. */
@@ -622,6 +822,10 @@ export class FakeDataSource implements DataSource {
   private findTextFor(subjectType: QueueSubject, subjectId: string): string | null {
     if (subjectType === 'note') return this.reports.get(subjectId)?.note ?? null
     if (subjectType === 'name') return this.names.get(subjectId)?.name ?? null
+    if (subjectType === 'group') {
+      const g = this.groups.get(subjectId)
+      return g ? `${g.name}\n\n${g.description}` : null
+    }
     if (subjectType === 'comment') {
       for (const list of this.comments.values()) {
         const comment = list.find((c) => c.id === subjectId)
@@ -812,6 +1016,11 @@ export class FakeDataSource implements DataSource {
 
     // A name's subject is the person, as in admin_decide_moderation.
     if (item.subjectType === 'name') this.decideName(item.subjectId, verdict)
+
+    if (item.subjectType === 'group') {
+      const g = this.groups.get(item.subjectId)
+      if (g) g.status = verdict
+    }
   }
 
   /** Seed a queue item directly. */

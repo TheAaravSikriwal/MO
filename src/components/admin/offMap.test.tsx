@@ -57,7 +57,8 @@ describe('AdminQueue — pins off the map', () => {
     expect(await screen.findByText(/taken off because: a joke pin/i)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /put back on the map/i }))
     await waitFor(async () => expect((await data.getReport('r1'))!.moderationStatus).toBe('approved'))
-    expect(screen.queryByText(/a joke pin/i)).not.toBeInTheDocument()
+    // Gone once its fade out has run.
+    await waitFor(() => expect(screen.queryByText(/a joke pin/i)).not.toBeInTheDocument())
   })
 
   it('records one removal for a double click, with no made-up reason', async () => {

@@ -1,0 +1,242 @@
+entity,code,year,population_weighted_pm25
+Aruba,ABW,2024,10.9
+Afghanistan,AFG,2024,40
+Angola,AGO,2024,26.1
+Anguilla,AIA,2024,6.1
+Aland Islands,ALA,2024,4.3
+Albania,ALB,2024,16.9
+Andorra,AND,2024,8.7
+United Arab Emirates,ARE,2024,55.7
+Argentina,ARG,2024,14.5
+Armenia,ARM,2024,31.8
+American Samoa,ASM,2024,3.8
+Antigua and Barbuda,ATG,2024,7.8
+Australia,AUS,2024,5.4
+Austria,AUT,2024,10.3
+Azerbaijan,AZE,2024,23.7
+Burundi,BDI,2024,40.4
+Belgium,BEL,2024,9.3
+Benin,BEN,2024,35.3
+Bonaire Sint Eustatius and Saba,BES,2024,9.9
+Burkina Faso,BFA,2024,34.6
+Bangladesh,BGD,2024,65
+Bulgaria,BGR,2024,20.6
+Bahrain,BHR,2024,48.1
+Bahamas,BHS,2024,5.2
+Bosnia and Herzegovina,BIH,2024,25.2
+Saint Barthelemy,BLM,2024,6.6
+Belarus,BLR,2024,12.9
+Belize,BLZ,2024,14.4
+Bermuda,BMU,2024,3.9
+Bolivia,BOL,2024,40.6
+Brazil,BRA,2024,15.3
+Barbados,BRB,2024,11.2
+Brunei,BRN,2024,8.9
+Bhutan,BTN,2024,24.7
+Botswana,BWA,2024,16.7
+Central African Republic,CAF,2024,32.3
+Canada,CAN,2024,7
+Cocos Islands,CCK,2024,4
+Switzerland,CHE,2024,9
+Chile,CHL,2024,23.2
+China,CHN,2024,31.3
+Cote d'Ivoire,CIV,2024,20.2
+Cameroon,CMR,2024,51.5
+Democratic Republic of Congo,COD,2024,41.2
+Congo,COG,2024,40.3
+Cook Islands,COK,2024,3.3
+Colombia,COL,2024,15.1
+Comoros,COM,2024,10.5
+Cape Verde,CPV,2024,17
+Costa Rica,CRI,2024,20.3
+Cuba,CUB,2024,9.9
+Curacao,CUW,2024,12
+Christmas Island,CXR,2024,3.7
+Cayman Islands,CYM,2024,15
+Cyprus,CYP,2024,16.6
+Czechia,CZE,2024,12.1
+Germany,DEU,2024,9.1
+Djibouti,DJI,2024,31.1
+Dominica,DMA,2024,9.1
+Denmark,DNK,2024,9
+Dominican Republic,DOM,2024,12.3
+Algeria,DZA,2024,14.4
+Ecuador,ECU,2024,17.7
+Egypt,EGY,2024,41.3
+Eritrea,ERI,2024,25
+Western Sahara,ESH,2024,19.5
+Spain,ESP,2024,10
+Estonia,EST,2024,6.7
+Ethiopia,ETH,2024,20.2
+Finland,FIN,2024,5.4
+Fiji,FJI,2024,5.7
+Falkland Islands,FLK,2024,9.7
+France,FRA,2024,8.9
+Faroe Islands,FRO,2024,4
+Micronesia (country),FSM,2024,2.3
+Gabon,GAB,2024,32.2
+United Kingdom,GBR,2024,8.8
+Georgia,GEO,2024,21.5
+Guernsey,GGY,2024,7.4
+Ghana,GHA,2024,28.2
+Gibraltar,GIB,2024,12.6
+Guinea,GIN,2024,23.9
+Guadeloupe,GLP,2024,9.3
+Gambia,GMB,2024,35.7
+Guinea-Bissau,GNB,2024,29
+Equatorial Guinea,GNQ,2024,35.4
+Greece,GRC,2024,15.1
+Grenada,GRD,2024,10.6
+Greenland,GRL,2024,1.1
+Guatemala,GTM,2024,27.7
+French Guiana,GUF,2024,12.9
+Guam,GUM,2024,1.9
+Guyana,GUY,2024,14.8
+Hong Kong,HKG,2024,15.8
+Honduras,HND,2024,31.6
+Croatia,HRV,2024,14.6
+Haiti,HTI,2024,14
+Hungary,HUN,2024,13.4
+Indonesia,IDN,2024,18.5
+Isle of Man,IMN,2024,6.5
+India,IND,2024,44.2
+Ireland,IRL,2024,7.4
+Iran,IRN,2024,37.7
+Iraq,IRQ,2024,48.8
+Iceland,ISL,2024,4.6
+Israel,ISR,2024,20.4
+Italy,ITA,2024,15.2
+Jamaica,JAM,2024,17.6
+Jersey,JEY,2024,8.1
+Jordan,JOR,2024,32.6
+Japan,JPN,2024,10.5
+Kazakhstan,KAZ,2024,16
+Kenya,KEN,2024,22
+Kyrgyzstan,KGZ,2024,17
+Cambodia,KHM,2024,19
+Kiribati,KIR,2024,3.7
+Saint Kitts and Nevis,KNA,2024,6.8
+South Korea,KOR,2024,21
+Kuwait,KWT,2024,57.3
+Laos,LAO,2024,27
+Lebanon,LBN,2024,26.2
+Liberia,LBR,2024,17.2
+Libya,LBY,2024,17.1
+Saint Lucia,LCA,2024,10.4
+Liechtenstein,LIE,2024,10.4
+Sri Lanka,LKA,2024,20.7
+Lesotho,LSO,2024,24.5
+Lithuania,LTU,2024,11.6
+Luxembourg,LUX,2024,8.4
+Latvia,LVA,2024,12.7
+Macao,MAC,2024,19.7
+Saint Martin (French part),MAF,2024,6.6
+Morocco,MAR,2024,17.4
+Monaco,MCO,2024,10.7
+Moldova,MDA,2024,12.6
+Madagascar,MDG,2024,11.6
+Maldives,MDV,2024,10.7
+Mexico,MEX,2024,18.3
+Marshall Islands,MHL,2024,2.8
+North Macedonia,MKD,2024,20.7
+Mali,MLI,2024,31
+Malta,MLT,2024,11.1
+Myanmar,MMR,2024,31.2
+Montenegro,MNE,2024,17.2
+Mongolia,MNG,2024,38.2
+Northern Mariana Islands,MNP,2024,1.5
+Mozambique,MOZ,2024,17
+Mauritania,MRT,2024,35.2
+Montserrat,MSR,2024,7.6
+Martinique,MTQ,2024,11.8
+Mauritius,MUS,2024,13
+Malawi,MWI,2024,21.8
+Malaysia,MYS,2024,15.3
+Mayotte,MYT,2024,9.8
+Namibia,NAM,2024,15.5
+New Caledonia,NCL,2024,4.9
+Niger,NER,2024,47.9
+Norfolk Island,NFK,2024,3.5
+Nigeria,NGA,2024,50
+Nicaragua,NIC,2024,20.5
+Niue,NIU,2024,3.2
+Netherlands,NLD,2024,9.6
+Norway,NOR,2024,6.7
+Nepal,NPL,2024,40.7
+Nauru,NRU,2024,3.8
+New Zealand,NZL,2024,7
+Oman,OMN,2024,34.1
+Pakistan,PAK,2024,53.8
+Panama,PAN,2024,14.7
+Pitcairn,PCN,2024,3.1
+Peru,PER,2024,27.6
+Philippines,PHL,2024,23.1
+Palau,PLW,2024,3.3
+Papua New Guinea,PNG,2024,11
+Poland,POL,2024,15.6
+Puerto Rico,PRI,2024,7.3
+North Korea,PRK,2024,21.2
+Portugal,PRT,2024,10.5
+Paraguay,PRY,2024,21.3
+Palestine,PSE,2024,23.2
+French Polynesia,PYF,2024,3.6
+Qatar,QAT,2024,75.5
+Reunion,REU,2024,5
+Romania,ROU,2024,14.3
+Russia,RUS,2024,12.9
+Rwanda,RWA,2024,41.8
+Saudi Arabia,SAU,2024,50.4
+Sudan,SDN,2024,28.8
+Senegal,SEN,2024,36.5
+Singapore,SGP,2024,12.2
+Saint Helena,SHN,2024,4.1
+Solomon Islands,SLB,2024,7
+Sierra Leone,SLE,2024,20.2
+El Salvador,SLV,2024,30.7
+San Marino,SMR,2024,12.9
+Somalia,SOM,2024,11.5
+Saint Pierre and Miquelon,SPM,2024,5.1
+Serbia,SRB,2024,17.6
+South Sudan,SSD,2024,24.1
+Sao Tome and Principe,STP,2024,15.6
+Suriname,SUR,2024,13.5
+Slovakia,SVK,2024,13.2
+Slovenia,SVN,2024,13.5
+Sweden,SWE,2024,5.7
+Eswatini,SWZ,2024,20
+Sint Maarten (Dutch part),SXM,2024,6.7
+Seychelles,SYC,2024,6.9
+Syria,SYR,2024,30.8
+Turks and Caicos Islands,TCA,2024,8.4
+Chad,TCD,2024,39.2
+Togo,TGO,2024,31
+Thailand,THA,2024,23.3
+Tajikistan,TJK,2024,32.6
+Tokelau,TKL,2024,4
+Turkmenistan,TKM,2024,29.1
+East Timor,TLS,2024,10.8
+Tonga,TON,2024,3.8
+Trinidad and Tobago,TTO,2024,13.5
+Tunisia,TUN,2024,20.2
+Turkey,TUR,2024,25.6
+Tuvalu,TUV,2024,4.5
+Taiwan,TWN,2024,16.6
+Tanzania,TZA,2024,24.6
+Uganda,UGA,2024,37.3
+Ukraine,UKR,2024,14.2
+Uruguay,URY,2024,11.9
+United States,USA,2024,7.5
+Uzbekistan,UZB,2024,30
+Vatican,VAT,2024,13.5
+Saint Vincent and the Grenadines,VCT,2024,10.2
+Venezuela,VEN,2024,15.8
+British Virgin Islands,VGB,2024,5.7
+United States Virgin Islands,VIR,2024,6.1
+Vietnam,VNM,2024,25.6
+Vanuatu,VUT,2024,5.8
+Wallis and Futuna,WLF,2024,4
+Samoa,WSM,2024,4.1
+Yemen,YEM,2024,35
+South Africa,ZAF,2024,24.4
+Zambia,ZMB,2024,25.4
+Zimbabwe,ZWE,2024,20.1

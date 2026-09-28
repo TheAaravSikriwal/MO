@@ -78,6 +78,19 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss(), signUploadDevRoute(env)],
+    server: {
+      proxy: {
+        // NASA's open file of fires in the last 24 hours. NASA does not let a
+        // browser fetch it from another site, so the dev server fetches it on
+        // the app's behalf. The same address as FIRES_UPSTREAM in
+        // src/lib/worlddata/sources.ts; wearechintu has a route instead.
+        '/api/world/fires': {
+          target: 'https://firms.modaps.eosdis.nasa.gov',
+          changeOrigin: true,
+          rewrite: () => '/data/active_fire/modis-c6.1/csv/MODIS_C6_1_Global_24h.csv',
+        },
+      },
+    },
     test: {
       environment: 'jsdom',
       setupFiles: ['./vitest.setup.ts'],

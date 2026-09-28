@@ -1,13 +1,15 @@
-import { latLngToCell, cellToParent, cellToBoundary } from 'h3-js'
+import { latLngToCell, cellToParent, getResolution } from 'h3-js'
 
 /**
  * The resolutions persisted with every report.
  *
- * r12 is the precision floor — everything is stored there. The coarser five exist
- * only so display rollup can be a plain indexed GROUP BY, with no Postgres H3
- * extension required. Store fine, display aggregated.
+ * r12 is the precision floor — everything is stored there. The coarser eight
+ * exist only so display rollup can be a plain indexed GROUP BY, with no
+ * Postgres H3 extension required. Store fine, display aggregated. Every
+ * resolution from 1 to 7 is kept, one per step of zoom, so hexagons shrink
+ * steadily as you zoom in (see zoomResolution).
  */
-export const STORED_RESOLUTIONS = [1, 3, 5, 7, 9, 12] as const
+export const STORED_RESOLUTIONS = [1, 2, 3, 4, 5, 6, 7, 9, 12] as const
 
 export type StoredResolution = (typeof STORED_RESOLUTIONS)[number]
 export type CellColumns = Record<`cell_r${StoredResolution}`, string>
@@ -16,7 +18,19 @@ export type CellColumns = Record<`cell_r${StoredResolution}`, string>
 export const FINEST_RESOLUTION = 12
 
 /**
- * Derive the six cell IDs for a point.
+ * The stored column a cell lives in, such as `cell_r6`. Throws for a size
+ * that is not stored, rather than asking the database for a column it lacks.
+ */
+export function cellColumn(cell: string): keyof CellColumns {
+  const resolution = getResolution(cell)
+  if (!(STORED_RESOLUTIONS as readonly number[]).includes(resolution)) {
+    throw new RangeError(`cells of size ${resolution} are not stored`)
+  }
+  return `cell_r${resolution}` as keyof CellColumns
+}
+
+/**
+ * Derive the stored cell IDs for a point.
  *
  * The r12 cell is computed from the coordinates; the rest are its H3 ancestors.
  * Deriving the coarse cells with cellToParent rather than recomputing each from
@@ -39,31 +53,4 @@ export function cellsForPoint(lat: number, lng: number): CellColumns {
       resolution === FINEST_RESOLUTION ? finest : cellToParent(finest, resolution)
   }
   return columns
-}
-
-/** The cell's outline as [lat, lng] pairs, exactly as h3 gives it. */
-export function cellBoundary(cell: string): Array<[number, number]> {
-  return cellToBoundary(cell) as Array<[number, number]>
-}
-
-type Ring = Array<[number, number]>
-
-/**
- * What to hand a Leaflet polygon to draw the cell.
- *
- * Usually just the outline. But a cell that straddles the 180th meridian comes
- * back from h3 with corners on both sides, at about 179 and -179, and Leaflet
- * joins them the long way round: one hexagon near Fiji was drawn as a band
- * across the whole world. So that cell is drawn twice, whole, once each side of
- * the line -- Leaflet takes several polygons as one shape. Moving it to one
- * side only would part it from the pins inside it on the other, which are
- * drawn at their own longitude.
- */
-export function cellPositions(cell: string): Ring | Ring[][] {
-  const ring = cellBoundary(cell)
-  const lngs = ring.map(([, lng]) => lng)
-  if (Math.max(...lngs) - Math.min(...lngs) <= 180) return ring
-  const east: Ring = ring.map(([lat, lng]) => [lat, lng < 0 ? lng + 360 : lng])
-  const west: Ring = ring.map(([lat, lng]) => [lat, lng > 0 ? lng - 360 : lng])
-  return [[east], [west]]
 }

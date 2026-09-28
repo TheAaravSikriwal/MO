@@ -1,53 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { FakeDataSource } from './lib/data/fakeSource'
-import { CROSSFADE_MS } from './components/map/CellLayer'
+import { mapControl } from './test/globeMapMock'
 
-const flyToSpy = vi.fn()
-const mapInstance = { flyTo: flyToSpy }
 
-/**
- * Captured so tests can actually move the map.
- *
- * With useMapEvents stubbed to null the view was pinned at the world zoom for
- * the whole file, so the pin layer never mounted and every assertion about pins
- * passed no matter what the code did.
- */
-let mapEvents: Record<string, (event: unknown) => void> = {}
 
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: any) => <div data-testid="map">{children}</div>,
-  TileLayer: () => <div data-testid="tiles" />,
-  Polygon: () => <div data-testid="cell" />,
-  CircleMarker: ({ eventHandlers }: any) => (
-    <button type="button" data-testid="pin" onClick={eventHandlers?.click} />
-  ),
-  useMap: () => mapInstance,
-  useMapEvents: (handlers: Record<string, (event: unknown) => void>) => {
-    mapEvents = handlers
-    return null
-  },
-}))
+vi.mock('./components/map/GlobeMap', () => import('./test/globeMapMock'))
 
 /** Drive the map the way Leaflet would after a pan or zoom. */
-const moveMapTo = async (zoom: number, center: [number, number] = [51.5074, -0.1278]) => {
-  await act(async () => {
-    mapEvents.moveend?.({
-      target: {
-        getCenter: () => ({ lat: center[0], lng: center[1] }),
-        getZoom: () => zoom,
-        getBounds: () => ({
-          getSouth: () => center[0] - 0.05,
-          getWest: () => center[1] - 0.05,
-          getNorth: () => center[0] + 0.05,
-          getEast: () => center[1] + 0.05,
-        }),
-      },
-    })
-  })
-}
+const moveMapTo = (zoom: number, center: [number, number] = [51.5074, -0.1278]) => mapControl.moveTo(zoom, center)
 
 const JARGON = [
   'hexagon',
@@ -77,7 +40,7 @@ const hydePark = [{ display_name: 'Hyde Park, London', lat: '51.5073', lon: '-0.
 
 describe('App', () => {
   beforeEach(() => {
-    flyToSpy.mockClear()
+    mapControl.flyTo.mockClear()
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: async () => hydePark }),
@@ -117,7 +80,7 @@ describe('App', () => {
 
   it('says plainly when it is showing sample data rather than real reports', () => {
     render(<App />)
-    expect(screen.getByText(/every report on this map is made up/i)).toBeInTheDocument()
+    expect(screen.getByText(/every report and group on this map is made up/i)).toBeInTheDocument()
   })
 
   it('asks people to sign in before they can add anything', async () => {
@@ -153,7 +116,7 @@ describe('App', () => {
     const suggestion = await screen.findByRole('button', { name: /hyde park/i }, { timeout: 3000 })
     await user.click(suggestion)
 
-    expect(flyToSpy).toHaveBeenCalledWith([51.5073, -0.1657], 16)
+    expect(mapControl.flyTo).toHaveBeenCalledWith([51.5073, -0.1657], 16)
   })
 
   it('clears the suggestion list once a place is chosen', async () => {
@@ -317,9 +280,10 @@ describe('App — filters', () => {
     const user = userEvent.setup()
     render(<App data={mixed()} />)
     await screen.findByText('1 of 2 reports')
-    await moveMapTo(13)
+    // Zoom 11 aggregates at r7, where the two sit in different cells.
+    await moveMapTo(11)
 
-    // Everything: both reports, and they sit in different cells at r9.
+    // Everything: both reports, in their two cells.
     await user.click(screen.getByRole('button', { name: /everything/i }))
     await waitFor(() => expect(screen.getAllByTestId('cell')).toHaveLength(2))
 
@@ -337,7 +301,7 @@ describe('App — filters', () => {
     const user = userEvent.setup()
     render(<App data={mixed()} />)
     await screen.findByText('1 of 2 reports')
-    await moveMapTo(13)
+    await moveMapTo(10)
 
     await user.click(screen.getByRole('button', { name: /cleaned up/i }))
     await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
@@ -363,20 +327,22 @@ describe('App — the pin threshold', () => {
     return data
   }
 
-  it('fades the hexagons out rather than cutting them at the pin threshold', async () => {
-    // Swapping the cell layer for the pin layer unmounted every hexagon in a
-    // single frame -- the harshest cut on the map, and the one zoom boundary
-    // that had no fade at all.
+  it('hands the map a new key and no hexagons at the pin threshold, which it fades on', async () => {
+    // The map cross-fades whenever the key changes (GlobeMap's drawCells), so
+    // crossing into pins with the same key would cut every hexagon in one
+    // frame -- the harshest cut on the map.
     render(<App data={withReports2()} />)
     await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
 
-    await moveMapTo(13)
+    await moveMapTo(10)
     await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
+    const before = screen.getByTestId('map').getAttribute('data-cells-key')
 
     await moveMapTo(16)
-    // Still present for the length of the fade, alongside the arriving pins.
-    expect(screen.queryAllByTestId('cell').length).toBeGreaterThan(0)
     await waitFor(() => expect(screen.getAllByTestId('pin').length).toBeGreaterThan(0))
+    expect(screen.getByTestId('map')).toHaveAttribute('data-cells-key', 'pins')
+    expect(before).not.toBe('pins')
+    expect(screen.queryAllByTestId('cell')).toHaveLength(0)
   })
 })
 
@@ -399,22 +365,17 @@ describe('App — coming back from the pin view', () => {
     render(<App data={data} />)
     await waitFor(() => expect(screen.getByTestId('map')).toBeInTheDocument())
 
-    await moveMapTo(13)
+    await moveMapTo(10)
     await waitFor(() => expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0))
 
     await moveMapTo(16)
     await waitFor(() => expect(screen.getAllByTestId('pin').length).toBeGreaterThan(0))
 
     vi.spyOn(data, 'getRollup').mockImplementation(() => new Promise(() => {}))
-    await moveMapTo(13)
+    await moveMapTo(10)
 
-    // Wait past the fade window before looking. The hexagons that were fading
-    // OUT on the way in are still drawn for CROSSFADE_MS, so without this the
-    // assertion cannot tell a retained set from a fading remnant.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, CROSSFADE_MS + 80))
-    })
-
+    // The map stand-in draws exactly what it is handed, with no fading
+    // remnant, so what is drawn now is what the app handed back.
     // Nothing has come back from the rollup, so this can only be the set that
     // was kept rather than cleared.
     expect(screen.getAllByTestId('cell').length).toBeGreaterThan(0)

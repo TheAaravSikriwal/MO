@@ -16,7 +16,7 @@ import type { Judge, JudgeResult, TextPurpose } from '../types.js'
 
 const TIMEOUT_MS = 120_000
 
-const RUBRIC = `You review submissions to MO, a community map where people report litter and pollution in real places.
+const RUBRIC = `You review submissions to tidy, a community map where people report litter and pollution in real places.
 
 Answer with a JSON object only, in this exact shape:
 {"verdict": "safe" | "unsafe" | "uncertain", "reason": "<one short sentence>"}
@@ -47,7 +47,7 @@ Use UNCERTAIN when you genuinely cannot tell. A person will review those, so an 
  * people in them still applies: a handle can disparage a neighbourhood as
  * easily as a note can.
  */
-const NAME_RUBRIC = `You review display names on MO, a community map where people report litter and pollution in real places. A display name is shown next to the comments a person posts. It is NOT a litter report and does not need to mention litter.
+const NAME_RUBRIC = `You review display names on tidy, a community map where people report litter and pollution in real places. A display name is shown next to the comments a person posts. It is NOT a litter report and does not need to mention litter.
 
 Answer with a JSON object only, in this exact shape:
 {"verdict": "safe" | "unsafe" | "uncertain", "reason": "<one short sentence>"}
@@ -57,7 +57,7 @@ Mark UNSAFE if the name:
 - is a slur, or targets a person or group by race, religion, nationality, gender, disability, or similar
 - attacks, demeans, or stereotypes a place, a neighbourhood, or the people who live there
 - harasses, threatens, or insults a person
-- pretends to be an official body, such as the council, the police, or the people who run MO
+- pretends to be an official body, such as the council, the police, or the people who run tidy
 - is an email address, a phone number, a web address, or advertising
 
 Mark SAFE if it is an ordinary name, nickname, initials, or a harmless handle, such as "Sam", "J. Okafor", "Riverside Litter Picker" or "binbag_hero". Most names are safe.
@@ -65,6 +65,30 @@ Mark SAFE if it is an ordinary name, nickname, initials, or a harmless handle, s
 Important context, so you do not over-flag:
 - Real names from any culture or language are safe.
 - Names sometimes contain letter sequences that look like rude words. Judge the meaning, not the letters.
+
+Use UNCERTAIN when you genuinely cannot tell. A person will review those, so an honest "uncertain" is more useful than a guess.`
+
+/**
+ * A cleaning group's name and description. Separate from RUBRIC for the same
+ * reason as NAME_RUBRIC: a group is about cleaning up rather than one report of
+ * litter, and "Saturday Litter Pickers" should not be judged as a report that
+ * fails to describe any litter.
+ */
+const GROUP_RUBRIC = `You review cleaning groups on tidy, a community map where people report litter and pollution in real places. A cleaning group is volunteers who clean up an area together. You are shown the group's name, then its description.
+
+Answer with a JSON object only, in this exact shape:
+{"verdict": "safe" | "unsafe" | "uncertain", "reason": "<one short sentence>"}
+
+Mark UNSAFE if the name or description:
+- is sexual or obscene
+- is a slur, or targets a person or group by race, religion, nationality, gender, disability, or similar
+- attacks, demeans, or stereotypes a place, a neighbourhood, or the people who live there
+- harasses, threatens, or insults a person
+- pretends to be an official body, such as the council, the police, or the people who run tidy
+- is advertising, or has nothing to do with cleaning up an area
+- asks people to share private details, or to meet somewhere unsafe
+
+Mark SAFE if it is an ordinary volunteer group, such as "Riverside Litter Pickers" with "We meet on Saturday mornings by the bridge." Most groups are safe. An email address or web address for the group is fine.
 
 Use UNCERTAIN when you genuinely cannot tell. A person will review those, so an honest "uncertain" is more useful than a guess.`
 
@@ -150,7 +174,9 @@ export function createLlmJudge(options: JudgeOptions): Judge {
     judgeText: (text: string, purpose: TextPurpose) =>
       purpose === 'name'
         ? chat(options.textModel, `Review this display name:\n\n${text}`, NAME_RUBRIC)
-        : chat(options.textModel, `Review this text submission:\n\n${text}`),
+        : purpose === 'group'
+          ? chat(options.textModel, `Review this cleaning group:\n\n${text}`, GROUP_RUBRIC)
+          : chat(options.textModel, `Review this text submission:\n\n${text}`),
     judgeImage: (imageUrl) =>
       chat(options.visionModel, [
         { type: 'text', text: 'Review this photo submitted as a litter report.' },
@@ -161,3 +187,4 @@ export function createLlmJudge(options: JudgeOptions): Judge {
 
 export const JUDGE_RUBRIC = RUBRIC
 export const NAME_JUDGE_RUBRIC = NAME_RUBRIC
+export const GROUP_JUDGE_RUBRIC = GROUP_RUBRIC

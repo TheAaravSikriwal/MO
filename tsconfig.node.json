@@ -27,6 +27,6 @@
     "src/lib/db/pgHarness.ts",
     "src/lib/db/pinPhotos.run.test.ts",
     "src/lib/db/cleanup.run.test.ts",
-    "src/components/map/CellLayer.test.tsx"
+    "src/lib/db/groups.run.test.ts"
   ]
 }

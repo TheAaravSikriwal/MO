@@ -1,5 +1,6 @@
 import type { ReportFilters, StatusFilter } from '../../lib/filters/reportFilters'
 import { DEFAULT_FILTERS, isDefault } from '../../lib/filters/reportFilters'
+import { Reveal } from '../Reveal'
 
 export interface FilterPanelProps {
   filters: ReportFilters
@@ -39,7 +40,7 @@ export function FilterPanel({
   const set = (patch: Partial<ReportFilters>) => onChange({ ...filters, ...patch })
 
   return (
-    <section className="rounded-xl bg-white p-3 shadow-md" aria-label="Filters">
+    <section className="mo-glass rounded-2xl p-3" aria-label="Filters">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-slate-900">Show</h2>
         {!isDefault(filters) && (
@@ -120,11 +121,11 @@ export function FilterPanel({
           ))}
         </select>
 
-        {!hasLocation && filters.withinMetres !== null && (
+        <Reveal show={!!(!hasLocation && filters.withinMetres !== null)}>{(!hasLocation && filters.withinMetres !== null) && (
           <p className="mt-1 text-xs text-amber-800">
             Share your location to use this.
           </p>
-        )}
+        )}</Reveal>
       </div>
 
       <button
@@ -135,11 +136,11 @@ export function FilterPanel({
         {hasLocation ? 'Update my location' : 'Use my location'}
       </button>
 
-      {locatingMessage && (
+      <Reveal show={!!(locatingMessage)}>{(locatingMessage) && (
         <p role="status" className="mt-2 text-xs text-slate-600">
           {locatingMessage}
         </p>
-      )}
+      )}</Reveal>
 
       <p className="mt-3 text-xs text-slate-500">
         {showing === total

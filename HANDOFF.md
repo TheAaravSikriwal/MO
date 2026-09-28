@@ -5,6 +5,9 @@ pick up without re-reading the whole history.
 
 Read `CLAUDE.md` first for the rules; this file is the state.
 
+The app is called **tidy** (lower case) wherever a person sees it, as of
+2026-09-27. MO stays as the repo's and the code's internal name.
+
 ## Where this is going, as of 2026-09-16
 
 **MO is becoming a route inside the wearechintu Next app**, not a standalone
@@ -119,7 +122,7 @@ node scripts/sync-wearechintu.mjs ../gitbuddywebsite
 ```
 
 It copies `src/` into `src/mo/`, MO's upload handler and signer into
-`src/mo/server/`, and the migrations in as `010`-`015`, applying the few
+`src/mo/server/`, and the migrations in as `010`-`016`, applying the few
 changes Next needs as exact replacements. Each replacement is checked to
 match, so if MO's code moves under one the script stops and names it instead of
 writing something half-converted. Running it twice changes nothing.
@@ -145,6 +148,146 @@ does not add `esm.sh` to `script-src`. Instead the NSFW model is meant to be
 self-hosted through `NEXT_PUBLIC_NSFW_MODULE_URL`, which that repo's
 `src/mo/README.md` explains.
 
+### Cleaning groups and motion, as of 2026-09-27
+
+* **A "Cleaning groups" tab**, beside "Reports". A group has a name, a short
+  description and a home where the map was looking when it was started (zoom
+  11 or closer). Anyone signed in with a name can start one, three a day at
+  most. Anyone signed in can join or leave one. Only its founder or an admin
+  can delete it, and people can report a group like any other post. All of this
+  is migration `0007` (wearechintu's `016`), with 'group' branches in the shared
+  moderation functions in `0004` and `0005`. `src/lib/db/groups.run.test.ts`
+  runs it in PGlite.
+* **The name and description are reviewed like a note.** A new group is
+  pending and seen only by its founder until the worker (`GROUP_RUBRIC` in
+  `worker/src/providers/llmJudge.ts`) or an admin approves it. Two complaints
+  hide it again until a person looks.
+* **A group's members still see it after complaints take it down**, with a note
+  saying why, so they can leave it. Everybody else stops seeing it.
+* **On "The idea" side a new group is accepted at once**, because nothing there
+  runs the worker. The form says so. On the real side it is checked first.
+* **Who is in a group is never shown, only how many.** A member list would be a
+  list of people who are in one place at predictable times.
+* **Groups edited three earlier migrations in place.** `0001` gained the
+  `'group'` value in `mo.subject_type` and in `mo.post_log.kind`, and `0004`
+  and `0005` gained 'group' branches. That is safe only because no migration
+  has been applied anywhere real. **Check that before applying**: if any of
+  wearechintu's `010`-`015` has already run on its Supabase project, `016`
+  fails, and those changes have to move into a new migration instead
+  (`alter type ... add value` in a file of its own, since Postgres will not use
+  a new enum value in the same transaction that adds it).
+* **Things fade and slide in and out** (`src/components/Reveal.tsx`): panels
+  and the notices inside them (`Reveal`), items leaving a list, such as group
+  cards, review items, comments and single pins (`useLingeringList`), and a
+  control that changes state, such as Join to Leave or the sign-in panel
+  (`Swap`). Pins and group markers fade in and out. With "reduce motion"
+  switched on, nothing moves.
+
+### The globe, as of 2026-09-28
+
+* **The map is MapLibre GL now, not Leaflet.** Zoomed out it is a globe in
+  space, with the night side shaded from the real position of the sun
+  (`src/lib/geo/daylight.ts`). Coming in, it turns smoothly into a flat map
+  between MapLibre zoom 3 and 5 (`src/lib/map/view.ts`). The basemap is
+  OpenFreeMap's "liberty" style: free, and it needs no key.
+* **Litter reports stand as 3D towers** on the globe, taller and redder where
+  more people reported, and lie flat up close. The map draws only what
+  `src/components/map/GlobeMap.tsx` is handed. How each thing looks is decided
+  in `src/lib/map/features.ts`, which is tested. MapLibre needs a graphics
+  card, so the app's tests use `src/test/globeMapMock.tsx` instead.
+* **Zoom numbers:** the app still counts zoom the way it did under Leaflet.
+  MapLibre's numbers are one lower for the same view, and
+  `toAppZoom`/`toLibreZoom` convert at the map's edge.
+* **Hexagons shrink steadily with zoom** (`src/lib/grid/zoomResolution.ts`): at
+  every zoom, the H3 size (1 to 7) whose edge is nearest 24 pixels on screen
+  at the equator. The switch points are worked out from h3's own sizes, so
+  every size covers the same 1.4 zoom steps and stays between about 15 and 39
+  pixels there. Further from the equator the flat map draws everything
+  larger, hexagons with it (about 1.6 times at London); the size is set by the
+  zoom alone, so panning never swaps the grid. The list
+  and outline of a picked area go away when the size changes or litter is
+  switched off. That needed resolutions 2, 4 and 6 stored with every report too,
+  added to `0001`, `0003` and `0004` in place (see the note on groups below
+  about editing migrations). Dots appear from zoom 12, city level. Placing a
+  report still needs zoom 15, `REPORT_PLACE_ZOOM`.
+* **Clicking a tower lists its reports** on the right (`CellCatalog`), most
+  confirmed first. Each opens the report and flies there. The list is asked of
+  the hexagon itself (`listReportsInCell`, and `mo.reports_in_cell` in `0004`,
+  edited in place like the other `0004` changes), not the box round it, with
+  every filter, distance included, applied before the page is cut.
+  On a phone it is a sheet along the bottom.
+* **Night** is 19 bands, a degree apart from sunset to 18 degrees below the
+  horizon, each a circle round the point opposite the sun
+  (`src/lib/geo/daylight.ts`). They build to about four-fifths dark on the
+  globe, ease off as the map flattens, and are gone by street level
+  (`NIGHT_OPACITY`). They lie under the place names. What the app draws on
+  top -- towers, country slabs, fires, the flat tint -- is darkened by the
+  same amount where it stands (`withNight` in `src/lib/map/features.ts`,
+  `BY_NIGHT` in `GlobeMap.tsx`), and re-coloured each minute as night moves. Space behind the globe is
+  black.
+* **If the basemap does not load** (OpenFreeMap down, or offline), the map says
+  so in words rather than staying black.
+* **Layers**, in the panel at the bottom right: litter reports and cleaning
+  groups each switch on and off. World data is one layer at a time: air
+  pollution (WHO, via Our World in Data), plastic into the ocean (Meijer et al.
+  2021, via Our World in Data), and fires in the last 24 hours (NASA FIRMS).
+  All free and keyless. NASA's file cannot be fetched from a browser on
+  another site, so it comes through the Vite dev server here (`vite.config.ts`)
+  and through `/api/map/fires` on wearechintu. Country outlines are Natural
+  Earth, slimmed, in `public/data/countries.geojson`. Fires are grouped on the
+  same hexagons as the litter at each zoom, and stand below the lowest litter
+  tower. Litter towers are drawn a little inside their hexagons
+  (`TOWER_INSET`), so no two 3D walls -- neighbours, or a fire on the same
+  hexagon -- ever stand in one place and flicker. As the map flattens, the 3D slabs hand over to a flat 2D tint
+  (`mo-world-flat`) under the litter, so nothing flickers at one height. A
+  layer left on is asked for again every hour (fresh ones answer from the
+  cache), and a failed one has a "Try again" button. Every map layer is
+  checked against MapLibre's style validator in `GlobeMap.test.tsx`.
+* **Quality of life and water quality** are map layers too: the UN's Human
+  Development Index (0 to 1) and the share of rivers, lakes and groundwater in
+  good condition (UN goal 6.3.2). Both via Our World in Data, read by a named
+  column (`COUNTRY_COLUMNS` in `sources.ts`), since those files carry more
+  than one figure.
+* **Findings** is the third tab (`src/components/findings/FindingsPanel.tsx`):
+  does quality of life go with a healthier environment? Across every country
+  with the figures -- quality of life, wealth (GDP per person), air, plastic
+  not handled properly per person, water quality, and fires per 10,000 km² of
+  land on the day -- it gives each link by rank (Spearman), how likely it is
+  luck, and the same link with wealth held level (partial rank correlation),
+  plus the middle figure in each of the UN's quality-of-life bands, a chart,
+  and every pair. The maths is in `src/lib/worlddata/stats.ts` (tested against
+  textbook values), the findings and their sentences in `findings.ts`, the
+  loading in `useFindings.ts`, fires per country in `src/lib/geo/countries.ts`.
+  It says plainly that a link is not a cause. On today's figures: better
+  quality of life goes with cleaner air (moderate) and less plastic dumped or
+  burned (strong), and both keep a link with wealth held level; water quality
+  runs the other way, weakly, which wealth accounts for, and most likely
+  because richer countries test more of their water; fires show no link.
+  Quality of life and wealth move almost together (0.96), so holding wealth
+  level leaves little room.
+* **Findings has two views.** *Explore* is plain words and clicking: pick a
+  part of the environment, read the answer, see it on a bar from −1 to +1 with
+  the range it most likely lies in, compare only countries of similar wealth
+  (GDP quarters, `withinWealth`), hover or search the chart for a country.
+  *Research paper* (`src/lib/worlddata/research.ts`) is the formal write-up
+  built from the same numbers when it is opened: abstract, hypotheses, data
+  and sources, methods (Spearman; partial Spearman on GDP; Fisher-z 95%
+  intervals with the Fieller-Hartley-Pearson standard error; Bonferroni over
+  the eight main tests; Kruskal-Wallis across the UN's bands), six results
+  tables, discussion, limitations, reproducibility, references and a
+  glossary. It downloads as Markdown, and the country data as CSV. It is the
+  one place that uses statistical terms, because a formal write-up needs them;
+  the glossary defines each.
+* **Saved copies** of every source -- the three layers above, quality of life,
+  water, GDP per person and plastic per person -- sit in
+  `public/data/*-saved.csv`, dated by `SAVED_ON` in
+  `src/lib/worlddata/sources.ts`. They are used only when the live file cannot
+  be reached, and the app says so, with the day. Refresh them with
+  `node scripts/save-world-data.mjs` (it reads its addresses from
+  `sources.ts`), then sync.
+* **Panels** are frosted glass (`.mo-glass` in `src/index.css`) over the globe
+  in space (`.mo-space`).
+
 ### Next, in order
 
 1. **Review and merge `mo-sync`** in the wearechintu repo. It is on a branch
@@ -159,7 +302,7 @@ self-hosted through `NEXT_PUBLIC_NSFW_MODULE_URL`, which that repo's
    site's `/map` address to Redirect URLs. The sign-in email links back to the
    page it was asked for from, and Supabase sends any address not on that list
    to the Site URL: the home page, where nothing picks the sign-in up.
-3. **Apply migrations `010`-`015`** to that project, then make yourself the
+3. **Apply migrations `010`-`016`** to that project, then make yourself the
    first admin (the snippet is under "Admin bootstrap" in `013`/`0004`).
    Then set `NEXT_PUBLIC_MAP_LIVE=true` on the site. Until you do, the map's
    "Real world" side says it is not connected and asks the database nothing,
@@ -203,7 +346,8 @@ npm run dev
 No accounts or keys needed. A switch at the top of the map moves between two
 sides:
 
-* **The idea** (violet) is 20,000 made-up reports clustered around 39 cities.
+* **The idea** (violet) is 20,000 made-up reports clustered around 39 cities,
+  and three made-up cleaning groups in each.
   Add `?count=` to the address for more or fewer. It shows how the map looks
   at scale, and you can try everything there, signed in as a made-up visitor.
 * **Real world** (green) is the database. With no Supabase configured it is
@@ -214,7 +358,7 @@ The choice is kept in the address as `?world=idea` or `?world=real`. See
 `src/lib/data/worlds.ts` and `src/lib/data/largeDemo.ts`.
 
 ```bash
-npm test              # 1045 tests, including real Postgres via PGlite
+npm test              # 1325 tests, including real Postgres via PGlite
 npm run build         # typecheck, then build
 cd worker && npm test # 138 tests
 ```
@@ -230,12 +374,13 @@ without them.
 
 | Area | Where |
 |---|---|
-| H3 grid: zoom→resolution bands, six nested cells per report | `src/lib/grid/` |
+| H3 grid: one resolution per zoom step, nine nested cells per report | `src/lib/grid/` |
 | Derived severity: weight from reports + votes, relative ranking | `src/lib/severity/` |
 | Colour ramp, OKLCH | `src/lib/color/ramp.ts` |
-| Map, tile provider seam, viewport bounds, fly-to | `src/components/map/MapView.tsx` |
-| Aggregated cells with cross-fade between zoom bands | `src/components/map/CellLayer.tsx` |
-| Individual report pins | `src/components/map/ReportPinLayer.tsx` |
+| Globe to flat map, basemap, night, towers, dots, groups, fly-to | `src/components/map/GlobeMap.tsx` |
+| Tower and dot shapes, cross-fades, zoom numbers (tested without a browser) | `src/lib/map/` |
+| The list behind a tower | `src/components/map/CellCatalog.tsx`, `mo.reports_in_cell` in `0004` |
+| World data: air, ocean plastic, fires, saved copies | `src/lib/worlddata/`, `public/data/`, `scripts/save-world-data.mjs` |
 | Filters + near-me | `src/components/map/FilterPanel.tsx`, `src/lib/filters/`, `src/lib/geo/` |
 | Place search (Nominatim, debounced) | `src/lib/geo/nominatim.ts` |
 | Report form, detail, votes, comments, mark-cleaned animation | `src/components/report/` |

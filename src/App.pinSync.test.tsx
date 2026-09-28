@@ -9,14 +9,7 @@ import { FakeDataSource } from './lib/data/fakeSource'
  * report has to reach the queue's list of pins off the map without closing it.
  */
 
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: { children: unknown }) => <div data-testid="map">{children as never}</div>,
-  TileLayer: () => <div data-testid="tiles" />,
-  Polygon: () => <div data-testid="cell" />,
-  CircleMarker: () => <span data-testid="pin" />,
-  useMap: () => ({ flyTo: vi.fn() }),
-  useMapEvents: () => null,
-}))
+vi.mock('./components/map/GlobeMap', () => import('./test/globeMapMock'))
 
 describe('App — the queue hears about a pin taken off from a report', () => {
   it('shows the pin in the queue’s off-map list straight away', async () => {

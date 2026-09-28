@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
+import { latLngToCell } from 'h3-js'
+import { REPORT_PAGE_LIMIT } from './types'
 
 /**
  * The main map query carries live pins only, and off-map pins are asked for
@@ -62,5 +64,32 @@ describe('SupabaseDataSource — live pins and off-map pins stay apart', () => {
     const { source, calls } = make(null)
     expect(await source.listOffMapInView(bounds, filters)).toEqual({ reports: [], more: false })
     expect(calls).toEqual([])
+  })
+  it('asks the database for one hexagon, with every filter, distance too, before the page is cut', async () => {
+    const { source } = make({ id: 'u1' })
+    const rpcs: Array<[string, Record<string, unknown>]> = []
+    const client = mocks.client as { rpc: (name: string, args: Record<string, unknown>) => Promise<unknown> }
+    client.rpc = async (name, args) => {
+      rpcs.push([name, args])
+      return { data: [], error: null }
+    }
+    const cell = latLngToCell(51.5, -0.12, 4)
+    const origin = { lat: 51.5, lng: -0.12 }
+    const result = await source.listReportsInCell(cell, { ...filters, status: 'open', minConfirmations: 2, origin, withinMetres: 2000 })
+    expect(rpcs).toContainEqual([
+      'reports_in_cell',
+      {
+        cell,
+        resolution: 4,
+        status_filter: 'open',
+        min_confirmations: 2,
+        since: null,
+        origin_lat: 51.5,
+        origin_lng: -0.12,
+        within_metres: 2000,
+        page_limit: REPORT_PAGE_LIMIT + 1,
+      },
+    ])
+    expect(result).toEqual({ reports: [], more: false })
   })
 })

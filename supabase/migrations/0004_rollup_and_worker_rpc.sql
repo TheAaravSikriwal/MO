@@ -79,8 +79,11 @@ as $$
   select
     case resolution
       when 1  then r.cell_r1
+      when 2  then r.cell_r2
       when 3  then r.cell_r3
+      when 4  then r.cell_r4
       when 5  then r.cell_r5
+      when 6  then r.cell_r6
       when 7  then r.cell_r7
       when 9  then r.cell_r9
       when 12 then r.cell_r12
@@ -89,7 +92,7 @@ as $$
     count(*)::bigint              as report_count
   from mo.reports r
   where r.moderation_status = 'approved'
-    and resolution in (1, 3, 5, 7, 9, 12)
+    and resolution in (1, 2, 3, 4, 5, 6, 7, 9, 12)
     -- Open only unless somebody explicitly asked to see cleaned spots. This is
     -- what makes a cleanup cool the map, and why asking for cleaned ones has to
     -- be an explicit choice rather than a silently empty result.
@@ -196,6 +199,69 @@ $$;
 grant execute on function mo.count_reports_in_view(
   double precision, double precision, double precision, double precision,
   text, integer, timestamptz, double precision, double precision, double precision
+) to anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- reports_in_cell: the list behind one tower
+-- ---------------------------------------------------------------------------
+--
+-- The approved reports in one hexagon, most confirmed first, with every filter
+-- the tower was counted with -- the distance one included -- applied before
+-- the page is cut. A plain select could not apply the distance, so it was
+-- trimmed on the client after the cap: in a busy area, reports beyond the
+-- circle took places in the page, and the list came up short of the tower.
+--
+-- Read from public_reports, as security invoker, so the caller sees each row
+-- exactly as that view shows it to them and nothing more.
+create or replace function mo.reports_in_cell(
+  cell               text,
+  resolution         integer,
+  status_filter      text             default 'open',
+  min_confirmations  integer          default 0,
+  since              timestamptz      default null,
+  origin_lat         double precision default null,
+  origin_lng         double precision default null,
+  within_metres      double precision default null,
+  page_limit         integer          default 501
+)
+returns setof mo.public_reports
+language sql
+stable
+security invoker
+set search_path = mo, public, extensions
+as $$
+  select p.*
+  from mo.public_reports p
+  where p.moderation_status = 'approved'
+    and cell = case resolution
+      when 1 then p.cell_r1 when 2 then p.cell_r2 when 3 then p.cell_r3
+      when 4 then p.cell_r4 when 5 then p.cell_r5 when 6 then p.cell_r6
+      when 7 then p.cell_r7 when 9 then p.cell_r9 when 12 then p.cell_r12
+    end
+    and (
+      status_filter = 'all'
+      or (status_filter = 'open'    and p.status = 'open')
+      or (status_filter = 'cleaned' and p.status = 'cleaned')
+    )
+    and p.vote_count >= greatest(coalesce(min_confirmations, 0), 0)
+    and (since is null or p.created_at >= since)
+    and (
+      origin_lat is null
+      or origin_lng is null
+      or within_metres is null
+      or st_dwithin(
+           st_setsrid(st_makepoint(p.lng, p.lat), 4326)::geography,
+           st_setsrid(st_makepoint(origin_lng, origin_lat), 4326)::geography,
+           within_metres
+         )
+    )
+  order by p.vote_count desc, p.created_at desc
+  -- One more than a page, so a cut-short list can say so; never more than that.
+  limit least(greatest(coalesce(page_limit, 501), 1), 501);
+$$;
+
+grant execute on function mo.reports_in_cell(
+  text, integer, text, integer, timestamptz, double precision, double precision, double precision, integer
 ) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
@@ -380,6 +446,9 @@ begin
   elsif job.subject_type = 'name' then
     -- A name's subject_id is the person's id, not a row id of its own.
     update mo.display_names set moderation_status = new_verdict where user_id = job.subject_id;
+  elsif job.subject_type = 'group' then
+    -- mo.cleaning_groups is created in 0007; plpgsql resolves it when this runs.
+    update mo.cleaning_groups set moderation_status = new_verdict where id = job.subject_id;
   end if;
 
   return true;

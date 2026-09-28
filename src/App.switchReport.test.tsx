@@ -9,14 +9,7 @@ import { FakeDataSource } from './lib/data/fakeSource'
  * otherwise carried to the next and recorded against it for good.
  */
 
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: { children: unknown }) => <div data-testid="map">{children as never}</div>,
-  TileLayer: () => <div data-testid="tiles" />,
-  Polygon: () => <div data-testid="cell" />,
-  CircleMarker: () => <span data-testid="pin" />,
-  useMap: () => ({ flyTo: vi.fn() }),
-  useMapEvents: () => null,
-}))
+vi.mock('./components/map/GlobeMap', () => import('./test/globeMapMock'))
 
 describe('App — switching from one report to another', () => {
   it('does not carry a typed reason over to the next pin', async () => {

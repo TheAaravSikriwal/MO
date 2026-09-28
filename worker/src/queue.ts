@@ -40,6 +40,8 @@ const TEXT_SOURCES: Record<
   comment: { table: 'comments', key: 'id', column: 'body' },
   note: { table: 'reports', key: 'id', column: 'note' },
   name: { table: 'display_names', key: 'user_id', column: 'name' },
+  // Name and description together, so neither is approved without the other.
+  group: { table: 'cleaning_groups', key: 'id', column: 'review_text' },
 }
 
 /**
@@ -104,7 +106,8 @@ export class Queue {
 
     const text = (data as unknown as Record<string, unknown>)[column]
     if (typeof text !== 'string') return null
-    return { kind: 'text', text, purpose: job.subject_type === 'name' ? 'name' : 'report' }
+    const purpose = job.subject_type === 'name' || job.subject_type === 'group' ? job.subject_type : 'report'
+    return { kind: 'text', text, purpose }
   }
 
   /**

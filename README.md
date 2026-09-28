@@ -44,9 +44,10 @@ ship an `.env.example` alongside them.
 
 ## How the map works
 
-**One report, six cells.** Every report is stored against its H3 cell at
-resolution 12 — roughly a 300 m² patch of ground. Five coarser ancestor cells are
-stored alongside it. Zooming out swaps which cell the map groups by, so a
+**One report, nine cells.** Every report is stored against its H3 cell at
+resolution 12 — roughly a 300 m² patch of ground. Eight coarser ancestor cells are
+stored alongside it, one for each step of zoom from the globe to city level, so
+hexagons shrink steadily as you zoom in. Zooming out swaps which cell the map groups by, so a
 world view is a plain `GROUP BY` over data that was never stored coarsely.
 Precision is never lost, and the app works anywhere on Earth with no region data
 to set up.
@@ -79,14 +80,16 @@ Copy describes the litter, never the place or the people who live there.
 | Path | Responsibility |
 |---|---|
 | `src/lib/grid/zoomResolution.ts` | Map zoom → H3 resolution, or pin mode |
-| `src/lib/grid/cells.ts` | Coordinates → the six stored cells; cell outlines |
+| `src/lib/grid/cells.ts` | Coordinates → the nine stored cells; a cell's stored column |
 | `src/lib/severity/weight.ts` | Aggregate reports into weighted cells |
 | `src/lib/severity/percentile.ts` | Rank weights onto a relative 0–1 scale |
 | `src/lib/color/ramp.ts` | Position on the scale → colour |
 | `src/lib/geo/nominatim.ts` | Debounced place search |
-| `src/components/map/MapView.tsx` | Leaflet wrapper; the only file that mounts a map |
-| `src/components/map/tileProvider.ts` | The only file naming the tile source |
-| `src/components/map/CellLayer.tsx` | Draws aggregated cells |
+| `src/components/map/GlobeMap.tsx` | The MapLibre globe; the only file that mounts a map or names its basemap |
+| `src/lib/map/` | What the globe draws: tower and dot shapes, fades, zoom numbers |
+| `src/components/map/CellCatalog.tsx` | The list of reports behind a tower |
+| `src/lib/worlddata/` | Air, ocean plastic, fires, quality of life and water quality: sources, saved copies, loading; and the findings' statistics |
+| `src/components/findings/FindingsPanel.tsx` | The Findings tab: how quality of life, wealth and the environment go together |
 
 Everything in `src/lib` is a pure function with no network or framework
 dependency, which is why the engine is testable without a browser or a database.
@@ -98,7 +101,8 @@ dependency, which is why the engine is testable without a browser or a database.
 
 ## Built with
 
-React, Vite, TypeScript, Tailwind, Leaflet with OpenStreetMap tiles, `h3-js`,
-`culori`, and Nominatim for search. Tests run on Vitest.
+React, Vite, TypeScript, Tailwind, MapLibre GL with OpenFreeMap tiles, `h3-js`,
+`culori`, and Nominatim for search. World data from the WHO and Meijer et al.
+via Our World in Data, NASA FIRMS, and Natural Earth. Tests run on Vitest.
 
-Map data © OpenStreetMap contributors.
+Map data © OpenStreetMap contributors, © OpenMapTiles.

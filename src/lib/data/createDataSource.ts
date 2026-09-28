@@ -1,5 +1,5 @@
 import { FakeDataSource } from './fakeSource'
-import { ideaCountFromSearch, largeDemoReports } from './largeDemo'
+import { ideaCountFromSearch, largeDemoGroups, largeDemoReports } from './largeDemo'
 import { SupabaseDataSource } from './supabaseSource'
 import type { DataSource } from './types'
 
@@ -40,9 +40,12 @@ export function createDataSource(env: Record<string, string | undefined>): DataS
 export function createIdeaSource(
   search: string = globalThis.location?.search ?? '',
 ): FakeDataSource {
-  const source = new FakeDataSource(null)
+  const source = new FakeDataSource(null, { approveGroupsAtOnce: true })
   for (const report of largeDemoReports(ideaCountFromSearch(search))) {
     source.seed({ ...report, noteStatus: 'approved' })
+  }
+  for (const { members, ...group } of largeDemoGroups()) {
+    source.seedGroup({ ...group, status: 'approved' }, { members })
   }
   return source
 }

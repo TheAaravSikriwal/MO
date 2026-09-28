@@ -3,6 +3,7 @@ import { checkText } from '../../lib/moderation/clientGate'
 import { NAME_NEEDED, plainError } from '../../lib/moderation/plainWords'
 import type { CommentView, DataSource, ReportView } from '../../lib/data/types'
 import { NameField, nameProblem, useDisplayName } from './NameField'
+import { Reveal, useLingeringList } from '../Reveal'
 
 export interface ReportDetailProps {
   data: DataSource
@@ -30,6 +31,8 @@ export function ReportDetail({
   onClose,
 }: ReportDetailProps) {
   const [comments, setComments] = useState<CommentView[]>([])
+  // A new comment fades in, a deleted one fades out, rather than popping.
+  const shownComments = useLingeringList(comments, (comment) => comment.id)
   const [draft, setDraft] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -136,7 +139,7 @@ export function ReportDetail({
 
   return (
     <section
-      className="rounded-xl bg-white p-4 shadow-lg"
+      className="mo-glass rounded-2xl p-4"
       aria-label={cleaned ? 'Cleaned report' : 'Report'}
     >
       <header className="flex items-start justify-between">
@@ -295,30 +298,30 @@ export function ReportDetail({
 
       <p className="mt-3 text-sm text-slate-600">{confirmLabel(report.voteCount)}</p>
 
-      {error && (
+      <Reveal show={!!(error)}>{(error) && (
         <p role="alert" className="mt-2 rounded-lg bg-rose-50 p-3 text-sm text-rose-900">
           {error}
         </p>
-      )}
+      )}</Reveal>
 
-      {offMap && (
+      <Reveal show={!!(offMap)}>{(offMap) && (
         <p role="status" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
           {report.viewerIsReporter
             ? 'This report has been taken off the map. Other people can no longer see it.'
             : 'This report is off the map. Other people can no longer see it.'}
         </p>
-      )}
+      )}</Reveal>
 
-      {isAdmin && (
+      <Reveal show={!!(isAdmin)}>{(isAdmin) && (
         <div className="mt-3 space-y-2">
-          {pinNotice && (
+          <Reveal show={!!(pinNotice)}>{(pinNotice) && (
             <p role="status" className="text-xs text-slate-600">
               {pinNotice}
             </p>
-          )}
-          {offMap && report.removalReason && (
+          )}</Reveal>
+          <Reveal show={!!(offMap && report.removalReason)}>{(offMap && report.removalReason) && (
             <p className="text-xs text-slate-600">Taken off because: {report.removalReason}</p>
-          )}
+          )}</Reveal>
           {!offMap && (
             <>
               <label htmlFor="removal-reason" className="block text-xs text-slate-600">
@@ -343,7 +346,7 @@ export function ReportDetail({
             {offMap ? 'Put back on the map' : 'Take off the map'}
           </button>
         </div>
-      )}
+      )}</Reveal>
 
       <div className="mt-3 flex flex-wrap gap-2">
         {!cleaned && !offMap && signedIn && !report.viewerIsReporter && (
@@ -366,17 +369,21 @@ export function ReportDetail({
             Mark as cleaned
           </button>
         )}
-        {!signedIn && <p className="text-sm text-slate-600">Sign in to confirm or mark cleaned.</p>}
+        <Reveal show={!!(!signedIn)}>{(!signedIn) && <p className="text-sm text-slate-600">Sign in to confirm or mark cleaned.</p>}</Reveal>
       </div>
 
       <div className="mt-5 border-t border-slate-200 pt-4">
         <h3 className="text-sm font-semibold text-slate-900">Comments</h3>
-        {comments.length === 0 ? (
+        <Reveal show={comments.length === 0}>
           <p className="mt-1 text-sm text-slate-500">No comments yet.</p>
-        ) : (
-          <ul className="mt-2 space-y-2">
-            {comments.map((comment) => (
-              <li key={comment.id} className="rounded-lg bg-slate-50 p-3 text-sm">
+        </Reveal>
+        {/* Always drawn, even empty: switching it off when the last comment
+            went would take that comment with it before it had faded. */}
+          <ul className="mt-0">
+            {shownComments.map(({ item: comment, key, leaving }) => (
+              <li key={key}>
+              <Reveal show={!leaving} gap="pt-2">
+              <div className="rounded-lg bg-slate-50 p-3 text-sm">
                 <p className="text-xs text-slate-500">
                   {comment.authorName}
                   {/* Only a real name someone else chose: "someone" is not a
@@ -404,12 +411,12 @@ export function ReportDetail({
                     ))}
                 </p>
                 <p className="text-slate-800">{comment.body}</p>
-                {comment.moderationStatus === 'pending' && (
+                <Reveal show={!!(comment.moderationStatus === 'pending')}>{(comment.moderationStatus === 'pending') && (
                   <p className="mt-1 text-xs text-slate-500">Being checked before it appears.</p>
-                )}
-                {comment.moderationStatus === 'rejected' && (
+                )}</Reveal>
+                <Reveal show={!!(comment.moderationStatus === 'rejected')}>{(comment.moderationStatus === 'rejected') && (
                   <p className="mt-1 text-xs text-slate-500">Removed and not shown to others.</p>
-                )}
+                )}</Reveal>
                 {signedIn &&
                   comment.moderationStatus === 'approved' &&
                   // Nobody may report their own post; the database refuses it.
@@ -431,10 +438,11 @@ export function ReportDetail({
                       Report this comment
                     </button>
                   ))}
+              </div>
+              </Reveal>
               </li>
             ))}
           </ul>
-        )}
 
         {offMap ? (
           // The database refuses a comment on a pin off the map. Offering the
@@ -444,7 +452,7 @@ export function ReportDetail({
           </p>
         ) : signedIn ? (
           <div className="mt-3">
-            {name.needed && (
+            <Reveal show={!!(name.needed)}>{(name.needed) && (
               <div className="mb-2">
                 <NameField
                   id="comment-name"
@@ -453,7 +461,7 @@ export function ReportDetail({
                   rejected={name.mine?.status === 'rejected' ? name.mine.name : null}
                 />
               </div>
-            )}
+            )}</Reveal>
             <label htmlFor="comment-body" className="sr-only">
               Add a comment
             </label>
@@ -469,11 +477,11 @@ export function ReportDetail({
               }}
               className="w-full rounded-lg border border-slate-300 p-2 text-sm"
             />
-            {notice && (
+            <Reveal show={!!(notice)}>{(notice) && (
               <p role="status" className="mt-1 text-xs text-slate-600">
                 {notice}
               </p>
-            )}
+            )}</Reveal>
             <button
               type="button"
               onClick={onComment}

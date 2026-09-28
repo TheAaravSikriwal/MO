@@ -1,0 +1,194 @@
+entity,code,year,hdi__sex_total
+Afghanistan,AFG,2023,0.496
+Angola,AGO,2023,0.616
+Albania,ALB,2023,0.81
+Andorra,AND,2023,0.913
+United Arab Emirates,ARE,2023,0.94
+Argentina,ARG,2023,0.865
+Armenia,ARM,2023,0.811
+Antigua and Barbuda,ATG,2023,0.851
+Australia,AUS,2023,0.958
+Austria,AUT,2023,0.93
+Azerbaijan,AZE,2023,0.789
+Burundi,BDI,2023,0.439
+Belgium,BEL,2023,0.951
+Benin,BEN,2023,0.515
+Burkina Faso,BFA,2023,0.459
+Bangladesh,BGD,2023,0.685
+Bulgaria,BGR,2023,0.845
+Bahrain,BHR,2023,0.899
+Bahamas,BHS,2023,0.82
+Bosnia and Herzegovina,BIH,2023,0.804
+Belarus,BLR,2023,0.824
+Belize,BLZ,2023,0.721
+Bolivia,BOL,2023,0.733
+Brazil,BRA,2023,0.786
+Barbados,BRB,2023,0.811
+Brunei,BRN,2023,0.837
+Bhutan,BTN,2023,0.698
+Botswana,BWA,2023,0.731
+Central African Republic,CAF,2023,0.414
+Canada,CAN,2023,0.939
+Switzerland,CHE,2023,0.97
+Chile,CHL,2023,0.878
+China,CHN,2023,0.797
+Cote d'Ivoire,CIV,2023,0.582
+Cameroon,CMR,2023,0.588
+Democratic Republic of Congo,COD,2023,0.522
+Congo,COG,2023,0.649
+Colombia,COL,2023,0.788
+Comoros,COM,2023,0.603
+Cape Verde,CPV,2023,0.668
+Costa Rica,CRI,2023,0.833
+Cuba,CUB,2023,0.762
+Cyprus,CYP,2023,0.913
+Czechia,CZE,2023,0.915
+Germany,DEU,2023,0.959
+Djibouti,DJI,2023,0.513
+Dominica,DMA,2023,0.761
+Denmark,DNK,2023,0.962
+Dominican Republic,DOM,2023,0.776
+Algeria,DZA,2023,0.763
+Ecuador,ECU,2023,0.777
+Egypt,EGY,2023,0.754
+Eritrea,ERI,2023,0.503
+Spain,ESP,2023,0.918
+Estonia,EST,2023,0.905
+Ethiopia,ETH,2023,0.497
+Finland,FIN,2023,0.948
+Fiji,FJI,2023,0.731
+France,FRA,2023,0.92
+Micronesia (country),FSM,2023,0.615
+Gabon,GAB,2023,0.733
+United Kingdom,GBR,2023,0.946
+Georgia,GEO,2023,0.844
+Ghana,GHA,2023,0.628
+Guinea,GIN,2023,0.5
+Gambia,GMB,2023,0.524
+Guinea-Bissau,GNB,2023,0.514
+Equatorial Guinea,GNQ,2023,0.674
+Greece,GRC,2023,0.908
+Grenada,GRD,2023,0.791
+Guatemala,GTM,2023,0.662
+Guyana,GUY,2023,0.776
+Hong Kong,HKG,2023,0.955
+Honduras,HND,2023,0.645
+Croatia,HRV,2023,0.889
+Haiti,HTI,2023,0.554
+Hungary,HUN,2023,0.87
+Indonesia,IDN,2023,0.728
+India,IND,2023,0.685
+Ireland,IRL,2023,0.949
+Iran,IRN,2023,0.799
+Iraq,IRQ,2023,0.695
+Iceland,ISL,2023,0.972
+Israel,ISR,2023,0.919
+Italy,ITA,2023,0.915
+Jamaica,JAM,2023,0.72
+Jordan,JOR,2023,0.754
+Japan,JPN,2023,0.925
+Kazakhstan,KAZ,2023,0.837
+Kenya,KEN,2023,0.628
+Kyrgyzstan,KGZ,2023,0.72
+Cambodia,KHM,2023,0.606
+Kiribati,KIR,2023,0.644
+Saint Kitts and Nevis,KNA,2023,0.84
+South Korea,KOR,2023,0.937
+Kuwait,KWT,2023,0.852
+Laos,LAO,2023,0.617
+Lebanon,LBN,2023,0.752
+Liberia,LBR,2023,0.51
+Libya,LBY,2023,0.721
+Saint Lucia,LCA,2023,0.748
+Liechtenstein,LIE,2023,0.938
+Sri Lanka,LKA,2023,0.776
+Lesotho,LSO,2023,0.55
+Lithuania,LTU,2023,0.895
+Luxembourg,LUX,2023,0.922
+Latvia,LVA,2023,0.889
+Morocco,MAR,2023,0.71
+Moldova,MDA,2023,0.785
+Madagascar,MDG,2023,0.487
+Maldives,MDV,2023,0.766
+Mexico,MEX,2023,0.789
+Marshall Islands,MHL,2023,0.733
+North Macedonia,MKD,2023,0.815
+Mali,MLI,2023,0.419
+Malta,MLT,2023,0.924
+Myanmar,MMR,2023,0.609
+Montenegro,MNE,2023,0.862
+Mongolia,MNG,2023,0.747
+Mozambique,MOZ,2023,0.493
+Mauritania,MRT,2023,0.563
+Mauritius,MUS,2023,0.806
+Malawi,MWI,2023,0.517
+Malaysia,MYS,2023,0.819
+Namibia,NAM,2023,0.665
+Niger,NER,2023,0.419
+Nigeria,NGA,2023,0.56
+Nicaragua,NIC,2023,0.706
+Netherlands,NLD,2023,0.955
+Norway,NOR,2023,0.97
+Nepal,NPL,2023,0.622
+Nauru,NRU,2023,0.703
+New Zealand,NZL,2023,0.938
+Oman,OMN,2023,0.858
+Pakistan,PAK,2023,0.544
+Panama,PAN,2023,0.839
+Peru,PER,2023,0.794
+Philippines,PHL,2023,0.72
+Palau,PLW,2023,0.786
+Papua New Guinea,PNG,2023,0.576
+Poland,POL,2023,0.906
+Portugal,PRT,2023,0.89
+Paraguay,PRY,2023,0.756
+Palestine,PSE,2023,0.674
+Qatar,QAT,2023,0.886
+Romania,ROU,2023,0.845
+Russia,RUS,2023,0.832
+Rwanda,RWA,2023,0.578
+Saudi Arabia,SAU,2023,0.9
+Sudan,SDN,2023,0.511
+Senegal,SEN,2023,0.53
+Singapore,SGP,2023,0.946
+Solomon Islands,SLB,2023,0.584
+Sierra Leone,SLE,2023,0.467
+El Salvador,SLV,2023,0.678
+San Marino,SMR,2023,0.915
+Somalia,SOM,2023,0.404
+Serbia,SRB,2023,0.833
+South Sudan,SSD,2023,0.388
+Sao Tome and Principe,STP,2023,0.637
+Suriname,SUR,2023,0.722
+Slovakia,SVK,2023,0.88
+Slovenia,SVN,2023,0.931
+Sweden,SWE,2023,0.959
+Eswatini,SWZ,2023,0.695
+Seychelles,SYC,2023,0.848
+Syria,SYR,2023,0.564
+Chad,TCD,2023,0.416
+Togo,TGO,2023,0.571
+Thailand,THA,2023,0.798
+Tajikistan,TJK,2023,0.691
+Turkmenistan,TKM,2023,0.764
+East Timor,TLS,2023,0.634
+Tonga,TON,2023,0.769
+Trinidad and Tobago,TTO,2023,0.807
+Tunisia,TUN,2023,0.746
+Turkey,TUR,2023,0.853
+Tuvalu,TUV,2023,0.689
+Tanzania,TZA,2023,0.555
+Uganda,UGA,2023,0.582
+Ukraine,UKR,2023,0.779
+Uruguay,URY,2023,0.862
+United States,USA,2023,0.938
+Uzbekistan,UZB,2023,0.74
+Saint Vincent and the Grenadines,VCT,2023,0.798
+Venezuela,VEN,2023,0.709
+Vietnam,VNM,2023,0.766
+Vanuatu,VUT,2023,0.621
+Samoa,WSM,2023,0.708
+Yemen,YEM,2023,0.47
+South Africa,ZAF,2023,0.741
+Zambia,ZMB,2023,0.595
+Zimbabwe,ZWE,2023,0.598

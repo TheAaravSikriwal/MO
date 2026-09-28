@@ -1,6 +1,6 @@
 # Database
 
-Schema, policies and RPCs for MO. Six migrations, applied in order.
+Schema, policies and RPCs for MO. Seven migrations, applied in order.
 
 ## Where this goes
 
@@ -184,6 +184,7 @@ ungranted rather than merely unreadable.
 | `0004_rollup_and_worker_rpc.sql` | Map rollup, near-me, the worker's queue interface |
 | `0005_admin_queue.sql` | The admin review queue, and the triggers that make a complaint reach a person |
 | `0006_upload_grants.sql` | The record and rate limit behind every signed photo upload URL |
+| `0007_cleaning_groups.sql` | Cleaning groups: people who clean up an area together. Reviewed like a note, and never a list of who is in one |
 
 ## Applying them
 
@@ -236,7 +237,7 @@ delete their own report. Cascading would have made the limit resettable by the
 person it limits — sign thirty, upload, delete, repeat — and a cascade runs
 without consulting RLS, so no policy would have stopped it.
 
-**Six cells per report.** `cell_r1` through `cell_r12` are H3 ancestors of the
+**Nine cells per report.** `cell_r1` to `cell_r7`, `cell_r9` and `cell_r12` are H3 ancestors of the
 same point, computed client-side. Zooming out changes which column the rollup
 groups by. This is why a world view is one indexed `GROUP BY` and not a
 geometry query, and why no Postgres H3 extension is needed.

@@ -23,7 +23,7 @@
     // No "node" here on purpose. These files are compiled as browser code, so
     // `process` and `Buffer` must not typecheck. The files that do run in node
     // are listed in tsconfig.node.json.
-    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
+    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom", "geojson"]
   },
   "include": ["src", "api", "shared", "vitest.setup.ts"],
   // Compiled by tsconfig.node.json instead. They read migration SQL off disk,
@@ -34,6 +34,6 @@
     "src/lib/db/pgHarness.ts",
     "src/lib/db/pinPhotos.run.test.ts",
     "src/lib/db/cleanup.run.test.ts",
-    "src/components/map/CellLayer.test.tsx"
+    "src/lib/db/groups.run.test.ts"
   ]
 }

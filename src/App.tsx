@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MapView, type FlyTarget, type MapView2 } from './components/map/MapView'
-import { CellLayer } from './components/map/CellLayer'
-import { ReportPinLayer } from './components/map/ReportPinLayer'
+import { GlobeMap, type FlyTarget, type MapView2 } from './components/map/GlobeMap'
+import { LayerPanel } from './components/map/LayerPanel'
+import { CellCatalog, type CatalogState } from './components/map/CellCatalog'
+import { FindingsPanel } from './components/findings/FindingsPanel'
+import { useFindings } from './lib/worlddata/useFindings'
+import { getResolution } from 'h3-js'
+import { useWorldData } from './lib/worlddata/useWorldData'
+import type { WorldLayerId } from './lib/worlddata/worldData'
 import { FilterPanel } from './components/map/FilterPanel'
 import {
   sortByDistance,
@@ -15,20 +20,28 @@ import { ReportForm } from './components/report/ReportForm'
 import { ReportDetail } from './components/report/ReportDetail'
 import { SignInPanel } from './components/auth/SignInPanel'
 import { AdminQueue } from './components/admin/AdminQueue'
-import { resolutionForZoom, PIN_ZOOM_THRESHOLD } from './lib/grid/zoomResolution'
+import { resolutionForZoom, REPORT_PLACE_ZOOM } from './lib/grid/zoomResolution'
 import { normaliseWeights, type NormalisedCell } from './lib/severity/percentile'
 import { createDebouncedSearch, type Place } from './lib/geo/nominatim'
 import { createDataSource, createIdeaSource } from './lib/data/createDataSource'
 import { FakeDataSource } from './lib/data/fakeSource'
 import { worldFromSearch, searchWithWorld, type World } from './lib/data/worlds'
 import { WorldSwitch } from './components/WorldSwitch'
+import { Reveal } from './components/Reveal'
+import { MapTabs, type Tab } from './components/MapTabs'
+import { GroupsPanel } from './components/groups/GroupsPanel'
+import { GroupForm } from './components/groups/GroupForm'
 import { plainError } from './lib/moderation/plainWords'
-import type { CurrentUser, DataSource, ReportView, RollupCell } from './lib/data/types'
+import type { CleaningGroup, CurrentUser, DataSource, ReportView, RollupCell } from './lib/data/types'
+import { GROUPS_IN_VIEW, REPORT_PAGE_LIMIT } from './lib/data/types'
 
 /** Stable identity, so handing 'no cells' to the map does not churn every render. */
 const NO_CELLS: NormalisedCell[] = []
+const NO_REPORTS: ReportView[] = []
+const NO_GROUPS: CleaningGroup[] = []
 
-const WORLD_VIEW = { center: [20, 0] as [number, number], zoom: 3 }
+// The globe whole, seen from space. In the app's zoom numbers (lib/map/view).
+const WORLD_VIEW = { center: [20, 10] as [number, number], zoom: 2.9 }
 
 /**
  * Who you are when you try the idea signed in. Made up, like everything else
@@ -41,6 +54,10 @@ export interface AppProps {
   /** Injected in tests; production picks a source from the environment. */
   data?: DataSource
 }
+
+/** A phone-sized screen: below Tailwind's `md`, where the panels stack. */
+const isPhone = () =>
+  typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 767.98px)').matches
 
 export default function App({ data: injected }: AppProps = {}) {
   // An injected source is a test's: the bare map, with no switch above it.
@@ -151,6 +168,35 @@ function MapScreen({ data, worlds }: MapScreenProps) {
   const [matchingInView, setMatchingInView] = useState(0)
   const [filters, setFilters] = useState<ReportFilters>(DEFAULT_FILTERS)
   const [locatingMessage, setLocatingMessage] = useState<string | null>(null)
+  // Which side of the panel is showing: litter reports, or cleaning groups.
+  const [tab, setTab] = useState<Tab>('map')
+  const [groups, setGroups] = useState<CleaningGroup[]>([])
+  // Set once, when the first load finishes: a reload on every pan must not
+  // take "no groups here" away and put it back.
+  const [groupsLoaded, setGroupsLoaded] = useState(false)
+  const [groupsError, setGroupsError] = useState<string | null>(null)
+  const [groupsMore, setGroupsMore] = useState(false)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+  const [startingGroup, setStartingGroup] = useState(false)
+  // What is drawn on the map, whichever tab is open.
+  const [showReports, setShowReports] = useState(true)
+  const [showGroupsOnMap, setShowGroupsOnMap] = useState(true)
+  const [worldLayer, setWorldLayer] = useState<WorldLayerId | null>(null)
+  // Fires share the litter's hexagons: the size the towers are drawn at now,
+  // not the size the zoom is heading for, so the two change together when
+  // the new towers arrive. Where the litter has gone to single dots the layer
+  // is flat and faded anyway, so the finest will do.
+  const worldData = useWorldData(worldLayer, cells.resolution ?? resolutionForZoom(view.zoom) ?? 7)
+  // Loaded the first time the Findings tab is opened, and kept after.
+  const findings = useFindings(tab === 'findings')
+  // On a phone the layer panel is folded behind a button; wider, it is always open.
+  const [layersOpen, setLayersOpen] = useState(false)
+  // The area of litter whose reports are listed on the right, and that list.
+  const [picked, setPicked] = useState<{ cell: string; reportCount: number } | null>(null)
+  const [catalog, setCatalog] = useState<CatalogState>({ status: 'loading' })
+  // Bumped whenever a report changes from this screen -- confirmed, cleaned,
+  // added, decided -- so the list on the right is read again with it.
+  const [changes, setChanges] = useState(0)
 
   const search = useMemo(() => createDebouncedSearch(), [])
 
@@ -191,13 +237,23 @@ function MapScreen({ data, worlds }: MapScreenProps) {
   }, [data, openReportId, reports])
 
 
-  // Memoised, not computed inline. CellLayer holds the outgoing cells while
-  // the new ones fade in, keyed on the identity of this prop -- recomputing it
-  // every render would start a fresh fade on every render and pile up
-  // generations without end.
+  // Memoised, not computed inline. The map redraws its towers whenever this
+  // prop changes identity, so recomputing it every render would rebuild every
+  // tower on every render.
   const normalisedCells = useMemo(() => normaliseWeights(cells.cells), [cells.cells])
 
   const showPins = resolutionForZoom(view.zoom) === null
+
+  // A picked area stands for a tower on the map. Put the list and its outline
+  // away when the towers go -- litter switched off -- or when the map changes
+  // to hexagons of another size, where the old outline would sit over a grid
+  // it is not part of. Kept in dot view: that is where a report opened from
+  // the list is read, among the dots of the same area.
+  const gridSize = resolutionForZoom(view.zoom)
+  useEffect(() => {
+    if (!picked) return
+    if (!showReports || (gridSize !== null && gridSize !== getResolution(picked.cell))) setPicked(null)
+  }, [picked, showReports, gridSize])
 
   // One filter object for both queries. Two derivations could disagree, and
   // the pin view and the aggregated view have to answer the same question the
@@ -341,6 +397,73 @@ function MapScreen({ data, worlds }: MapScreenProps) {
     void refreshCells()
   }, [refreshCells])
 
+  const groupsSeq = useRef(0)
+  const refreshGroups = useCallback(async () => {
+    const seq = ++groupsSeq.current
+    try {
+      const found = await data.listGroupsInView(view.bounds)
+      if (seq !== groupsSeq.current) return
+      // One more than a page means there are more than it shows: said, not
+      // passed off as the whole list.
+      setGroups(found.slice(0, GROUPS_IN_VIEW))
+      setGroupsMore(found.length > GROUPS_IN_VIEW)
+      setGroupsError(null)
+    } catch (cause) {
+      if (seq !== groupsSeq.current) return
+      setGroupsError(plainError(cause instanceof Error ? cause.message : null))
+    } finally {
+      if (seq === groupsSeq.current) setGroupsLoaded(true)
+    }
+  }, [data, view.bounds])
+
+  useEffect(() => {
+    if (tab === 'groups' || showGroupsOnMap) void refreshGroups()
+  }, [tab, showGroupsOnMap, refreshGroups, user])
+
+  // A report opens on the Reports side, wherever it was picked: a pin on the
+  // map, or the list read out to people who cannot pick a pin out of it.
+  // Picked from the groups tab, it would otherwise wait unseen until that tab
+  // was chosen.
+  const openReportById = (id: string) => {
+    setTab('map')
+    setOpenReportId(id)
+  }
+
+  // The reports in the picked area: everything in view of its outline, with
+  // the same filters as the map, kept to the ones inside that very hexagon.
+  const catalogSeq = useRef(0)
+  useEffect(() => {
+    if (!picked) return
+    const seq = ++catalogSeq.current
+    setCatalog({ status: 'loading' })
+    // Asked of the hexagon itself. Fetching the box round it and trimming
+    // afterwards let a busier neighbour fill the page, so an area the tower
+    // counted could list as empty.
+    data
+      .listReportsInCell(picked.cell, serverFilters)
+      .then(({ reports, more }) => {
+        if (seq !== catalogSeq.current) return
+        setCatalog({ status: 'ready', reports, capped: more })
+      })
+      .catch((cause) => {
+        if (seq !== catalogSeq.current) return
+        setCatalog({ status: 'failed', message: plainError(cause instanceof Error ? cause.message : null) })
+      })
+  }, [picked, data, serverFilters, changes])
+
+  const openFromCatalog = (report: ReportView) => {
+    // On a phone the list is a sheet over the lower half of the screen, where
+    // the report opens: put the list away so the report can be read.
+    if (isPhone()) setPicked(null)
+    openReportById(report.id)
+    setFlyTo({ center: [report.lat, report.lng], zoom: Math.max(view.zoom, 14), nonce: Date.now() })
+  }
+
+  const selectGroup = (group: CleaningGroup) => {
+    setSelectedGroupId(group.id)
+    setFlyTo({ center: [group.lat, group.lng], zoom: Math.max(view.zoom, 13), nonce: Date.now() })
+  }
+
   const publishedReports = useMemo(
     // Off-map pins are included. The server only ever returns one to its
     // reporter and to admins, and those are exactly the people who need to
@@ -372,7 +495,7 @@ function MapScreen({ data, worlds }: MapScreenProps) {
     }
   }
 
-  const closeEnoughToAdd = view.zoom >= PIN_ZOOM_THRESHOLD
+  const closeEnoughToAdd = view.zoom >= REPORT_PLACE_ZOOM
 
   const onQueryChange = (value: string) => {
     setQuery(value)
@@ -384,7 +507,81 @@ function MapScreen({ data, worlds }: MapScreenProps) {
   }
 
   return (
-    <main className="relative h-full w-full">
+    <main className="mo-space relative h-full w-full">
+      {/*
+        The log behind a tower: on the right, under the map's own buttons; on a
+        phone, a sheet along the bottom, clear of the name, tabs and search.
+      */}
+      <div className="pointer-events-none absolute inset-x-3 bottom-3 z-[1002] md:inset-x-auto md:bottom-auto md:right-14 md:top-4 md:z-[1001] md:w-[22rem]">
+        <div className="pointer-events-auto">
+          <Reveal show={picked !== null} from="above">
+            {picked && (
+              <CellCatalog
+                reportCount={picked.reportCount}
+                state={catalog}
+                onOpen={openFromCatalog}
+                onClose={() => setPicked(null)}
+              />
+            )}
+          </Reveal>
+        </div>
+      </div>
+      <div
+        className={`pointer-events-none absolute bottom-24 right-3 z-[1000] w-[min(19rem,calc(100vw-1.5rem))] md:bottom-10 md:right-4 ${
+          // Under the list's sheet on a phone: out of the way while it is open.
+          picked ? 'max-md:hidden' : ''
+        }`}
+        data-testid="layers-corner"
+      >
+        {/*
+          The right side holds the list or the layers, never both: on a laptop
+          screen the list reached down over the panel. While the list is open
+          the layers fold into their button, which puts the list away.
+        */}
+        <div className="pointer-events-auto flex flex-col items-end gap-2">
+          <button
+            type="button"
+            aria-expanded={layersOpen && !picked}
+            aria-controls="mo-layers"
+            onClick={() => {
+              if (picked) {
+                setPicked(null)
+                setLayersOpen(true)
+              } else setLayersOpen((open) => !open)
+            }}
+            className={`mo-glass rounded-2xl px-4 py-2 text-sm font-medium text-slate-900 ${picked ? '' : 'md:hidden'}`}
+          >
+            {layersOpen && !picked ? 'Hide layers' : 'Layers'}
+          </button>
+          <div
+            id="mo-layers"
+            data-testid="layers-panel"
+            className={`w-full ${picked ? 'hidden' : `md:block ${layersOpen ? 'block' : 'hidden'}`}`}
+          >
+          <LayerPanel
+            showReports={showReports}
+            onShowReports={setShowReports}
+            showGroups={showGroupsOnMap}
+            onShowGroups={setShowGroupsOnMap}
+            world={worldLayer}
+            onWorld={setWorldLayer}
+            worldData={worldData}
+          />
+          </div>
+        </div>
+      </div>
+      {/*
+        The findings need room for tables and a chart: beside the left column
+        on a wide screen, below the name and tabs on a phone. Over the list and
+        the layer switches, which are about the map it covers.
+      */}
+      {tab === 'findings' && (
+        <div className="pointer-events-none absolute inset-x-3 bottom-3 top-[12.5rem] z-[1003] md:bottom-10 md:left-[26.5rem] md:right-4 md:top-4 xl:top-28">
+          <div className="mo-swap-in pointer-events-auto h-full">
+            <FindingsPanel state={findings} />
+          </div>
+        </div>
+      )}
       {worlds && (
         // A frame round the whole map in the side's colour, so which one this
         // is stays plain even with every panel scrolled out of view.
@@ -397,7 +594,12 @@ function MapScreen({ data, worlds }: MapScreenProps) {
           }`}
         />
       )}
-      <div className="pointer-events-none absolute inset-0 z-[1000] flex flex-col gap-3 p-4">
+      {/*
+        The left column scrolls on its own once it is taller than the window: a
+        report open under the filters ran off the bottom of the screen. Only
+        the panels take the pointer; the gaps between them are still the map.
+      */}
+      <div className="mo-column pointer-events-none absolute inset-0 z-[1000] flex flex-col gap-3 overflow-y-auto p-4">
         {worlds && (
           <div className="pointer-events-auto w-[min(26rem,calc(100vw-2rem))] xl:absolute xl:left-1/2 xl:top-4 xl:-translate-x-1/2">
             <WorldSwitch
@@ -407,17 +609,30 @@ function MapScreen({ data, worlds }: MapScreenProps) {
             />
           </div>
         )}
-        <div className="pointer-events-auto w-[min(24rem,calc(100vw-2rem))] space-y-2">
+        <div className="pointer-events-auto w-[min(24rem,calc(100vw-2rem))]">
+          {/* The app's name. Lower case on purpose. */}
+          <p className="mo-glass inline-block rounded-2xl px-3.5 py-1 text-xl font-semibold tracking-tight text-emerald-800">
+            tidy
+          </p>
+          <div className="mt-2">
+          <MapTabs
+            value={tab}
+            // A half-written report or group waits, hidden, on its own tab.
+            // Closing it on a tab change threw away whatever had been typed.
+            onChange={setTab}
+          />
+          </div>
+
           <input
             type="search"
             aria-label="Search for a place"
             placeholder="Search for a place"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-md outline-none focus:border-slate-500"
+            className="mo-glass mt-2 w-full rounded-2xl px-4 py-2.5 text-sm outline-none placeholder:text-slate-400 focus:ring-2 focus:ring-slate-900/15"
           />
-          {results.length > 0 && (
-            <ul className="max-h-64 overflow-auto rounded-lg bg-white shadow-md">
+          <Reveal show={results.length > 0} from="above" gap="pt-1">
+            <ul className="mo-glass max-h-64 overflow-auto rounded-2xl">
               {results.map((place) => (
                 <li key={`${place.name}:${place.lat},${place.lng}`}>
                   <button
@@ -434,10 +649,10 @@ function MapScreen({ data, worlds }: MapScreenProps) {
                 </li>
               ))}
             </ul>
-          )}
+          </Reveal>
 
-          {worlds?.value === 'idea' && !user ? (
-            <div className="space-y-2 rounded-lg bg-white p-3 shadow-md">
+          <Reveal gap="pt-2" show={worlds?.value === 'idea' && !user}>
+            <div className="mo-glass space-y-2 rounded-2xl p-3">
               <p className="text-sm text-slate-700">
                 No account needed to try the idea. Nothing you add here is sent anywhere.
               </p>
@@ -449,105 +664,139 @@ function MapScreen({ data, worlds }: MapScreenProps) {
                 Try it signed in
               </button>
             </div>
-          ) : (
-            !unconnected && (
-              <div className="rounded-lg bg-white p-3 shadow-md">
-                <SignInPanel data={data} user={user} />
-              </div>
-            )
-          )}
+          </Reveal>
 
-          <FilterPanel
-            filters={filters}
-            onChange={setFilters}
-            showing={matchingInView}
-            total={totalInView}
-            onUseMyLocation={() => void onUseMyLocation()}
-            locatingMessage={locatingMessage}
-            hasLocation={filters.origin !== null}
-          />
+          <Reveal gap="pt-2" show={!unconnected && !(worlds?.value === 'idea' && !user)}>
+            <div className="mo-glass rounded-2xl p-3">
+              <SignInPanel data={data} user={user} />
+            </div>
+          </Reveal>
 
-          {user?.isAdmin && !reviewing && (
+          <Reveal gap="pt-2" show={tab === 'map'}>
+            <div role="tabpanel" id="panel-map" aria-labelledby="tab-map">
+            <FilterPanel
+              filters={filters}
+              onChange={setFilters}
+              showing={matchingInView}
+              total={totalInView}
+              onUseMyLocation={() => void onUseMyLocation()}
+              locatingMessage={locatingMessage}
+              hasLocation={filters.origin !== null}
+            />
+            </div>
+          </Reveal>
+
+          <Reveal gap="pt-2" show={tab === 'groups'}>
+            <div role="tabpanel" id="panel-groups" aria-labelledby="tab-groups">
+            <GroupsPanel
+              data={data}
+              groups={groups}
+              loaded={groupsLoaded}
+              error={groupsError}
+              signedIn={user !== null && !unconnected}
+              selectedId={selectedGroupId}
+              onSelect={selectGroup}
+              onChanged={() => void refreshGroups()}
+              canStart={!unconnected}
+              more={groupsMore}
+              isAdmin={user?.isAdmin ?? false}
+            />
+            </div>
+          </Reveal>
+
+          <Reveal gap="pt-2" show={tab === 'map' && !!user?.isAdmin && !reviewing}>
             <button
               type="button"
               onClick={() => setReviewing(true)}
-              className="w-full rounded-lg bg-white px-3 py-2 text-left text-sm font-medium text-slate-800 shadow-md"
+              className="mo-glass w-full rounded-2xl px-3 py-2 text-left text-sm font-medium text-slate-800"
             >
               Review queue
             </button>
-          )}
+          </Reveal>
 
-          {authError && (
+          <Reveal gap="pt-2" show={authError !== null}>
             <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
               {authError}
             </p>
-          )}
+          </Reveal>
 
-          {offMapNotice && (
+          <Reveal gap="pt-2" show={tab === 'map' && showReports && showPins && reports.length >= REPORT_PAGE_LIMIT}>
+            <p role="status" className="rounded-lg bg-slate-100 p-3 text-xs text-slate-700">
+              Showing the {REPORT_PAGE_LIMIT} most confirmed reports here. Zoom in to see the rest.
+            </p>
+          </Reveal>
+
+          <Reveal gap="pt-2" show={tab === 'map' && offMapNotice !== null}>
             <p role="status" className="rounded-lg bg-slate-100 p-3 text-xs text-slate-700">
               {offMapNotice}
             </p>
-          )}
+          </Reveal>
 
-          {(reportsError ?? cellsError) && (
+          <Reveal gap="pt-2" show={(reportsError ?? cellsError) !== null}>
             <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
               {reportsError ?? cellsError} Reports may be missing.
             </p>
-          )}
+          </Reveal>
 
-          {worlds?.value === 'idea' && (
+          <Reveal gap="pt-2" show={worlds?.value === 'idea'}>
             <p role="status" className="rounded-lg bg-violet-50 p-3 text-xs text-violet-900">
-              <strong>The idea.</strong> Every report on this map is made up, to show how
-              it works. None of them are real.
+              <strong>The idea.</strong> Every report and group on this map is made up, to show
+              how it works. None of them are real.
             </p>
-          )}
+          </Reveal>
 
-          {unconnected && (
+          <Reveal gap="pt-2" show={unconnected}>
             <p role="status" className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-900">
               <strong>Real world.</strong> This map is not connected to the real reports
               yet, so there are none to show. Switch to The idea to see how it works.
             </p>
-          )}
+          </Reveal>
         </div>
 
-        <div className="pointer-events-auto mt-auto w-[min(26rem,calc(100vw-2rem))] space-y-3">
-          {reviewing && user?.isAdmin && (
-            <AdminQueue
-              data={data}
-              isAdmin={user.isAdmin}
-              onClose={() => setReviewing(false)}
-              pinsVersion={pinsVersion}
-              onDecided={() => {
-                void refresh()
-                void refreshCells()
-              }}
-            />
-          )}
+        <div className="pointer-events-auto mt-auto w-[min(26rem,calc(100vw-2rem))]">
+          <Reveal gap="pt-3" show={tab === 'map' && reviewing && !!user?.isAdmin}>
+            {user?.isAdmin && (
+              <AdminQueue
+                data={data}
+                isAdmin={user.isAdmin}
+                onClose={() => setReviewing(false)}
+                pinsVersion={pinsVersion}
+                onDecided={() => {
+                  setChanges((n) => n + 1)
+                  void refresh()
+                  void refreshCells()
+                }}
+              />
+            )}
+          </Reveal>
 
-          {openReport && (
-            <ReportDetail
-              // One panel per report. Without the key, opening another pin
-              // swapped the report under the same panel, and a reason typed for
-              // one pin was sent -- and recorded for good -- against the next.
-              key={openReport.id}
-              data={data}
-              report={openReport}
-              signedIn={user !== null}
-              isAdmin={user?.isAdmin ?? false}
-              onChanged={() => {
-                // Cells too. Marking a report cleaned from the aggregated view
-                // dropped it from the counts while its hexagon stayed exactly
-                // as hot -- the one thing the product exists to show.
-                void refresh()
-                void refreshCells()
-              }}
-              // Only a pin moving on or off the map reloads an open review queue.
-              onPinChanged={() => setPinsVersion((version) => version + 1)}
-              onClose={() => setOpenReportId(null)}
-            />
-          )}
+          <Reveal gap="pt-3" show={tab === 'map' && openReport !== null}>
+            {openReport && (
+              <ReportDetail
+                // One panel per report. Without the key, opening another pin
+                // swapped the report under the same panel, and a reason typed for
+                // one pin was sent -- and recorded for good -- against the next.
+                key={openReport.id}
+                data={data}
+                report={openReport}
+                signedIn={user !== null}
+                isAdmin={user?.isAdmin ?? false}
+                onChanged={() => {
+                  setChanges((n) => n + 1)
+                  // Cells too. Marking a report cleaned from the aggregated view
+                  // dropped it from the counts while its hexagon stayed exactly
+                  // as hot -- the one thing the product exists to show.
+                  void refresh()
+                  void refreshCells()
+                }}
+                // Only a pin moving on or off the map reloads an open review queue.
+                onPinChanged={() => setPinsVersion((version) => version + 1)}
+                onClose={() => setOpenReportId(null)}
+              />
+            )}
+          </Reveal>
 
-          {unconnected ? null : adding ? (
+          <Reveal gap="pt-3" show={tab === 'map' && !unconnected && adding} keepMounted={adding}>
             <ReportForm
               data={data}
               lat={view.center[0]}
@@ -555,12 +804,15 @@ function MapScreen({ data, worlds }: MapScreenProps) {
               zoom={view.zoom}
               signedIn={user !== null}
               onSubmitted={() => {
+                setChanges((n) => n + 1)
                 setAdding(false)
                 void refresh()
               }}
               onCancel={() => setAdding(false)}
             />
-          ) : (
+          </Reveal>
+
+          <Reveal gap="pt-3" show={tab === 'map' && !unconnected && !adding}>
             <button
               type="button"
               onClick={() => setAdding(true)}
@@ -568,44 +820,74 @@ function MapScreen({ data, worlds }: MapScreenProps) {
             >
               {closeEnoughToAdd ? 'Add a report here' : 'Add a report'}
             </button>
-          )}
+          </Reveal>
+
+          <Reveal gap="pt-3" show={tab === 'groups' && !unconnected && startingGroup} keepMounted={startingGroup}>
+            <GroupForm
+              data={data}
+              lat={view.center[0]}
+              lng={view.center[1]}
+              zoom={view.zoom}
+              signedIn={user !== null}
+              onCreated={(id) => {
+                setStartingGroup(false)
+                setSelectedGroupId(id)
+                void refreshGroups()
+              }}
+              onCancel={() => setStartingGroup(false)}
+              checkedFirst={worlds?.value !== 'idea'}
+            />
+          </Reveal>
+
+          <Reveal gap="pt-3" show={tab === 'groups' && !unconnected && !startingGroup}>
+            <button
+              type="button"
+              onClick={() => setStartingGroup(true)}
+              className="w-full rounded-xl bg-emerald-700 px-4 py-3 text-sm font-medium text-white shadow-lg"
+            >
+              Start a cleaning group here
+            </button>
+          </Reveal>
         </div>
       </div>
 
-      <MapView
+      <GlobeMap
         initialCenter={WORLD_VIEW.center}
         initialZoom={WORLD_VIEW.zoom}
         flyTo={flyTo}
         onViewChange={setView}
-      >
-        {/*
-          The cell layer stays mounted across the pin threshold.
-
-          Swapping it out for the pin layer unmounted every hexagon in one
-          frame -- the harshest cut on the map, and the one zoom boundary with
-          no fade at all. Handing it an empty set instead lets it fade the
-          hexagons out, and fade them back in on the way down.
-        */}
-        <CellLayer
-          cells={showPins ? NO_CELLS : normalisedCells}
-          fadeKey={showPins ? 'pins' : (cells.resolution ?? 'none')}
-        />
-
-        {showPins && (
-          <ReportPinLayer
-            reports={visibleReports}
-            selectedId={openReportId}
-            onSelect={(report) => setOpenReportId(report.id)}
-          />
-        )}
-      </MapView>
+        // Towers while aggregated. Handing it none -- pins taking over, or
+        // litter switched off -- fades them out rather than cutting them.
+        cells={showReports && !showPins ? normalisedCells : NO_CELLS}
+        cellsKey={showPins ? 'pins' : (cells.resolution ?? 'none')}
+        pins={showReports && showPins ? visibleReports : NO_REPORTS}
+        selectedPinId={openReportId}
+        onPinSelect={openReportById}
+        groups={showGroupsOnMap ? groups : NO_GROUPS}
+        selectedGroupId={selectedGroupId}
+        onGroupSelect={(id) => {
+          const group = groups.find((g) => g.id === id)
+          if (!group) return
+          setTab('groups')
+          selectGroup(group)
+        }}
+        world={worldData.status === 'ready' ? worldData.overlay : null}
+        onCellSelect={(cell, reportCount) => {
+          // Emptied in the same update, so the list never opens on the last
+          // area's reports before this one's arrive.
+          setCatalog({ status: 'loading' })
+          setPicked({ cell, reportCount })
+        }}
+        selectedCell={picked?.cell ?? null}
+      />
 
       {/* Reports are reachable by name as well as by eye, which matters for
           anyone who cannot pick a pin out of a busy map. */}
+      {/* Only while litter is on the map: switched off, it is off the list too. */}
       <ul className="sr-only">
-        {visibleReports.map((report) => (
+        {(showReports ? visibleReports : []).map((report) => (
           <li key={report.id}>
-            <button type="button" onClick={() => setOpenReportId(report.id)}>
+            <button type="button" onClick={() => openReportById(report.id)}>
               {report.status === 'cleaned' ? 'Cleaned report' : 'Litter reported here'}
               {report.moderationStatus === 'rejected' ? ' (off the map)' : ''} —{' '}
               {report.voteCount} confirmed

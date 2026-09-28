@@ -37,7 +37,18 @@ import { fileURLToPath } from 'node:url'
 const MO = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** Files under src/ that are the standalone Vite app, not the map. */
-const SKIP = new Set(['main.tsx', 'index.css', 'vite-env.d.ts'])
+// These tests read MO's own files through Vite's `?raw`: its index.html,
+// which the site does not have, and public/data, which the site gets byte for
+// byte through PUBLIC_FILES, at another path.
+const SKIP = new Set([
+  'main.tsx',
+  'index.css',
+  'vite-env.d.ts',
+  'test/page.test.ts',
+  'lib/worlddata/saved.test.ts',
+  'lib/geo/countries.test.ts',
+  'App.findings.test.tsx',
+])
 const SKIP_DIRS = new Set(['lib/db'])
 
 /** Files in the target's src/mo written there by hand, which a sync never touches. */
@@ -51,6 +62,7 @@ const MIGRATIONS = {
   '0004': ['013', '0004_rollup_and_worker_rpc.sql', '013_mo_rollup_and_worker_rpc.sql'],
   '0005': ['014', '0005_admin_queue.sql', '014_mo_admin_queue.sql'],
   '0006': ['015', '0006_upload_grants.sql', '015_mo_upload_grants.sql'],
+  '0007': ['016', '0007_cleaning_groups.sql', '016_mo_cleaning_groups.sql'],
 }
 
 /** Replace `find` with `replace`, insisting it occurs exactly `count` times. */
@@ -84,12 +96,12 @@ const APP_HEADER = `'use client'
 /**
  * The litter map, as a client component.
  *
- * \`'use client'\` is not optional here and not a preference: Leaflet reaches for
+ * \`'use client'\` is not optional here and not a preference: MapLibre reaches for
  * \`window\` and \`document\` as soon as it is imported, so every component below
  * has to run in the browser. The route at \`src/app/map\` loads this through
  * \`next/dynamic\` with \`ssr: false\` for the same reason -- marking it a client
  * component stops React rendering it on the server, but Next would still
- * EVALUATE the module during prerender, and importing Leaflet is enough to
+ * EVALUATE the module during prerender, and importing MapLibre is enough to
  * fail.
  *
  * Generated from MO's src/App.tsx by scripts/sync-wearechintu.mjs. What
@@ -132,7 +144,7 @@ const TRANSFORMS = {
       `  // The Supabase keys above are the store's, and they are set long before
   // the map's own tables exist in that project. So "Real world" counts as
   // connected only once NEXT_PUBLIC_MAP_LIVE is "true": set it after
-  // migrations 010-015 are applied and \`mo\` is an exposed schema. Until then
+  // migrations 010-016 are applied and \`mo\` is an exposed schema. Until then
   // it shows the empty "not connected yet" map, not a screen of errors under a
   // label saying these are real reports.
   const realConnected = !chosen.demo && process.env.NEXT_PUBLIC_MAP_LIVE === 'true'
@@ -207,26 +219,12 @@ export function createDataSource(config: DataSourceConfig): DataSourceChoice {
     )
   },
 
-  'components/map/MapView.tsx': (text, file) => {
-    text = swap(
-      text,
-      file,
-      "import { MapContainer, TileLayer, useMap, useMapEvents } from 'react-leaflet'",
-      "import { MapContainer, TileLayer, ZoomControl, useMap, useMapEvents } from 'react-leaflet'",
-    )
-    // Leaflet's zoom buttons default to top-left, where the site's layout puts
-    // the place-search box. Moved to the top right.
-    text = swap(
-      text,
-      file,
-      '    <MapContainer\n',
-      `    <MapContainer
-      // Leaflet puts its zoom buttons top-left by default, which is where the
-      // site's overlay starts -- they landed on the place-search box. Moved
-      // rather than moving the overlay, which is sized to the viewport.
-      zoomControl={false}\n`,
-    )
-    return swap(text, file, '    </MapContainer>', '      <ZoomControl position="topright" />\n    </MapContainer>')
+  'lib/worlddata/sources.ts': (text, file) => {
+    // NASA's fires come through the site's own route, and the country outlines
+    // are served from its public folder (see syncPublic).
+    text = swap(text, file, "export const FIRES_ENDPOINT = '/api/world/fires'", "export const FIRES_ENDPOINT = '/api/map/fires'")
+    // The outlines and every saved copy.
+    return swap(text, file, "'/data/", "'/map-data/", 8)
   },
 
   'lib/upload/uploadPhoto.ts': (text, file) =>
@@ -238,32 +236,6 @@ export function createDataSource(config: DataSourceConfig): DataSourceChoice {
       "export const SIGN_UPLOAD_ENDPOINT = '/api/map/sign-upload'",
     ),
 }
-
-/**
- * Every test that mocks react-leaflet has to know ZoomControl exists, because
- * the map's MapView uses it (see the MapView transform) and MO's does not.
- */
-const LEAFLET_MOCK = "vi.mock('react-leaflet', () => ({\n"
-function withZoomControlMock(text, file) {
-  if (!text.includes(LEAFLET_MOCK)) return text
-  return swap(
-    text,
-    file,
-    LEAFLET_MOCK,
-    LEAFLET_MOCK +
-      '  ZoomControl: ({ position }: { position?: string }) => <div data-testid="zoom" data-position={position} />,\n',
-  )
-}
-
-/** The port's own check that the zoom buttons were moved, kept with MapView's tests. */
-const ZOOM_TEST = `
-  it('places the zoom buttons away from the overlay', () => {
-    // Top-left is where the place search and the filter panel live. Left
-    // there, Leaflet's buttons sat on top of the search box.
-    render(<MapView initialCenter={[51.5, -0.12]} initialZoom={13} onViewChange={noop} />)
-    expect(screen.getByTestId('zoom')).toHaveAttribute('data-position', 'topright')
-  })
-`
 
 /** The app's own tests of App, pointed at MapApp. */
 function appTest(text, file) {
@@ -341,14 +313,6 @@ function syncSource(target) {
     let text = readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
     let out = rel
     if (TRANSFORMS[rel]) text = TRANSFORMS[rel](text, rel)
-    if (rel.endsWith('.test.tsx')) text = withZoomControlMock(text, rel)
-    if (rel === 'components/map/MapView.test.tsx') {
-      text = swap(text, rel, "describe('MapView', () => {\n  const noop = () => {}\n", "describe('MapView', () => {\n  const noop = () => {}\n" + ZOOM_TEST)
-    }
-    if (rel === 'components/map/CellLayer.test.tsx') {
-      // The map's stylesheet is src/mo/map.css in the site, not index.css.
-      text = swap(text, rel, "'..', '..', 'index.css'", "'..', '..', 'map.css'")
-    }
     if (rel === 'App.tsx') out = 'MapApp.tsx'
     if (/^App(\.\w+)?\.test\.tsx$/.test(rel)) {
       text = appTest(text, rel)
@@ -375,7 +339,9 @@ const SERVER_FILES = [
  * which wearechintu replaces with its own route over the same handler, and
  * the endpoint's README.
  */
-const NOT_COPIED = new Set(['api/sign-upload.ts', 'api/README.md'])
+// api/world holds the fires pass-through; wearechintu has its own route for
+// that, src/app/api/map/fires.
+const NOT_COPIED = new Set(['api/sign-upload.ts', 'api/README.md', 'api/world'])
 
 /**
  * Stop if MO has a migration, a server file or an endpoint this script does not
@@ -388,18 +354,39 @@ function checkNothingUnaccounted() {
     ...Object.values(MIGRATIONS).map(([, from]) => `supabase/migrations/${from}`),
     ...SERVER_FILES.map(([from]) => from),
     ...NOT_COPIED,
+    ...PUBLIC_FILES.map(([from]) => from),
     'api/_lib',
+    'public/data',
   ])
-  const found = ['supabase/migrations', 'api', 'api/_lib', 'shared'].flatMap((dir) =>
+  const found = ['supabase/migrations', 'api', 'api/_lib', 'shared', 'public', 'public/data'].flatMap((dir) =>
     readdirSync(join(MO, dir)).map((name) => `${dir}/${name}`),
   )
   const unknown = found.filter((path) => !known.has(path))
   if (unknown.length) {
     throw new Error(
       `sync: MO has files this script does not know how to carry across: ${unknown.join(', ')}. ` +
-        'Add each to MIGRATIONS, SERVER_FILES or NOT_COPIED.',
+        'Add each to MIGRATIONS, SERVER_FILES, PUBLIC_FILES or NOT_COPIED.',
     )
   }
+}
+
+/** MO's public data files, and where they go in the site's public folder. */
+const PUBLIC_FILES = [
+  'countries.geojson',
+  'air-saved.csv',
+  'plastic-saved.csv',
+  'fires-saved.csv',
+  'life-saved.csv',
+  'water-saved.csv',
+  'gdp-saved.csv',
+  'plastic-per-person-saved.csv',
+].map((name) => [
+  `public/data/${name}`,
+  `public/map-data/${name}`,
+])
+
+function syncPublic(target) {
+  return PUBLIC_FILES.map(([from, to]) => write(target, to, readFileSync(join(MO, from), 'utf8')))
 }
 
 function syncServer(target) {
@@ -418,6 +405,58 @@ function syncServer(target) {
     }
     return write(target, `src/mo/server/${to}`, text)
   })
+}
+
+/**
+ * The map's own styles, the `.mo-` rules, are written by hand in both places:
+ * MO's src/index.css and the site's src/mo/map.css, which also carries the
+ * site's own page rules and so is not copied. A rule changed in one and not
+ * the other went unnoticed -- the site's background stayed blue after MO's
+ * went black -- so every rule that names `mo-` anywhere must match, or
+ * nothing is written: compound selectors such as the hover popup's, rules
+ * inside @media, and @keyframes alike.
+ */
+function styleDrift(moCss, siteCss) {
+  // Walks the braces, so a rule is known by its whole path: "@media (...) >>
+  // .mo-x". A pattern over the text missed anything nested or compound.
+  const rules = (css) => {
+    const found = new Map()
+    const open = []
+    let text = ''
+    const tidy = (s) => s.replace(/\s+/g, ' ').trim()
+    for (const ch of css.replace(/\/\*[\s\S]*?\*\//g, '')) {
+      if (ch === '{') {
+        open.push(tidy(text))
+        text = ''
+      } else if (ch === '}') {
+        const path = [...open].join(' >> ')
+        open.pop()
+        const body = tidy(text)
+        text = ''
+        if (body && path.includes('mo-')) found.set(path, body)
+      } else text += ch
+    }
+    return found
+  }
+  const mo = rules(moCss)
+  const site = rules(siteCss)
+  const drift = []
+  for (const [selector, body] of mo) {
+    if (!site.has(selector)) drift.push(`${selector} is missing from src/mo/map.css`)
+    else if (site.get(selector) !== body) drift.push(`${selector} differs from MO's`)
+  }
+  return drift
+}
+
+function checkStyles(target) {
+  const drift = styleDrift(
+    readFileSync(join(MO, 'src/index.css'), 'utf8'),
+    readFileSync(join(target, 'src/mo/map.css'), 'utf8'),
+  )
+  if (drift.length) {
+    console.error(`sync: the map's styles have drifted. Nothing was written.\n  ${drift.join('\n  ')}`)
+    process.exit(1)
+  }
 }
 
 /** MO's migration numbers and file names, as wearechintu's. */
@@ -444,10 +483,10 @@ function syncDatabaseReadme(target) {
   text = swap(
     text,
     'supabase/README.md',
-    '# Database\n\nSchema, policies and RPCs for MO. Six migrations, applied in order.',
+    '# Database\n\nSchema, policies and RPCs for MO. Seven migrations, applied in order.',
     `# The litter map's schema
 
-Migrations \`010\` to \`015\` in this directory, applied in order. They are the map
+Migrations \`010\` to \`016\` in this directory, applied in order. They are the map
 at \`/map\`; \`001\` to \`009\` are the marketplace and have nothing to do with them.
 The app-side notes are in \`src/mo/README.md\`.
 
@@ -488,9 +527,11 @@ if (!statSync(join(target, 'src', 'mo'), { throwIfNoEntry: false })) {
 }
 
 checkNothingUnaccounted()
+checkStyles(target)
 const written = [
   ...syncSource(target),
   ...syncServer(target),
+  ...syncPublic(target),
   ...syncMigrations(target),
   syncDatabaseReadme(target),
 ]

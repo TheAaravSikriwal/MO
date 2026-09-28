@@ -10,6 +10,7 @@ const deletionDate = (rejectedAt: string): string => {
     : `To be deleted on ${due.toLocaleDateString()}.`
 }
 import { plainReason, plainError, summariseScores } from '../../lib/moderation/plainWords'
+import { Reveal, useLingeringList } from '../Reveal'
 
 export interface AdminQueueProps {
   data: DataSource
@@ -29,6 +30,7 @@ const subjectLabel: Record<QueueItem['subjectType'], string> = {
   comment: 'Comment',
   note: 'Report note',
   name: 'Name someone chose',
+  group: 'Cleaning group',
 }
 
 export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 }: AdminQueueProps) {
@@ -48,6 +50,11 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
   const [rejectedMore, setRejectedMore] = useState(false)
   const [rejectedError, setRejectedError] = useState<string | null>(null)
   const [shownRejected, setShownRejected] = useState<Set<string>>(new Set())
+  // A decided item, a photo allowed back, a pin put back: each fades out of
+  // its list rather than vanishing the moment the list reloads.
+  const shownItems = useLingeringList(items, (item) => item.jobId)
+  const shownRejectedPhotos = useLingeringList(rejected, (photo) => photo.photoId)
+  const shownOffMap = useLingeringList(offMap, (report) => report.id)
 
   const loadOffMap = useCallback(async () => {
     try {
@@ -212,7 +219,7 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
     setRevealed((current) => new Set(current).add(jobId))
 
   return (
-    <section className="rounded-xl bg-white p-4 shadow-lg" aria-label="Review queue">
+    <section className="mo-glass rounded-2xl p-4" aria-label="Review queue">
       <header className="flex items-start justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Review queue</h2>
@@ -235,15 +242,17 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
         </button>
       </header>
 
-      {error && (
+      <Reveal show={!!(error)}>{(error) && (
         <p role="alert" className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-900">
           {error}
         </p>
-      )}
+      )}</Reveal>
 
-      <ul className="mt-3 space-y-3">
-        {items.map((item) => (
-          <li key={item.jobId} className="rounded-lg border border-slate-200 p-3">
+      <ul className="mt-0">
+        {shownItems.map(({ item, key, leaving }) => (
+          <li key={key}>
+          <Reveal show={!leaving} gap="pt-3">
+          <div className="rounded-lg border border-slate-200 p-3">
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium text-slate-900">
                 {subjectLabel[item.subjectType]}
@@ -343,13 +352,15 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
                   </button>
                 ))}
             </div>
+          </div>
+          </Reveal>
           </li>
         ))}
       </ul>
 
-      {rejectedError && <p className="mt-4 text-xs text-slate-600">{rejectedError}</p>}
+      <Reveal show={!!(rejectedError)}>{(rejectedError) && <p className="mt-4 text-xs text-slate-600">{rejectedError}</p>}</Reveal>
 
-      {rejected.length > 0 && (
+      <Reveal show={!!(rejected.length > 0)}>{(rejected.length > 0) && (
         <div className="mt-5 border-t border-slate-200 pt-4">
           <h3 className="text-sm font-semibold text-slate-900">Removed photos</h3>
           <p className="text-xs text-slate-500">
@@ -357,14 +368,16 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
             photo cleanup is running. Allow one here if it was removed by mistake. The ones due
             soonest are first.
           </p>
-          {rejectedMore && (
+          <Reveal show={!!(rejectedMore)}>{(rejectedMore) && (
             <p className="text-xs text-slate-500">
               Showing the {rejected.length} due to be deleted soonest.
             </p>
-          )}
-          <ul className="mt-2 space-y-2">
-            {rejected.map((photo) => (
-              <li key={photo.photoId} className="rounded-lg border border-slate-200 p-3 text-sm">
+          )}</Reveal>
+          <ul className="mt-0">
+            {shownRejectedPhotos.map(({ item: photo, key, leaving }) => (
+              <li key={key}>
+              <Reveal show={!leaving} gap="pt-2">
+              <div className="rounded-lg border border-slate-200 p-3 text-sm">
                 <p className="text-xs text-slate-600">
                   {photo.automatic ? 'Removed automatically. Nobody has looked at it.' : 'Removed by a person.'}{' '}
                   {deletionDate(photo.rejectedAt)}
@@ -394,32 +407,36 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
                 >
                   Allow after all
                 </button>
+              </div>
+              </Reveal>
               </li>
             ))}
           </ul>
         </div>
-      )}
+      )}</Reveal>
 
-      {offMapError && <p className="mt-4 text-xs text-slate-600">{offMapError}</p>}
+      <Reveal show={!!(offMapError)}>{(offMapError) && <p className="mt-4 text-xs text-slate-600">{offMapError}</p>}</Reveal>
 
-      {offMap.length > 0 && (
+      <Reveal show={!!(offMap.length > 0)}>{(offMap.length > 0) && (
         <div className="mt-5 border-t border-slate-200 pt-4">
           <h3 className="text-sm font-semibold text-slate-900">Off the map</h3>
-          {offMapMore && (
+          <Reveal show={!!(offMapMore)}>{(offMapMore) && (
             <p className="text-xs text-slate-500">
               Showing the {offMap.length} most recently taken off.
             </p>
-          )}
-          <ul className="mt-2 space-y-2">
-            {offMap.map((report) => (
-              <li key={report.id} className="rounded-lg border border-slate-200 p-3 text-sm">
+          )}</Reveal>
+          <ul className="mt-0">
+            {shownOffMap.map(({ item: report, key, leaving }) => (
+              <li key={key}>
+              <Reveal show={!leaving} gap="pt-2">
+              <div className="rounded-lg border border-slate-200 p-3 text-sm">
                 <p className="text-slate-800">
                   Added {new Date(report.createdAt).toLocaleDateString()}
                   {report.reporterName ? ` by ${report.reporterName}` : ''}
                 </p>
-                {report.removalReason && (
+                <Reveal show={!!(report.removalReason)}>{(report.removalReason) && (
                   <p className="mt-1 text-xs text-slate-600">Taken off because: {report.removalReason}</p>
-                )}
+                )}</Reveal>
                 <button
                   type="button"
                   onClick={() => void putPinBack(report.id)}
@@ -428,11 +445,13 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
                 >
                   Put back on the map
                 </button>
+              </div>
+              </Reveal>
               </li>
             ))}
           </ul>
         </div>
-      )}
+      )}</Reveal>
     </section>
   )
 }

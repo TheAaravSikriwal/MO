@@ -13,16 +13,7 @@ import { FakeDataSource } from './lib/data/fakeSource'
  * hid that, which is why these go through App.
  */
 
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: { children: unknown }) => <div data-testid="map">{children as never}</div>,
-  TileLayer: () => <div data-testid="tiles" />,
-  Polygon: () => <div data-testid="cell" />,
-  CircleMarker: ({ eventHandlers }: { eventHandlers?: { click?: () => void } }) => (
-    <button type="button" data-testid="pin" onClick={eventHandlers?.click} />
-  ),
-  useMap: () => ({ flyTo: vi.fn() }),
-  useMapEvents: () => null,
-}))
+vi.mock('./components/map/GlobeMap', () => import('./test/globeMapMock'))
 
 const offMapFor = (viewer: { id: string; isAdmin: boolean }) => {
   const data = new FakeDataSource(viewer, { displayName: 'Sam' })

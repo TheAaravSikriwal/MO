@@ -11,14 +11,7 @@ import App, { IDEA_VISITOR_EMAIL } from './App'
  * mistaking one side for the other is easiest.
  */
 
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: any) => <div data-testid="map">{children}</div>,
-  TileLayer: () => <div data-testid="tiles" />,
-  Polygon: () => <div data-testid="cell" />,
-  CircleMarker: () => <div data-testid="pin" />,
-  useMap: () => ({ flyTo: vi.fn() }),
-  useMapEvents: () => null,
-}))
+vi.mock('./components/map/GlobeMap', () => import('./test/globeMapMock'))
 
 const switchGroup = () => screen.getByRole('radiogroup', { name: 'Which reports to show' })
 const side = (name: RegExp) => within(switchGroup()).getByRole('radio', { name })
@@ -46,7 +39,7 @@ describe('the switch between the idea and the real world', () => {
     render(<App />)
     expect(side(/The idea/)).toHaveAttribute('aria-checked', 'true')
     expect(side(/Real world/)).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByText(/Every report on this map is made up/)).toBeInTheDocument()
+    expect(screen.getByText(/Every report and group on this map is made up/)).toBeInTheDocument()
     expect(screen.getByTestId('world-frame')).toHaveAttribute('data-world', 'idea')
     await waitFor(() => expect(screen.getByText(/of 40 reports/)).toBeInTheDocument())
     expect(new URLSearchParams(window.location.search).get('world')).toBe('idea')
@@ -62,7 +55,7 @@ describe('the switch between the idea and the real world', () => {
     expect(side(/Real world/)).toHaveAttribute('aria-checked', 'true')
     expect(side(/Real world/)).toHaveTextContent('Not connected yet')
     expect(screen.getByText(/not connected to the real reports yet/)).toBeInTheDocument()
-    expect(screen.queryByText(/Every report on this map is made up/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Every report and group on this map is made up/)).not.toBeInTheDocument()
     expect(screen.getByTestId('world-frame')).toHaveAttribute('data-world', 'real')
     // Nowhere real to save a report or send a sign-in link to.
     expect(screen.queryByRole('button', { name: /Add a report/ })).not.toBeInTheDocument()
@@ -108,6 +101,8 @@ describe('the switch between the idea and the real world', () => {
     expect(screen.queryByRole('textbox', { name: /email/i })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Try it signed in' }))
     expect(await screen.findByText(IDEA_VISITOR_EMAIL)).toBeInTheDocument()
+    // The signed-in line fades in as its own state of the panel.
+    expect(screen.getByText(IDEA_VISITOR_EMAIL).closest('[data-swap]')).toHaveAttribute('data-swap', 'signed-in')
   })
 
   it('opens on whichever side the address names', () => {

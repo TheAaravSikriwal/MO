@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import type { PGlite } from '@electric-sql/pglite'
 import { addProfile, asRole, failure, freshDatabase } from './pgHarness'
+import { cellsForPoint } from '../grid/cells'
 
 /**
  * The migrations, applied to a real Postgres and exercised as the roles that
@@ -56,8 +57,8 @@ const addReport = (userId: string, note: string | null = null) =>
   as(userId, async () => {
     const { rows } = await db.query<{ id: string }>(
       `insert into mo.reports
-         (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7, cell_r9, cell_r12, note)
-       values ($1, 51.5, -0.12, $2, $2, $2, $2, $2, $2, $3)
+         (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5, cell_r6, cell_r7, cell_r9, cell_r12, note)
+       values ($1, 51.5, -0.12, $2, $2, $2, $2, $2, $2, $2, $2, $2, $3)
        returning id`,
       [userId, CELL, note],
     )
@@ -454,11 +455,11 @@ describe('rate limits hold against a request carrying many rows', () => {
     as(userId, () => {
       const rows = Array.from(
         { length: count },
-        (_, i) => `($1, ${51 + i / 1000}, -0.12, $2, $2, $2, $2, $2, $2, null)`,
+        (_, i) => `($1, ${51 + i / 1000}, -0.12, $2, $2, $2, $2, $2, $2, $2, $2, $2, null)`,
       ).join(', ')
       return db.query(
         `insert into mo.reports
-           (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7, cell_r9, cell_r12, note)
+           (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5, cell_r6, cell_r7, cell_r9, cell_r12, note)
          values ${rows}`,
         [userId, CELL],
       )
@@ -615,8 +616,8 @@ describe('an admin can take a pin off the map, and put it back', () => {
     pin = await as(OWEN, async () => {
       const { rows } = await db.query<{ id: string }>(
         `insert into mo.reports
-           (reporter_id, lat, lng, cell_r1, cell_r3, cell_r5, cell_r7, cell_r9, cell_r12, note)
-         values ($1, -33.9, 18.4, $2, $2, $2, $2, $2, $2, null)
+           (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5, cell_r6, cell_r7, cell_r9, cell_r12, note)
+         values ($1, -33.9, 18.4, $2, $2, $2, $2, $2, $2, $2, $2, $2, null)
          returning id`,
         [OWEN, '8abc00000000fff'],
       )
@@ -833,5 +834,130 @@ describe('a pin off the map takes its comments with it, and keeps a record', () 
 
   it('keeps the history out of reach of browsers', async () => {
     expect(await failure(() => as(ADMIN, () => db.query('select * from mo.pin_history')))).toMatch(/permission denied/)
+  })
+})
+
+describe('the in-between hexagon sizes', () => {
+  // Resolutions 2, 4 and 6, added so hexagons shrink steadily as you zoom.
+  // Stored with each report and rolled up like the rest.
+  const QUINN = '9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a'
+
+  it('are stored with a report, and rolled up at each size', async () => {
+    await addProfile(db, QUINN, 'quinn.q')
+    await setName(QUINN, 'Quinn')
+    const cells = cellsForPoint(-45.87, 170.5)
+    await as(QUINN, () =>
+      db.query(
+        `insert into mo.reports
+           (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5, cell_r6, cell_r7, cell_r9, cell_r12, note)
+         values ($1, -45.87, 170.5, $2, $3, $4, $5, $6, $7, $8, $9, $10, null)`,
+        [QUINN, cells.cell_r1, cells.cell_r2, cells.cell_r3, cells.cell_r4, cells.cell_r5, cells.cell_r6, cells.cell_r7, cells.cell_r9, cells.cell_r12],
+      ),
+    )
+    for (const resolution of [2, 4, 6] as const) {
+      const found = await as(null, async () => {
+        const { rows } = await db.query<{ cell: string }>(
+          'select cell from mo.reports_rollup(-46, 170, -45, 171, $1)',
+          [resolution],
+        )
+        return rows.map((row) => row.cell)
+      })
+      expect(found).toEqual([cells[`cell_r${resolution}`]])
+    }
+  })
+})
+
+describe('reports_in_cell: the list behind one tower', () => {
+  // One r5 hexagon near Rotorua, where no other test puts a report: the
+  // database is shared across this file. Two reports within a kilometre of
+  // the person, two further off inside the same hexagon.
+  const PEOPLE = [
+    '7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b71',
+    '7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b72',
+    '7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b73',
+    '7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b74',
+  ]
+  const PLACES = [
+    { lat: -38.14, lng: 176.25, near: true },
+    { lat: -38.135, lng: 176.254, near: true },
+    { lat: -38.16, lng: 176.25, near: false },
+    { lat: -38.14, lng: 176.28, near: false },
+  ]
+  const origin = { lat: -38.14, lng: 176.25 }
+  const area = cellsForPoint(origin.lat, origin.lng).cell_r5
+  const ids: string[] = []
+
+  beforeAll(async () => {
+    for (const [i, person] of PEOPLE.entries()) {
+      await addProfile(db, person, `person.${i}`)
+      await setName(person, `Person ${i + 1}`)
+      const place = PLACES[i]
+      const cells = cellsForPoint(place.lat, place.lng)
+      if (cells.cell_r5 !== area) throw new Error('a test report landed outside the hexagon; move it')
+      const { rows } = await as(person, () =>
+        db.query<{ id: string }>(
+          `insert into mo.reports
+             (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5, cell_r6, cell_r7, cell_r9, cell_r12, note)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, null)
+           returning id`,
+          [person, place.lat, place.lng, cells.cell_r1, cells.cell_r2, cells.cell_r3, cells.cell_r4, cells.cell_r5, cells.cell_r6, cells.cell_r7, cells.cell_r9, cells.cell_r12],
+        ),
+      )
+      ids.push(rows[0].id)
+    }
+  })
+
+  const list = (args: { withinMetres?: number | null; pageLimit?: number; resolution?: number }) =>
+    as(null, async () => {
+      const { rows } = await db.query<{ id: string }>(
+        `select id from mo.reports_in_cell($1, $2, 'open', 0, null, $3, $4, $5, $6)`,
+        [area, args.resolution ?? 5, origin.lat, origin.lng, args.withinMetres ?? null, args.pageLimit ?? 501],
+      )
+      return rows.map((row) => row.id).sort()
+    })
+
+  it('lists every report in the hexagon', async () => {
+    expect(await list({})).toEqual([...ids].sort())
+  })
+
+  it('keeps to the distance before the page is cut, so the page holds only reports in range', async () => {
+    const near = ids.filter((_, i) => PLACES[i].near).sort()
+    // A page of two: were the distance applied afterwards, far reports could
+    // take both places and leave nothing to show.
+    expect(await list({ withinMetres: 1000, pageLimit: 2 })).toEqual(near)
+  })
+
+  it('reads the column for the size asked, and finds nothing under another size’s cell', async () => {
+    expect(await list({ resolution: 6 })).toEqual([])
+  })
+
+  it('never hands back more than one page and one more, whatever it is asked', async () => {
+    // More than a page, in a hexagon of their own on the far side of town.
+    const busy = { lat: -38.3, lng: 176.1 }
+    const cells = cellsForPoint(busy.lat, busy.lng)
+    // Seeded as the database's owner with triggers off: the hourly report
+    // limit rightly refuses 505 from one person, and only the rows matter here.
+    await db.transaction(async (tx) => {
+      await tx.query('set local session_replication_role = replica')
+      await tx.query(
+        `insert into mo.reports
+           (reporter_id, lat, lng, cell_r1, cell_r2, cell_r3, cell_r4, cell_r5, cell_r6, cell_r7, cell_r9, cell_r12, note, note_status)
+         select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, null, 'approved'
+         from generate_series(1, 505)`,
+        [PEOPLE[0], busy.lat, busy.lng, cells.cell_r1, cells.cell_r2, cells.cell_r3, cells.cell_r4, cells.cell_r5, cells.cell_r6, cells.cell_r7, cells.cell_r9, cells.cell_r12],
+      )
+    })
+    const count = (pageLimit: number | null) =>
+      as(null, async () => {
+        const { rows } = await db.query<{ n: string }>(
+          `select count(*) as n from mo.reports_in_cell($1, 5, 'open', 0, null, null, null, null, $2)`,
+          [cells.cell_r5, pageLimit],
+        )
+        return Number(rows[0].n)
+      })
+    expect(await count(10_000)).toBe(501)
+    expect(await count(null)).toBe(501)
+    expect(await count(0)).toBe(1)
+    expect(await count(1)).toBe(1)
   })
 })

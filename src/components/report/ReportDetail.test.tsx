@@ -359,7 +359,7 @@ describe('ReportDetail — the name next to a comment', () => {
     expect(document.body.textContent).not.toContain('sam.jones')
     expect(await data.getMyDisplayName()).toEqual({ name: 'Sam J', status: 'pending' })
     // Asked once. The field goes away once a name is saved.
-    expect(screen.queryByLabelText(/your name/i)).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByLabelText(/your name/i)).not.toBeInTheDocument())
   })
 
   it('will not post a first comment without a name', async () => {
