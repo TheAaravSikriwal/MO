@@ -71,6 +71,66 @@ body,
   scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
 }
 
+/* A small reset for the map alone, on sites that do not load Tailwind's own:
+   without it a button keeps the browser's grey fill and a list its numbers.
+   In the base layer, so every class the map writes still wins over it. Only
+   applies inside .mo-map-root, the site's wrapper; the app itself has
+   Tailwind's full reset and no such wrapper. */
+@layer base {
+  .mo-map-root button {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .mo-map-root ol,
+  .mo-map-root ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .mo-map-root h1,
+  .mo-map-root h2,
+  .mo-map-root h3,
+  .mo-map-root p,
+  .mo-map-root figure {
+    margin: 0;
+  }
+}
+
+/* A host site's own rules for bare elements sit outside any layer, and so
+   outrank every class the map writes: headings took its serif and spacing,
+   paragraphs lost their margins, panels their padding, a focused button its
+   round corners. Inside the map, exactly those are handed back to the map's
+   own classes. No effect in the app itself, which has no .mo-map-root. */
+.mo-map-root h1,
+.mo-map-root h2,
+.mo-map-root h3 {
+  font-family: revert-layer;
+  font-weight: revert-layer;
+  line-height: revert-layer;
+  letter-spacing: revert-layer;
+  margin: revert-layer;
+  text-wrap: revert-layer;
+}
+.mo-map-root p {
+  margin: revert-layer;
+}
+.mo-map-root section {
+  padding-block: revert-layer;
+}
+.mo-map-root :focus-visible {
+  border-radius: revert-layer;
+}
+/* The site's own .grid, its drawn page lines, is absolutely placed across the
+   page; the map's grid is Tailwind's display grid. Inside the map, the map's. */
+.mo-map-root .grid {
+  position: revert-layer;
+  inset: revert-layer;
+  pointer-events: revert-layer;
+}
+
 /* The introduction: a forest at dusk, leaves moving in the air. */
 .mo-reel {
   background:
