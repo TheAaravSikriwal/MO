@@ -1,5 +1,78 @@
 @import "tailwindcss";
 
+/* "A phone", for the map (App.tsx, PHONE_QUERY): narrow, or short enough that
+ * a phone on its side counts, which is often wider than 768px. `roomy` is
+ * exactly everything else, so a class never has both in play at once. */
+@custom-variant phone {
+  @media (max-width: 767.98px), (max-height: 480px) {
+    @slot;
+  }
+}
+
+@custom-variant roomy {
+  @media (min-width: 768px) and (min-height: 480.02px) {
+    @slot;
+  }
+}
+
+/* Within "a phone": `upright` is narrow and tall, `short` is a phone on its
+ * side (or any short window). Between them they are exactly `phone`. */
+@custom-variant upright {
+  @media (max-width: 767.98px) and (min-height: 480.02px) {
+    @slot;
+  }
+}
+
+@custom-variant short {
+  @media (max-height: 480px) {
+    @slot;
+  }
+}
+
+/* On a phone every field in the map is 16px: iOS zooms the whole page into
+ * any field smaller than that the moment it is tapped, and the layout slides
+ * sideways under the zoom. Unlayered, so it wins over text-sm. */
+@media (max-width: 767.98px), (max-height: 480px) {
+  .mo-space :is(input, textarea, select) {
+    font-size: 16px;
+  }
+}
+
+/* On a phone the map's zoom buttons go (pinching zooms) and the compass
+ * sits just above the Layers button, over the column of panels. Top right,
+ * the world switch lay over them and took their taps; halfway down, they
+ * covered the panels' right edge. It steps aside for the open layers panel
+ * (App.tsx, data-layers-open), and on an upright phone while the column is in
+ * use (data-busy, below). */
+@media (max-width: 767.98px), (max-height: 480px) {
+  .mo-space .maplibregl-ctrl-top-right {
+    top: auto;
+    bottom: 9rem;
+    z-index: 1001;
+  }
+
+  .mo-space[data-layers-open] .maplibregl-ctrl-top-right {
+    display: none;
+  }
+}
+
+/* The zoom buttons go on a touch screen only, where pinching zooms. A short
+ * desktop window keeps them. */
+@media (max-width: 767.98px) and (pointer: coarse), (max-height: 480px) and (pointer: coarse) {
+  .mo-space .maplibregl-ctrl-zoom-in,
+  .mo-space .maplibregl-ctrl-zoom-out {
+    display: none;
+  }
+}
+
+/* The column in use steps the compass aside on an upright phone, where the
+ * column is the screen's width. */
+@media (max-width: 767.98px) and (min-height: 480.02px) {
+  .mo-space[data-busy] .maplibregl-ctrl-top-right {
+    display: none;
+  }
+}
+
 html,
 body,
 #root {
@@ -28,8 +101,6 @@ body,
   animation: mo-sparkle-pop 520ms 380ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
-/* Some people get sick from motion like this, and a cleanup should never cost
-   them that. The state still changes; only the movement stops. */
 /* Motion plays for everyone, including machines that ask for less of it,
    as on the rest of the site: the movement is part of what tidy is. So there
    are no prefers-reduced-motion gates here or in the components. */

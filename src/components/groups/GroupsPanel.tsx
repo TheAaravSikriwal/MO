@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { plainError } from '../../lib/moderation/plainWords'
 import type { CleaningGroup, DataSource } from '../../lib/data/types'
 import { Reveal, Swap, useLingeringList } from '../Reveal'
@@ -23,7 +23,22 @@ export interface GroupsPanelProps {
   isAdmin?: boolean
   /** There are more groups here than the list holds. */
   more?: boolean
+  /**
+   * On a phone the list folds away so the map shows (App.tsx). Only the list:
+   * the heading, errors and "no groups here" stay in sight.
+   */
+  listFolded?: boolean
+  /**
+   * Scroll the list to a group picked on the map. On a phone (App.tsx), where
+   * the list is short and has just unfolded; a wide screen keeps its place.
+   */
+  bringPickedIntoView?: boolean
 }
+
+/** A little longer than a card takes to grow in (Reveal). */
+const CARDS_OPEN_MS = 260
+/** How long a pick is followed while the map flies and the list reloads. */
+const FOLLOW_MS = 3000
 
 const people = (count: number) => (count === 1 ? '1 person' : `${count} people`)
 
@@ -45,6 +60,8 @@ export function GroupsPanel({
   canStart = true,
   isAdmin = false,
   more = false,
+  listFolded = false,
+  bringPickedIntoView = false,
 }: GroupsPanelProps) {
   const [busy, setBusy] = useState<string | null>(null)
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null)
@@ -53,6 +70,41 @@ export function GroupsPanel({
   // asked twice. One misclick must not wipe out a group other people joined.
   const [confirming, setConfirming] = useState<string | null>(null)
   const shown = useLingeringList(groups, (group) => group.id)
+
+  // A group picked on the map may be below the list's own scroll. Its card is
+  // where Join is, so scroll the list (and only the list) to it.
+  const list = useRef<HTMLUListElement>(null)
+  // Followed for a few seconds after a pick, measured each time once the
+  // cards have opened (each grows in, Reveal, 200ms; sooner, they are all
+  // flat at the top). The map is still flying then, and the list reloads and
+  // re-orders under it, so one measurement landed on the wrong place. It stops
+  // the moment the person scrolls or touches the list, and after that window,
+  // so a later move of the map never pulls them back. Folding the list loses
+  // its place, so a pick shown again is followed again.
+  const follow = useRef({ id: null as string | null, until: 0, theirs: false })
+  const order = shown.map((entry) => entry.key).join(',')
+  useEffect(() => {
+    const f = follow.current
+    if (!selectedId || listFolded || !bringPickedIntoView) {
+      if (!selectedId || listFolded) f.id = null
+      return
+    }
+    if (f.id !== selectedId) Object.assign(f, { id: selectedId, until: Date.now() + FOLLOW_MS, theirs: false })
+    if (f.theirs || Date.now() > f.until) return
+    const wait = setTimeout(() => {
+      const ul = list.current
+      const card = ul?.querySelector<HTMLElement>('[data-selected]')
+      if (!ul || !card || f.theirs) return
+      const box = ul.getBoundingClientRect()
+      const at = card.getBoundingClientRect()
+      if (at.top < box.top) ul.scrollTop -= box.top - at.top
+      else if (at.bottom > box.bottom) ul.scrollTop += at.bottom - box.bottom
+    }, CARDS_OPEN_MS)
+    return () => clearTimeout(wait)
+  }, [selectedId, listFolded, bringPickedIntoView, order])
+  const theirs = () => {
+    follow.current.theirs = true
+  }
 
   const act = async (group: CleaningGroup, work: () => Promise<void>) => {
     setBusy(group.id)
@@ -94,7 +146,14 @@ export function GroupsPanel({
         </p>
       </Reveal>
 
-      <ul className="mt-1 max-h-[40vh] overflow-auto">
+      <ul
+        ref={list}
+        id="mo-group-list"
+        onWheel={theirs}
+        onTouchMove={theirs}
+        onPointerDown={theirs}
+        className={`mt-1 max-h-[40vh] overflow-auto ${listFolded ? 'phone:hidden' : ''}`}
+      >
         {shown.map(({ item: group, key, leaving }) => {
           const selected = group.id === selectedId
           return (
@@ -103,6 +162,7 @@ export function GroupsPanel({
                   leaves it or it is deleted, rather than popping. */}
               <Reveal show={!leaving} gap="pt-2">
               <div
+                data-selected={selected || undefined}
                 className={`rounded-lg border p-3 transition-colors duration-200 ${
                   selected ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'
                 }`}

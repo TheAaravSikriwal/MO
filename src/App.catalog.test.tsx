@@ -188,17 +188,17 @@ describe('the report catalog', () => {
     })
 
     // What this can check is the class: `max-md:hidden` hides the corner at
-    // phone widths only, and the test browser applies no styles, so whether
+    // phone widths only, where the list is a sheet over it, and the test browser applies no styles, so whether
     // it is hidden on a real phone is up to Tailwind, not proven here.
     it('marks the layer switches to be hidden at phone widths while the list is open', async () => {
       asPhone()
       const user = userEvent.setup()
       render(<App data={withArea()} />)
       await mapControl.moveTo(10)
-      expect(screen.getByTestId('layers-corner').className).not.toContain('max-md:hidden')
+      expect(screen.getByTestId('layers-corner').classList.contains('max-md:hidden')).toBe(false)
       await user.click(await londonArea())
       await screen.findByRole('region', { name: 'Reports in this area' })
-      expect(screen.getByTestId('layers-corner').className).toContain('max-md:hidden')
+      expect(screen.getByTestId('layers-corner').classList.contains('max-md:hidden')).toBe(true)
     })
   })
 
@@ -268,13 +268,13 @@ describe('the report catalog', () => {
       render(<App data={withArea()} />)
       await mapControl.moveTo(10)
       const panel = screen.getByTestId('layers-panel')
-      expect(panel.className).toContain('md:block')
+      expect(panel.classList.contains('roomy:block')).toBe(true)
       await user.click(await londonArea())
       await screen.findByRole('region', { name: 'Reports in this area' })
-      expect(panel.className).not.toContain('md:block')
+      expect(panel.classList.contains('roomy:block')).toBe(false)
       expect(panel.className).toContain('hidden')
       const button = screen.getByRole('button', { name: 'Layers' })
-      expect(button.className).not.toContain('md:hidden')
+      expect(button.classList.contains('roomy:hidden')).toBe(false)
     })
 
     it('puts the list away and opens the layers from that button', async () => {

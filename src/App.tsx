@@ -13,6 +13,7 @@ import { FilterPanel } from './components/map/FilterPanel'
 import {
   sortByDistance,
   DEFAULT_FILTERS,
+  isDefault,
   type ReportFilters,
 } from './lib/filters/reportFilters'
 import { distanceMetres, formatDistance } from './lib/geo/distance'
@@ -86,8 +87,13 @@ function Introduced({ first, children }: { first: boolean; children: (waiting: b
 }
 
 /** A phone-sized screen: below Tailwind's `md`, where the panels stack. */
-const isPhone = () =>
-  typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 767.98px)').matches
+// A window 480px tall or less counts too, a laptop's included: at that height
+// the column cannot hold the filters and the map at once either.
+const PHONE_QUERY = '(max-width: 767.98px), (max-height: 480px)'
+const matches = (query: string) => typeof window.matchMedia === 'function' && window.matchMedia(query).matches
+const isPhone = () => matches(PHONE_QUERY)
+/** Narrower than md: the area's list is a sheet along the bottom of the screen. */
+const isNarrow = () => matches('(max-width: 767.98px)')
 
 export default function App({ data: injected, intro }: AppProps = {}) {
   // An injected source is a test's: the bare map, with no switch above it.
@@ -254,6 +260,80 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
   const findings = useFindings(tab === 'findings')
   // On a phone the layer panel is folded behind a button; wider, it is always open.
   const [layersOpen, setLayersOpen] = useState(false)
+  // On a phone the filters and the list of groups fold away until asked for.
+  // Stacked full width with everything else they covered the whole globe, so
+  // the map was a column of panels with a strip of world behind it. What
+  // folds is only those controls and that list: signing in, errors, empty
+  // states and which world this is stay in sight. Wider screens show all.
+  const [panelOpen, setPanelOpen] = useState(false)
+  // Set by the Review queue button, cleared once the queue has taken focus.
+  const [focusQueue, setFocusQueue] = useState(false)
+  const fold = panelOpen ? '' : 'phone:hidden'
+  const filtering = !isDefault(
+    filters.origin ? filters : { ...filters, withinMetres: DEFAULT_FILTERS.withinMetres },
+  )
+  // A report, a form or the review queue open at the bottom of the column, on
+  // the tab it belongs to. On a phone that and the stack at the top were the
+  // whole screen, and a report lands where the map is looking, which was under
+  // them. So while one is open, on an upright phone the bottom is held to 40%
+  // of the screen, scrolling inside itself, which keeps the middle of the map
+  // in sight; on a phone on its side the map is beside the narrow column, so
+  // the bottom takes what height is left. On any phone the top keeps to 25%
+  // and scrolls inside itself (see `capTop`), and the name row steps aside to
+  // make the room. Everything else stays: the
+  // tabs (a half-written report waits on its own), the search, the fold,
+  // signing in, errors, notices and the world switch. Signed out, a form is
+  // only "sign in to...", so nothing moves.
+  const working =
+    (tab === 'map' && ((reviewing && !!user?.isAdmin) || openReport !== null || (adding && user !== null))) ||
+    (tab === 'groups' && startingGroup && user !== null)
+  // The top's cap lifts while search results are up, or when the filters or
+  // groups have been opened on purpose: a person asked to see those. Signing
+  // in stays in the capped top, a scroll away.
+  const capTop = working && results.length === 0 && !panelOpen
+  // The column is in use: something is open in it, or the filters or groups
+  // are unfolded. On a phone the column is nearly the screen's width then,
+  // and the map's own floating controls (Layers, the compass) step aside
+  // rather than sit over its panels. Pinching still zooms and turns the map.
+  const busy = working || panelOpen
+  const column = useRef<HTMLDivElement>(null)
+  const tabsRow = useRef<HTMLDivElement>(null)
+  const [findingsTop, setFindingsTop] = useState<number | null>(null)
+  useEffect(() => {
+    if (tab !== 'findings') return
+    const place = () => {
+      const tabs = tabsRow.current
+      const main = tabs?.closest('main')
+      if (!tabs || !main) return
+      setFindingsTop(Math.round(tabs.getBoundingClientRect().bottom - main.getBoundingClientRect().top + 8))
+    }
+    place()
+    // The errors above the tabs open and close with an animation (Reveal).
+    const watch = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place)
+    const top = tabsRow.current?.closest('[data-testid="column-top"]')
+    if (watch && top) watch.observe(top)
+    const box = column.current
+    window.addEventListener('resize', place)
+    box?.addEventListener('scroll', place)
+    return () => {
+      watch?.disconnect()
+      window.removeEventListener('resize', place)
+      box?.removeEventListener('scroll', place)
+    }
+  }, [tab])
+  useEffect(() => {
+    if (!panelOpen || !isPhone()) return
+    // Once the fold has opened (Reveal), as the list's own scroll waits too.
+    const wait = setTimeout(() => {
+      const box = column.current
+      const opened = document.getElementById(tab === 'groups' ? 'mo-group-list' : 'mo-filters')
+      if (!box || !opened) return
+      const edge = box.getBoundingClientRect()
+      const at = opened.getBoundingClientRect()
+      if (at.bottom > edge.bottom) box.scrollTop += Math.min(at.top - edge.top - 16, at.bottom - edge.bottom)
+    }, 260)
+    return () => clearTimeout(wait)
+  }, [panelOpen, tab])
   // The area of litter whose reports are listed on the right, and that list.
   const [picked, setPicked] = useState<{ cell: string; reportCount: number } | null>(null)
   const [catalog, setCatalog] = useState<CatalogState>({ status: 'loading' })
@@ -489,6 +569,8 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
   // was chosen.
   const openReportById = (id: string) => {
     setTab('map')
+    setPanelOpen(false)
+    if (isNarrow()) setPicked(null)
     setOpenReportId(id)
   }
 
@@ -516,8 +598,7 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
 
   const openFromCatalog = (report: ReportView) => {
     // On a phone the list is a sheet over the lower half of the screen, where
-    // the report opens: put the list away so the report can be read.
-    if (isPhone()) setPicked(null)
+    // the report opens: openReportById puts the list away.
     openReportById(report.id)
     setFlyTo({ center: [report.lat, report.lng], zoom: Math.max(view.zoom, 14), nonce: Date.now() })
   }
@@ -570,7 +651,13 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
   }
 
   return (
-    <main className="mo-space relative h-full w-full" data-entered={entered ? 'yes' : 'no'}>
+    <main
+      className="mo-space relative h-full w-full overflow-hidden"
+      data-entered={entered ? 'yes' : 'no'}
+      data-busy={busy ? 'yes' : undefined}
+      // The compass also steps aside for the layers panel, which it sat on.
+      data-layers-open={layersOpen && !picked ? 'yes' : undefined}
+    >
       {/*
         The log behind a tower: on the right, under the map's own buttons; on a
         phone, a sheet along the bottom, clear of the name, tabs and search.
@@ -594,18 +681,23 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
       </div>
       <div
         style={{ '--delay': '450ms' } as CSSProperties}
-        className={`mo-enter mo-enter--right pointer-events-none absolute bottom-24 right-3 z-[1000] w-[min(19rem,calc(100vw-1.5rem))] md:bottom-10 md:right-4 ${
+        className={`mo-enter mo-enter--right pointer-events-none absolute bottom-24 right-3 z-[1000] w-[min(19rem,calc(100vw-1.5rem))] phone:z-[1001] md:bottom-10 md:right-4 ${
           // Under the list's sheet on a phone: out of the way while it is open.
           picked ? 'max-md:hidden' : ''
-        }`}
+        } ${busy ? 'upright:hidden' : ''}`}
         data-testid="layers-corner"
+        // On a phone the column is nearly the screen's width, and it was
+        // painted over the Layers button and the open panel: this corner sits
+        // above it there, and on an upright phone steps aside while the
+        // column is in use (busy).
+        // Only its button and panel take the pointer.
       >
         {/*
           The right side holds the list or the layers, never both: on a laptop
           screen the list reached down over the panel. While the list is open
           the layers fold into their button, which puts the list away.
         */}
-        <div className="pointer-events-auto flex flex-col items-end gap-2">
+        <div className="flex flex-col items-end gap-2 [&>*]:pointer-events-auto">
           <button
             type="button"
             aria-expanded={layersOpen && !picked}
@@ -616,14 +708,14 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
                 setLayersOpen(true)
               } else setLayersOpen((open) => !open)
             }}
-            className={`mo-glass rounded-2xl px-4 py-2 text-sm font-medium text-slate-900 ${picked ? '' : 'md:hidden'}`}
+            className={`mo-glass rounded-2xl px-4 py-2 text-sm font-medium text-slate-900 ${picked ? '' : 'roomy:hidden'}`}
           >
             {layersOpen && !picked ? 'Hide layers' : 'Layers'}
           </button>
           <div
             id="mo-layers"
             data-testid="layers-panel"
-            className={`w-full ${picked ? 'hidden' : `md:block ${layersOpen ? 'block' : 'hidden'}`}`}
+            className={`w-full phone:max-h-[50svh] phone:overflow-y-auto phone:overscroll-contain ${picked ? 'hidden' : `roomy:block ${layersOpen ? 'block' : 'hidden'}`}`}
           >
           <LayerPanel
             showReports={showReports}
@@ -649,8 +741,17 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           </div>
         </div>
       )}
+      {/* On a narrow screen the world switch and the search step aside while it
+          is open (Findings is about countries, not either world's reports), so
+          it starts just under the tabs, where they are measured to end: an
+          error above them moves them down. At 12.5rem down, below them all, a
+          short phone left it about 30px. */}
       {tab === 'findings' && (
-        <div className="pointer-events-none absolute inset-x-3 bottom-3 top-[12.5rem] z-[1003] md:bottom-10 md:left-[26.5rem] md:right-4 md:top-4 xl:top-28">
+        <div
+          data-testid="findings-place"
+          className="pointer-events-none absolute inset-x-3 bottom-3 top-[var(--findings-top,7.25rem)] z-[1003] md:bottom-10 md:left-[26.5rem] md:right-4 md:top-4 xl:top-28"
+          style={findingsTop === null ? undefined : ({ '--findings-top': `${findingsTop}px` } as CSSProperties)}
+        >
           <div className="mo-swap-in pointer-events-auto h-full">
             <FindingsPanel state={findings} />
           </div>
@@ -674,11 +775,14 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
         the panels take the pointer; the gaps between them are still the map.
       */}
       <div
+        ref={column}
         className="mo-column mo-enter mo-enter--left pointer-events-none absolute inset-0 z-[1000] flex flex-col gap-3 overflow-y-auto p-4"
         style={{ '--delay': '200ms' } as CSSProperties}
       >
         {worlds && (
-          <div className="pointer-events-auto w-[min(26rem,calc(100vw-2rem))] xl:absolute xl:left-1/2 xl:top-4 xl:-translate-x-1/2">
+          <div
+            className={`pointer-events-auto w-[min(26rem,calc(100vw-2rem))] [@media(max-height:480px)]:w-[min(18rem,45vw)] xl:absolute xl:left-1/2 xl:top-4 xl:-translate-x-1/2 ${tab === 'findings' ? 'max-md:hidden' : ''}`}
+          >
             <WorldSwitch
               value={worlds.value}
               onChange={worlds.onChange}
@@ -686,9 +790,32 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
             />
           </div>
         )}
-        <div className="pointer-events-auto w-[min(24rem,calc(100vw-2rem))]">
+        <div
+          data-testid="column-top"
+          className={`pointer-events-auto w-[min(24rem,calc(100vw-2rem))] [@media(max-height:480px)]:w-[min(18rem,45vw)] shrink-0 ${
+            capTop ? 'phone:max-h-[25svh] phone:overflow-y-auto phone:overscroll-contain' : ''
+          } ${
+            !working && results.length === 0 && !panelOpen
+              ? 'short:max-h-[35svh] short:overflow-y-auto short:overscroll-contain'
+              : ''
+          }`}
+        >
+          {/* Errors first: in a top held to a quarter of a phone's screen, one that
+              came after the sign-in card appeared scrolled out of sight. */}
+          <Reveal gap="pb-2" show={authError !== null}>
+            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900 phone:p-2">
+              {authError}
+            </p>
+          </Reveal>
+
+          <Reveal gap="pb-2" show={(reportsError ?? cellsError) !== null}>
+            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900 phone:p-2">
+              {reportsError ?? cellsError} Reports may be missing.
+            </p>
+          </Reveal>
+
           {/* The app's name, lower case on purpose, and what it is about. */}
-          <div className="flex items-center gap-2">
+          <div data-testid="column-name" className={`flex items-center gap-2 ${working ? 'phone:hidden' : ''}`}>
             <p className="mo-glass inline-block rounded-2xl px-3.5 py-1 text-xl font-semibold tracking-tight text-emerald-800">
               tidy
             </p>
@@ -701,23 +828,59 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
               About
             </button>
           </div>
-          <div className="mt-2">
+          <div ref={tabsRow} data-testid="column-tabs" className={`mt-2 ${working ? 'phone:mt-0' : ''}`}>
           <MapTabs
             value={tab}
             // A half-written report or group waits, hidden, on its own tab.
             // Closing it on a tab change threw away whatever had been typed.
-            onChange={setTab}
+            onChange={(next) => {
+              setTab(next)
+              setPanelOpen(false)
+            }}
           />
           </div>
 
-          <input
-            type="search"
-            aria-label="Search for a place"
-            placeholder="Search for a place"
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            className="mo-glass mt-2 w-full rounded-2xl px-4 py-2.5 text-sm outline-none placeholder:text-slate-400 focus:ring-2 focus:ring-slate-900/15"
-          />
+          <div className={`mt-2 flex gap-2 ${tab === 'findings' ? 'max-md:hidden' : ''}`}>
+            <input
+              type="search"
+              aria-label="Search for a place"
+              placeholder="Search for a place"
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              className="mo-glass w-full min-w-0 flex-1 rounded-2xl px-4 py-2.5 text-sm outline-none placeholder:text-slate-400 focus:ring-2 focus:ring-slate-900/15"
+            />
+            {working && (
+              <button
+                type="button"
+                onClick={() => setAboutOpen(true)}
+                aria-expanded={aboutOpen}
+                aria-label="About"
+                title="About"
+                className="mo-glass shrink-0 rounded-2xl px-3.5 py-2 hidden text-sm font-medium text-slate-800 phone:block"
+              >
+                ?
+              </button>
+            )}
+            {(tab === 'map' || (tab === 'groups' && (groups.length > 0 || panelOpen))) && (
+              <button
+                type="button"
+                aria-expanded={panelOpen}
+                aria-controls={tab === 'groups' ? 'mo-group-list' : 'mo-filters'}
+                onClick={() => setPanelOpen((open) => !open)}
+                className="mo-glass shrink-0 rounded-2xl px-3.5 py-2 hidden text-sm font-medium text-slate-800 phone:block"
+              >
+                {tab === 'groups'
+                  ? panelOpen
+                    ? 'Hide groups'
+                    : 'Groups'
+                  : panelOpen
+                    ? 'Hide filters'
+                    : filtering
+                      ? 'Filters on'
+                      : 'Filters'}
+              </button>
+            )}
+          </div>
           <Reveal show={results.length > 0} from="above" gap="pt-1">
             <ul className="mo-glass max-h-64 overflow-auto rounded-2xl">
               {results.map((place) => (
@@ -739,14 +902,14 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           </Reveal>
 
           <Reveal gap="pt-2" show={worlds?.value === 'idea' && !user}>
-            <div className="mo-glass space-y-2 rounded-2xl p-3">
-              <p className="text-sm text-slate-700">
+            <div className="mo-glass space-y-2 rounded-2xl p-3 phone:flex phone:items-center phone:gap-3 phone:space-y-0 phone:p-2">
+              <p className="text-sm text-slate-700 phone:text-xs">
                 No account needed to try the idea. Nothing you add here is sent anywhere.
               </p>
               <button
                 type="button"
                 onClick={() => void data.signInWithEmail(IDEA_VISITOR_EMAIL)}
-                className="w-full rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white"
+                className="w-full rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white phone:w-auto phone:shrink-0"
               >
                 Try it signed in
               </button>
@@ -754,13 +917,19 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           </Reveal>
 
           <Reveal gap="pt-2" show={!unconnected && !(worlds?.value === 'idea' && !user)}>
-            <div className="mo-glass rounded-2xl p-3">
+            <div className="mo-glass rounded-2xl p-3 phone:px-3 phone:py-1.5">
               <SignInPanel data={data} user={user} />
             </div>
           </Reveal>
 
-          <Reveal gap="pt-2" show={tab === 'map'}>
+          <Reveal gap={panelOpen ? 'pt-2' : 'pt-2 phone:pt-0'} show={tab === 'map'}>
             <div role="tabpanel" id="panel-map" aria-labelledby="tab-map">
+            {!panelOpen && locatingMessage && (
+              <p role="status" className="mo-glass hidden rounded-2xl p-2 text-xs text-slate-700 phone:block">
+                {locatingMessage}
+              </p>
+            )}
+            <div id="mo-filters" className={fold}>
             <FilterPanel
               filters={filters}
               onChange={setFilters}
@@ -770,6 +939,7 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
               locatingMessage={locatingMessage}
               hasLocation={filters.origin !== null}
             />
+            </div>
             </div>
           </Reveal>
 
@@ -782,11 +952,16 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
               error={groupsError}
               signedIn={user !== null && !unconnected}
               selectedId={selectedGroupId}
-              onSelect={selectGroup}
+              onSelect={(group) => {
+                if (isPhone()) setPanelOpen(false)
+                selectGroup(group)
+              }}
               onChanged={() => void refreshGroups()}
               canStart={!unconnected}
               more={groupsMore}
               isAdmin={user?.isAdmin ?? false}
+              listFolded={!panelOpen}
+              bringPickedIntoView={isPhone()}
             />
             </div>
           </Reveal>
@@ -794,59 +969,58 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           <Reveal gap="pt-2" show={tab === 'map' && !!user?.isAdmin && !reviewing}>
             <button
               type="button"
-              onClick={() => setReviewing(true)}
+              onClick={() => {
+                setPanelOpen(false)
+                setFocusQueue(true)
+                setReviewing(true)
+              }}
               className="mo-glass w-full rounded-2xl px-3 py-2 text-left text-sm font-medium text-slate-800"
             >
               Review queue
             </button>
           </Reveal>
 
-          <Reveal gap="pt-2" show={authError !== null}>
-            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
-              {authError}
-            </p>
-          </Reveal>
-
           <Reveal gap="pt-2" show={tab === 'map' && showReports && showPins && reports.length >= REPORT_PAGE_LIMIT}>
-            <p role="status" className="rounded-lg bg-slate-100 p-3 text-xs text-slate-700">
+            <p role="status" className="rounded-lg bg-slate-100 p-3 text-xs text-slate-700 phone:p-2">
               Showing the {REPORT_PAGE_LIMIT} most confirmed reports here. Zoom in to see the rest.
             </p>
           </Reveal>
 
           <Reveal gap="pt-2" show={tab === 'map' && offMapNotice !== null}>
-            <p role="status" className="rounded-lg bg-slate-100 p-3 text-xs text-slate-700">
+            <p role="status" className="rounded-lg bg-slate-100 p-3 text-xs text-slate-700 phone:p-2">
               {offMapNotice}
             </p>
           </Reveal>
 
-          <Reveal gap="pt-2" show={(reportsError ?? cellsError) !== null}>
-            <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
-              {reportsError ?? cellsError} Reports may be missing.
-            </p>
-          </Reveal>
-
           <Reveal gap="pt-2" show={worlds?.value === 'idea'}>
-            <p role="status" className="rounded-lg bg-violet-50 p-3 text-xs text-violet-900">
+            <p role="status" className="rounded-lg bg-violet-50 p-3 text-xs text-violet-900 phone:p-2">
               <strong>The idea.</strong> Every report and group on this map is made up, to show
               how it works. None of them are real.
             </p>
           </Reveal>
 
           <Reveal gap="pt-2" show={unconnected}>
-            <p role="status" className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-900">
+            <p role="status" className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-900 phone:p-2">
               <strong>Real world.</strong> This map is not connected to the real reports
               yet, so there are none to show. Switch to The idea to see how it works.
             </p>
           </Reveal>
         </div>
 
-        <div className="pointer-events-auto mt-auto w-[min(26rem,calc(100vw-2rem))]">
+        <div
+          data-testid="column-bottom"
+          className={`pointer-events-auto mt-auto w-[min(26rem,calc(100vw-2rem))] [@media(max-height:480px)]:w-[min(18rem,45vw)] shrink-0 upright:max-h-[40svh] upright:overflow-y-auto upright:overscroll-contain ${
+            working ? 'short:min-h-24 short:flex-1 short:shrink short:overflow-y-auto short:overscroll-contain' : ''
+          }`}
+        >
           <Reveal gap="pt-3" show={tab === 'map' && reviewing && !!user?.isAdmin}>
             {user?.isAdmin && (
               <AdminQueue
                 data={data}
                 isAdmin={user.isAdmin}
                 onClose={() => setReviewing(false)}
+                takeFocus={focusQueue}
+                onFocused={() => setFocusQueue(false)}
                 pinsVersion={pinsVersion}
                 onDecided={() => {
                   setChanges((n) => n + 1)
@@ -902,7 +1076,10 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           <Reveal gap="pt-3" show={tab === 'map' && !unconnected && !adding}>
             <button
               type="button"
-              onClick={() => setAdding(true)}
+              onClick={() => {
+                setPanelOpen(false)
+                setAdding(true)
+              }}
               className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-lg"
             >
               {closeEnoughToAdd ? 'Add a report here' : 'Add a report'}
@@ -918,6 +1095,7 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
               signedIn={user !== null}
               onCreated={(id) => {
                 setStartingGroup(false)
+                setPanelOpen(true)
                 setSelectedGroupId(id)
                 void refreshGroups()
               }}
@@ -929,7 +1107,10 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           <Reveal gap="pt-3" show={tab === 'groups' && !unconnected && !startingGroup}>
             <button
               type="button"
-              onClick={() => setStartingGroup(true)}
+              onClick={() => {
+                setPanelOpen(false)
+                setStartingGroup(true)
+              }}
               className="w-full rounded-xl bg-emerald-700 px-4 py-3 text-sm font-medium text-white shadow-lg"
             >
               Start a cleaning group here
@@ -956,6 +1137,7 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           const group = groups.find((g) => g.id === id)
           if (!group) return
           setTab('groups')
+          setPanelOpen(true)
           selectGroup(group)
         }}
         world={worldData.status === 'ready' ? worldData.overlay : null}
@@ -963,6 +1145,7 @@ function MapScreen({ data, worlds, waiting = false, onReplayIntro }: MapScreenPr
           // Emptied in the same update, so the list never opens on the last
           // area's reports before this one's arrive.
           setCatalog({ status: 'loading' })
+          setPanelOpen(false)
           setPicked({ cell, reportCount })
         }}
         selectedCell={picked?.cell ?? null}

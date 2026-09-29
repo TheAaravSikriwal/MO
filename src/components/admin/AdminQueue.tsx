@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DataSource, QueueItem, RejectedPhoto, ReportView } from '../../lib/data/types'
 import { REJECTED_HOLD_DAYS } from '../../lib/data/types'
 
@@ -23,6 +23,10 @@ export interface AdminQueueProps {
    * report's own screen -- so the list of pins off the map is reloaded.
    */
   pinsVersion?: number
+  /** Take focus now: the Review queue button has just opened the queue. */
+  takeFocus?: boolean
+  /** Called once focus has been taken, so it is not taken again. */
+  onFocused?: () => void
 }
 
 const subjectLabel: Record<QueueItem['subjectType'], string> = {
@@ -33,7 +37,7 @@ const subjectLabel: Record<QueueItem['subjectType'], string> = {
   group: 'Cleaning group',
 }
 
-export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 }: AdminQueueProps) {
+export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0, takeFocus = false, onFocused }: AdminQueueProps) {
   const [items, setItems] = useState<QueueItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,6 +50,15 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
   const [offMap, setOffMap] = useState<ReportView[]>([])
   const [offMapMore, setOffMapMore] = useState(false)
   const [offMapError, setOffMapError] = useState<string | null>(null)
+  // Focus comes here when the Review queue button opens it: the button goes
+  // away as it does, and focus fell to the page. Only then, not on every
+  // mount, or coming back to the tab would take focus from the tab.
+  const root = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!takeFocus) return
+    root.current?.focus({ preventScroll: true })
+    onFocused?.()
+  }, [takeFocus, onFocused])
   const [rejected, setRejected] = useState<RejectedPhoto[]>([])
   const [rejectedMore, setRejectedMore] = useState(false)
   const [rejectedError, setRejectedError] = useState<string | null>(null)
@@ -219,7 +232,7 @@ export function AdminQueue({ data, isAdmin, onClose, onDecided, pinsVersion = 0 
     setRevealed((current) => new Set(current).add(jobId))
 
   return (
-    <section className="mo-glass rounded-2xl p-4" aria-label="Review queue">
+    <section ref={root} tabIndex={-1} className="mo-glass rounded-2xl p-4 outline-none" aria-label="Review queue">
       <header className="flex items-start justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Review queue</h2>
